@@ -1,0 +1,36 @@
+# Example: Using birdy in GitHub Actions
+#
+# Store your accounts JSON as a repository secret named BIRDY_ACCOUNTS:
+#   [{"name":"bot1","auth_token":"xxx","ct0":"yyy"}]
+#
+# Then reference it as shown below.
+
+name: birdy example
+
+on:
+  workflow_dispatch:
+
+jobs:
+  tweet:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install bird CLI
+        run: |
+          curl -sL https://github.com/steipete/bird/releases/latest/download/bird-linux-amd64 -o bird
+          chmod +x bird
+          sudo mv bird /usr/local/bin/bird
+
+      - name: Install birdy
+        run: |
+          curl -sL https://github.com/guzus/birdy/releases/download/v0.1.0/birdy_linux_amd64.tar.gz | tar xz
+          sudo mv birdy_linux_amd64 /usr/local/bin/birdy
+
+      - name: Read a tweet
+        env:
+          BIRDY_ACCOUNTS: ${{ secrets.BIRDY_ACCOUNTS }}
+        run: birdy -v read 1234567890
+
+      - name: Post a tweet
+        env:
+          BIRDY_ACCOUNTS: ${{ secrets.BIRDY_ACCOUNTS }}
+        run: birdy -v post "Hello from CI!"

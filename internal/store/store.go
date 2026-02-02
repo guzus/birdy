@@ -21,9 +21,10 @@ type Account struct {
 
 // Store manages multiple accounts persisted to disk.
 type Store struct {
-	mu       sync.Mutex
-	path     string
-	Accounts []Account `json:"accounts"`
+	mu        sync.Mutex
+	path      string
+	ephemeral bool      // true when accounts come purely from env (no file existed)
+	Accounts  []Account `json:"accounts"`
 }
 
 func defaultPath() (string, error) {
@@ -34,7 +35,23 @@ func defaultPath() (string, error) {
 	return filepath.Join(home, ".config", "birdy", "accounts.json"), nil
 }
 
-// Open loads (or creates) the account store at the default location.
+// loadFromEnv parses the BIRDY_ACCOUNTS env var into a slice of Account.
+// Returns nil (not an error) when the env var is unset or empty.
+func loadFromEnv() ([]Account, error) {
+	raw := os.Getenv("BIRDY_ACCOUNTS")
+	if raw == "" {
+		return nil, nil
+	}
+
+	var accounts []Account
+	if err := json.Unmarshal([]byte(raw), &accounts); err != nil {
+		return nil, fmt.Errorf("parsing BIRDY_ACCOUNTS: %w", err)
+	}
+	return accounts, nil
+}
+
+// Open loads (or creates) the account store at the default location,
+// then merges any accounts from the BIRDY_ACCOUNTS env var.
 func Open() (*Store, error) {
 	p, err := defaultPath()
 	if err != nil {
@@ -43,29 +60,64 @@ func Open() (*Store, error) {
 	return OpenPath(p)
 }
 
-// OpenPath loads (or creates) the account store at a custom path.
+// OpenPath loads (or creates) the account store at a custom path,
+// then merges any accounts from the BIRDY_ACCOUNTS env var.
 func OpenPath(path string) (*Store, error) {
 	s := &Store{path: path}
 
 	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		s.Accounts = []Account{}
-		return s, nil
-	}
-	if err != nil {
+	fileExists := !os.IsNotExist(err)
+	if err != nil && fileExists {
 		return nil, fmt.Errorf("reading store: %w", err)
 	}
 
-	if err := json.Unmarshal(data, &s.Accounts); err != nil {
-		return nil, fmt.Errorf("parsing store: %w", err)
+	if fileExists {
+		if err := json.Unmarshal(data, &s.Accounts); err != nil {
+			return nil, fmt.Errorf("parsing store: %w", err)
+		}
+	} else {
+		s.Accounts = []Account{}
 	}
+
+	envAccounts, err := loadFromEnv()
+	if err != nil {
+		return nil, err
+	}
+
+	if len(envAccounts) > 0 {
+		// Env accounts override file accounts with the same name.
+		for _, ea := range envAccounts {
+			found := false
+			for i, fa := range s.Accounts {
+				if fa.Name == ea.Name {
+					s.Accounts[i] = ea
+					found = true
+					break
+				}
+			}
+			if !found {
+				s.Accounts = append(s.Accounts, ea)
+			}
+		}
+
+		// Mark as ephemeral only when no file existed on disk.
+		if !fileExists {
+			s.ephemeral = true
+		}
+	}
+
 	return s, nil
 }
 
-// Save persists the store to disk.
+// Save persists the store to disk. When the store is ephemeral
+// (accounts loaded purely from env with no file on disk), Save is a no-op.
 func (s *Store) Save() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if s.ephemeral {
+		return nil
+	}
 
 	dir := filepath.Dir(s.path)
 	if err := os.MkdirAll(dir, 0700); err != nil {

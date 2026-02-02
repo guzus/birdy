@@ -96,6 +96,32 @@ You need two cookies from an active X/Twitter web session:
 
 Repeat for each account you want to add.
 
+## GitHub Actions / CI
+
+In CI environments where there's no interactive terminal, set the `BIRDY_ACCOUNTS` env var with a JSON array of accounts:
+
+```bash
+export BIRDY_ACCOUNTS='[{"name":"bot1","auth_token":"xxx","ct0":"yyy"},{"name":"bot2","auth_token":"aaa","ct0":"bbb"}]'
+birdy -v read 1234567890
+```
+
+When `BIRDY_ACCOUNTS` is set and no accounts file exists on disk, birdy runs in ephemeral mode — accounts are loaded from the env var and nothing is written to disk.
+
+If an accounts file also exists, env accounts are merged in (overriding any file account with the same name).
+
+### GitHub Actions example
+
+Store the JSON as a repository secret named `BIRDY_ACCOUNTS`, then use it in your workflow:
+
+```yaml
+- name: Read a tweet
+  env:
+    BIRDY_ACCOUNTS: ${{ secrets.BIRDY_ACCOUNTS }}
+  run: birdy -v read 1234567890
+```
+
+See [`.github/workflows/example.yml`](.github/workflows/example.yml) for a full workflow.
+
 ## Config location
 
 Accounts are stored in `~/.config/birdy/accounts.json` with `0600` permissions (owner-only read/write). Rotation state is tracked in `~/.config/birdy/state.json`.
