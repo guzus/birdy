@@ -1,0 +1,40 @@
+version: 2
+
+builds:
+  - env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/guzus/birdy/cmd.version={{.Version}}
+      - -X github.com/guzus/birdy/cmd.commit={{.Commit}}
+      - -X github.com/guzus/birdy/cmd.date={{.Date}}
+
+archives:
+  - format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        format: zip
+
+brews:
+  - repository:
+      owner: guzus
+      name: homebrew-tap
+    homepage: "https://github.com/guzus/birdy"
+    description: "Multi-account proxy for the bird CLI to reduce rate-limit risk"
+    license: "MIT"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
