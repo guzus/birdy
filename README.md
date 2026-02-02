@@ -13,18 +13,20 @@ birdy sits in front of the `bird` CLI. When you run a bird command through birdy
 
 ## Install
 
-### From source
-
 ```bash
-go install github.com/guzus/birdy@latest
+curl -fsSL https://raw.githubusercontent.com/guzus/birdy/main/install.sh | bash
 ```
 
-### Build locally
+Requires the [GitHub CLI](https://cli.github.com) (`gh`). To install a specific version, pass it as an argument: `... | bash -s v0.2.0`
+
+### Alternatives
 
 ```bash
-git clone https://github.com/guzus/birdy.git
-cd birdy
-make build
+# From source (requires Go)
+go install github.com/guzus/birdy@latest
+
+# Build locally
+git clone https://github.com/guzus/birdy.git && cd birdy && make build
 ```
 
 ## Prerequisites

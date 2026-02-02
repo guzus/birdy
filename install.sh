@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPO="guzus/birdy"
-VERSION="${1:-v0.1.0}"
+VERSION="${1:-latest}"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
@@ -24,7 +24,11 @@ trap 'rm -rf "$TMPDIR"' EXIT
 
 # Use gh CLI for private repo access
 if command -v gh &>/dev/null; then
-  gh release download "$VERSION" --repo "$REPO" --pattern "$ASSET" --dir "$TMPDIR"
+  if [ "$VERSION" = "latest" ]; then
+    gh release download --repo "$REPO" --pattern "$ASSET" --dir "$TMPDIR"
+  else
+    gh release download "$VERSION" --repo "$REPO" --pattern "$ASSET" --dir "$TMPDIR"
+  fi
 else
   echo "Error: gh CLI required for private repo. Install: https://cli.github.com"
   exit 1
