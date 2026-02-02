@@ -12,9 +12,10 @@ import (
 )
 
 var accountCmd = &cobra.Command{
-	Use:   "account",
-	Short: "Manage bird CLI accounts",
-	Long:  "Add, remove, list, and update X/Twitter auth tokens for bird CLI.",
+	Use:     "account",
+	Short:   "Manage bird CLI accounts",
+	Long:    "Add, remove, list, and update X/Twitter auth tokens for bird CLI.",
+	GroupID: "birdy",
 }
 
 var accountAddCmd = &cobra.Command{

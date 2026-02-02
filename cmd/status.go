@@ -9,8 +9,9 @@ import (
 )
 
 var statusCmd = &cobra.Command{
-	Use:   "status",
-	Short: "Show current rotation status",
+	Use:     "status",
+	Short:   "Show current rotation status",
+	GroupID: "birdy",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		st, err := store.Open()
 		if err != nil {
