@@ -77,6 +77,15 @@ const (
 func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 	var cmds []tea.Cmd
 
+	// Always update spinner so the animation stays alive across early returns
+	if m.streaming {
+		var spCmd tea.Cmd
+		m.spinner, spCmd = m.spinner.Update(msg)
+		if spCmd != nil {
+			cmds = append(cmds, spCmd)
+		}
+	}
+
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -194,15 +203,6 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		saveChatHistory(m.messages)
 		m.refreshViewport()
 		return m, nil
-	}
-
-	// Update spinner when streaming
-	if m.streaming {
-		var spCmd tea.Cmd
-		m.spinner, spCmd = m.spinner.Update(msg)
-		if spCmd != nil {
-			cmds = append(cmds, spCmd)
-		}
 	}
 
 	// Update viewport (scroll)
