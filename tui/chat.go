@@ -212,11 +212,13 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		cmds = append(cmds, vpCmd)
 	}
 
-	// Update text input
-	var tiCmd tea.Cmd
-	m.input, tiCmd = m.input.Update(msg)
-	if tiCmd != nil {
-		cmds = append(cmds, tiCmd)
+	// Update text input (skip mouse events to prevent scroll escape sequences leaking in)
+	if _, ok := msg.(tea.MouseMsg); !ok {
+		var tiCmd tea.Cmd
+		m.input, tiCmd = m.input.Update(msg)
+		if tiCmd != nil {
+			cmds = append(cmds, tiCmd)
+		}
 	}
 
 	return m, tea.Batch(cmds...)
