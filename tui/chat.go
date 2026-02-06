@@ -219,23 +219,27 @@ func (m ChatModel) renderMessages() string {
 			Render("Type a message and press Enter to chat with birdy.\nbirdy can read tweets, search, post, and manage your accounts.")
 	}
 
+	w := m.width - 2 // small margin
+	if w < 20 {
+		w = 20
+	}
+
 	var b strings.Builder
 	for _, msg := range m.messages {
 		switch msg.role {
 		case "user":
-			b.WriteString(userMsgStyle.Render("You: "))
-			b.WriteString(msg.content)
+			b.WriteString(userMsgStyle.Width(w).Render("You: " + msg.content))
 			b.WriteString("\n\n")
 		case "assistant":
 			if msg.content != "" {
-				b.WriteString(assistantMsgStyle.Render(msg.content))
+				b.WriteString(assistantMsgStyle.Width(w).Render(msg.content))
 				b.WriteString("\n\n")
 			}
 		case "tool":
-			b.WriteString(toolMsgStyle.Render("  > "+msg.content))
+			b.WriteString(toolMsgStyle.Width(w).Render("  > " + msg.content))
 			b.WriteString("\n\n")
 		case "error":
-			b.WriteString(errorMsgStyle.Render("Error: "+msg.content))
+			b.WriteString(errorMsgStyle.Width(w).Render("Error: " + msg.content))
 			b.WriteString("\n\n")
 		}
 	}
