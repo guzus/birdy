@@ -212,8 +212,19 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		cmds = append(cmds, vpCmd)
 	}
 
-	// Update text input (skip mouse events to prevent scroll escape sequences leaking in)
-	if _, ok := msg.(tea.MouseMsg); !ok {
+	// Update text input — skip mouse events and raw mouse escape sequences
+	// that leak through as key messages (e.g. "[<65;25;12M" from SGR mouse protocol)
+	skipInput := false
+	switch v := msg.(type) {
+	case tea.MouseMsg:
+		skipInput = true
+	case tea.KeyMsg:
+		s := v.String()
+		if strings.Contains(s, "[<") || strings.Contains(s, "[M") {
+			skipInput = true
+		}
+	}
+	if !skipInput {
 		var tiCmd tea.Cmd
 		m.input, tiCmd = m.input.Update(msg)
 		if tiCmd != nil {
