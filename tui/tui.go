@@ -49,6 +49,9 @@ func (m MainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+c" {
+			if m.chat.cancelStream != nil {
+				m.chat.cancelStream()
+			}
 			return m, tea.Quit
 		}
 

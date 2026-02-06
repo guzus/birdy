@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -23,6 +24,7 @@ type ChatModel struct {
 	messages     []chatMessage
 	streaming    bool
 	streamCh     <-chan tea.Msg
+	cancelStream context.CancelFunc
 	width        int
 	height       int
 	ready        bool
@@ -91,6 +93,17 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 				return m, func() tea.Msg { return switchScreenMsg{target: screenAccount} }
 			}
 
+		case "esc":
+			if m.streaming && m.cancelStream != nil {
+				m.cancelStream()
+				m.cancelStream = nil
+				m.streaming = false
+				m.streamCh = nil
+				m.messages = append(m.messages, chatMessage{role: "error", content: "cancelled"})
+				m.refreshViewport()
+				return m, nil
+			}
+
 		case "enter":
 			text := strings.TrimSpace(m.input.Value())
 			if text == "" || m.streaming {
@@ -99,8 +112,10 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			m.input.Reset()
 			m.messages = append(m.messages, chatMessage{role: "user", content: text})
 			m.streaming = true
+			ctx, cancel := context.WithCancel(context.Background())
+			m.cancelStream = cancel
 			m.refreshViewport()
-			return m, startClaude(text)
+			return m, startClaude(ctx, text)
 		}
 
 	case autoQueryMsg:
@@ -111,8 +126,10 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		prompt := "Give me a brief summary of what's on my home timeline."
 		m.messages = append(m.messages, chatMessage{role: "user", content: prompt})
 		m.streaming = true
+		ctx, cancel := context.WithCancel(context.Background())
+		m.cancelStream = cancel
 		m.refreshViewport()
-		return m, startClaude(prompt)
+		return m, startClaude(ctx, prompt)
 
 	case claudeNextMsg:
 		m.streamCh = msg.ch
@@ -139,12 +156,14 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 	case claudeDoneMsg:
 		m.streaming = false
 		m.streamCh = nil
+		m.cancelStream = nil
 		m.refreshViewport()
 		return m, nil
 
 	case claudeErrorMsg:
 		m.streaming = false
 		m.streamCh = nil
+		m.cancelStream = nil
 		m.messages = append(m.messages, chatMessage{role: "error", content: msg.Err.Error()})
 		m.refreshViewport()
 		return m, nil
@@ -241,8 +260,11 @@ func (m ChatModel) View() string {
 	input := inputBorderStyle.Render(m.input.View())
 
 	// Footer
-	footer := statusBarStyle.Width(m.width).
-		Render("enter: send | tab: accounts | ctrl+c: quit")
+	footerText := "enter: send | tab: accounts | ctrl+c: quit"
+	if m.streaming {
+		footerText = "esc: cancel | ctrl+c: quit"
+	}
+	footer := statusBarStyle.Width(m.width).Render(footerText)
 
 	return lipgloss.JoinVertical(lipgloss.Left,
 		header,
