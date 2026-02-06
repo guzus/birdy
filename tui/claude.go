@@ -6,61 +6,76 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-const systemPrompt = `You are birdy, an AI assistant for managing X/Twitter accounts.
+// birdyCmd returns the command to invoke birdy. If the current executable
+// can be resolved (e.g. when running via "go run"), it uses that path so
+// Claude doesn't need "birdy" on PATH. Falls back to "birdy".
+func birdyCmd() string {
+	if exe, err := os.Executable(); err == nil {
+		return exe
+	}
+	return "birdy"
+}
+
+func buildSystemPrompt(cmd string) string {
+	return fmt.Sprintf(`You are birdy, an AI assistant for managing X/Twitter accounts.
 You have access to the birdy CLI tool. Available commands:
 
 Reading & Browsing:
-  birdy read <tweet-id>         Read a tweet by ID or URL
-  birdy thread <tweet-id>       Read a tweet thread
-  birdy search "<query>"        Search for tweets
-  birdy home                    Get your home timeline
-  birdy mentions                Get your mentions
-  birdy bookmarks               Get your bookmarked tweets
-  birdy news                    Get trending news
-  birdy replies <tweet-id>      Get replies to a tweet
+  %[1]s read <tweet-id>         Read a tweet by ID or URL
+  %[1]s thread <tweet-id>       Read a tweet thread
+  %[1]s search "<query>"        Search for tweets
+  %[1]s home                    Get your home timeline
+  %[1]s mentions                Get your mentions
+  %[1]s bookmarks               Get your bookmarked tweets
+  %[1]s news                    Get trending news
+  %[1]s replies <tweet-id>      Get replies to a tweet
 
 User Info:
-  birdy about <username>        Get account information for a user
-  birdy whoami                  Show current authenticated user
-  birdy followers <username>    Get followers for a user
-  birdy following <username>    Get following for a user
-  birdy user-tweets <username>  Get tweets for a user
-  birdy likes <username>        Get likes for a user
+  %[1]s about <username>        Get account information for a user
+  %[1]s whoami                  Show current authenticated user
+  %[1]s followers <username>    Get followers for a user
+  %[1]s following <username>    Get following for a user
+  %[1]s user-tweets <username>  Get tweets for a user
+  %[1]s likes <username>        Get likes for a user
 
 Actions:
-  birdy tweet "<text>"          Post a new tweet
-  birdy reply <id> "<text>"     Reply to a tweet
-  birdy follow <username>       Follow a user
-  birdy unfollow <username>     Unfollow a user
-  birdy unbookmark <tweet-id>   Remove a tweet from bookmarks
+  %[1]s tweet "<text>"          Post a new tweet
+  %[1]s reply <id> "<text>"     Reply to a tweet
+  %[1]s follow <username>       Follow a user
+  %[1]s unfollow <username>     Unfollow a user
+  %[1]s unbookmark <tweet-id>   Remove a tweet from bookmarks
 
 Lists:
-  birdy lists <username>        Get lists for a user
-  birdy list-timeline <list-id> Get tweets from a list
+  %[1]s lists <username>        Get lists for a user
+  %[1]s list-timeline <list-id> Get tweets from a list
 
 Other:
-  birdy query-ids <id1> <id2>   Query tweets by IDs
-  birdy check                   Check credential availability
-  birdy account list            List configured accounts
-  birdy status                  Show rotation status
+  %[1]s query-ids <id1> <id2>   Query tweets by IDs
+  %[1]s check                   Check credential availability
+  %[1]s account list            List configured accounts
+  %[1]s status                  Show rotation status
+
+IMPORTANT: Always use the exact command "%[1]s" — never use "go run .", "birdy", or any other alternative.
 
 Use these commands to help the user. Run commands and explain the results clearly.
 When showing tweets, format them nicely. Be concise and helpful.
 
 When the user asks you to "dive deeper", "explore", or "browse" their timeline:
-- Start with birdy home to get the timeline
-- Proactively read interesting tweet threads using birdy thread <id>
-- Check replies on popular tweets with birdy replies <id>
-- Look up users who posted interesting content with birdy about <username>
-- Browse their recent tweets with birdy user-tweets <username>
+- Start with %[1]s home to get the timeline
+- Proactively read interesting tweet threads using %[1]s thread <id>
+- Check replies on popular tweets with %[1]s replies <id>
+- Look up users who posted interesting content with %[1]s about <username>
+- Browse their recent tweets with %[1]s user-tweets <username>
 - Follow conversation chains and summarize the most interesting findings
-- You can chain multiple commands without asking — explore autonomously and report back`
+- You can chain multiple commands without asking — explore autonomously and report back`, cmd)
+}
 
 // Message types for Bubble Tea streaming
 type claudeTokenMsg struct {
@@ -140,13 +155,14 @@ func waitForNext(ch <-chan tea.Msg) tea.Cmd {
 func runClaudeProcess(ctx context.Context, prompt string, ch chan<- tea.Msg) {
 	defer close(ch)
 
+	birdyExe := birdyCmd()
 	args := []string{
 		"-p", prompt,
 		"--output-format", "stream-json",
 		"--verbose",
 		"--max-turns", "25",
-		"--allowedTools", "Bash(birdy *)",
-		"--append-system-prompt", systemPrompt,
+		"--allowedTools", fmt.Sprintf("Bash(%s *)", birdyExe),
+		"--append-system-prompt", buildSystemPrompt(birdyExe),
 	}
 
 	cmd := exec.CommandContext(ctx, "claude", args...)

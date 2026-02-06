@@ -151,6 +151,7 @@ func TestStartClaudeWithoutClaudeBinary(t *testing.T) {
 }
 
 func TestSystemPromptContainsKeyCommands(t *testing.T) {
+	prompt := buildSystemPrompt("birdy")
 	commands := []string{
 		"birdy read",
 		"birdy search",
@@ -161,9 +162,26 @@ func TestSystemPromptContainsKeyCommands(t *testing.T) {
 		"explore autonomously",
 	}
 	for _, cmd := range commands {
-		if !containsStr(systemPrompt, cmd) {
+		if !containsStr(prompt, cmd) {
 			t.Errorf("system prompt missing: %s", cmd)
 		}
+	}
+}
+
+func TestBirdyCmd(t *testing.T) {
+	cmd := birdyCmd()
+	if cmd == "" {
+		t.Error("expected non-empty birdy command")
+	}
+}
+
+func TestBuildSystemPromptUsesCommand(t *testing.T) {
+	prompt := buildSystemPrompt("/usr/local/bin/birdy")
+	if !containsStr(prompt, "/usr/local/bin/birdy home") {
+		t.Error("expected system prompt to use the provided command path")
+	}
+	if !containsStr(prompt, "/usr/local/bin/birdy read") {
+		t.Error("expected system prompt to use the provided command for read")
 	}
 }
 
