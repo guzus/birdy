@@ -309,8 +309,8 @@ func TestChatHeaderShowsStreamingStatus(t *testing.T) {
 	m.streaming = true
 
 	view := m.View()
-	if !contains(view, "streaming") {
-		t.Error("expected 'streaming' in header during streaming")
+	if !contains(view, "thinking") {
+		t.Error("expected 'thinking' in header during streaming")
 	}
 }
 

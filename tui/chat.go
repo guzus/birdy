@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -21,6 +22,7 @@ type chatMessage struct {
 type ChatModel struct {
 	viewport     viewport.Model
 	input        textinput.Model
+	spinner      spinner.Model
 	messages     []chatMessage
 	streaming    bool
 	streamCh     <-chan tea.Msg
@@ -38,7 +40,11 @@ func NewChatModel() ChatModel {
 	ti.Focus()
 	ti.CharLimit = 4096
 
-	m := ChatModel{input: ti}
+	sp := spinner.New()
+	sp.Spinner = spinner.Dot
+	sp.Style = lipgloss.NewStyle().Foreground(colorBlue)
+
+	m := ChatModel{input: ti, spinner: sp}
 	m.refreshAccountCount()
 	return m
 }
@@ -51,7 +57,7 @@ func (m *ChatModel) refreshAccountCount() {
 }
 
 func (m ChatModel) Init() tea.Cmd {
-	return tea.Batch(textinput.Blink, func() tea.Msg { return autoQueryMsg{} })
+	return tea.Batch(textinput.Blink, m.spinner.Tick, func() tea.Msg { return autoQueryMsg{} })
 }
 
 const (
@@ -171,6 +177,15 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		return m, nil
 	}
 
+	// Update spinner when streaming
+	if m.streaming {
+		var spCmd tea.Cmd
+		m.spinner, spCmd = m.spinner.Update(msg)
+		if spCmd != nil {
+			cmds = append(cmds, spCmd)
+		}
+	}
+
 	// Update viewport (scroll)
 	var vpCmd tea.Cmd
 	m.viewport, vpCmd = m.viewport.Update(msg)
@@ -225,6 +240,17 @@ func (m ChatModel) renderMessages() string {
 		}
 	}
 
+	// Show thinking indicator when streaming and last message has no assistant content yet
+	if m.streaming {
+		lastIsAssistantEmpty := len(m.messages) > 0 && m.messages[len(m.messages)-1].role == "assistant" && m.messages[len(m.messages)-1].content == ""
+		lastIsUser := len(m.messages) > 0 && m.messages[len(m.messages)-1].role == "user"
+		lastIsTool := len(m.messages) > 0 && m.messages[len(m.messages)-1].role == "tool"
+		if lastIsAssistantEmpty || lastIsUser || lastIsTool {
+			b.WriteString(toolMsgStyle.Render(m.spinner.View() + " thinking..."))
+			b.WriteString("\n\n")
+		}
+	}
+
 	return b.String()
 }
 
@@ -244,7 +270,7 @@ func (m ChatModel) View() string {
 
 	status := "ready"
 	if m.streaming {
-		status = "streaming..."
+		status = m.spinner.View() + " thinking..."
 	}
 
 	leftHeader := headerStyle.Render(" birdy ")

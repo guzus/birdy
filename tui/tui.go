@@ -79,17 +79,26 @@ func (m MainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
+	var cmds []tea.Cmd
 	var cmd tea.Cmd
 	switch m.currentScreen {
 	case screenSplash:
 		m.splash, cmd = m.splash.Update(msg)
+		cmds = append(cmds, cmd)
+		// Forward spinner ticks to chat while streaming in background
+		if m.chat.streaming {
+			m.chat, cmd = m.chat.Update(msg)
+			cmds = append(cmds, cmd)
+		}
 	case screenChat:
 		m.chat, cmd = m.chat.Update(msg)
+		cmds = append(cmds, cmd)
 	case screenAccount:
 		m.account, cmd = m.account.Update(msg)
+		cmds = append(cmds, cmd)
 	}
 
-	return m, cmd
+	return m, tea.Batch(cmds...)
 }
 
 func (m MainModel) View() string {
