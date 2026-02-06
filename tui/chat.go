@@ -3,7 +3,10 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os/exec"
+	"runtime"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -32,7 +35,10 @@ type ChatModel struct {
 	ready        bool
 	accountCount int
 	autoQueried  bool
+	copied       bool
 }
+
+type clearCopiedMsg struct{}
 
 func NewChatModel() ChatModel {
 	ti := textinput.New()
@@ -110,6 +116,14 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 				return m, nil
 			}
 
+		case "ctrl+y":
+			if text := m.lastAssistantContent(); text != "" {
+				if copyToClipboard(text) == nil {
+					m.copied = true
+					return m, tea.Tick(2*time.Second, func(time.Time) tea.Msg { return clearCopiedMsg{} })
+				}
+			}
+
 		case "enter":
 			text := strings.TrimSpace(m.input.Value())
 			if text == "" || m.streaming {
@@ -123,6 +137,10 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			m.refreshViewport()
 			return m, startClaude(ctx, text)
 		}
+
+	case clearCopiedMsg:
+		m.copied = false
+		return m, nil
 
 	case autoQueryMsg:
 		if m.autoQueried || m.accountCount == 0 {
@@ -292,9 +310,12 @@ func (m ChatModel) View() string {
 	input := inputBorderStyle.Render(m.input.View())
 
 	// Footer
-	footerText := "enter: send | tab: accounts | ctrl+c: quit"
+	footerText := "enter: send | ctrl+y: copy | tab: accounts | ctrl+c: quit"
 	if m.streaming {
 		footerText = "esc: cancel | ctrl+c: quit"
+	}
+	if m.copied {
+		footerText = "copied to clipboard!"
 	}
 	histDir, _ := chatHistoryDir()
 	if histDir != "" {
@@ -308,4 +329,27 @@ func (m ChatModel) View() string {
 		input,
 		footer,
 	)
+}
+
+func (m ChatModel) lastAssistantContent() string {
+	for i := len(m.messages) - 1; i >= 0; i-- {
+		if m.messages[i].role == "assistant" && m.messages[i].content != "" {
+			return m.messages[i].content
+		}
+	}
+	return ""
+}
+
+func copyToClipboard(text string) error {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("pbcopy")
+	case "linux":
+		cmd = exec.Command("xclip", "-selection", "clipboard")
+	default:
+		return fmt.Errorf("unsupported OS")
+	}
+	cmd.Stdin = strings.NewReader(text)
+	return cmd.Run()
 }
