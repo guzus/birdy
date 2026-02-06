@@ -47,7 +47,8 @@ git clone https://github.com/guzus/birdy.git && cd birdy && make build
 
 ## Prerequisites
 
-[bird](https://github.com/steipete/bird) must be installed and available on your PATH.
+- [bird](https://github.com/steipete/bird) — must be installed and available on your PATH
+- [Claude Code](https://claude.ai/claude-code) (`claude` CLI) — required for the interactive TUI (`birdy tui`)
 
 ## Quick start
 
