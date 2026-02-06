@@ -126,14 +126,14 @@ type cliContentBlock struct {
 // startClaude spawns a claude process and returns a channel-based message
 // for the Bubble Tea streaming pattern. The context allows cancelling the
 // subprocess when the user presses escape or quits the TUI.
-func startClaude(ctx context.Context, prompt string) tea.Cmd {
+func startClaude(ctx context.Context, prompt, model string) tea.Cmd {
 	return func() tea.Msg {
 		if _, err := exec.LookPath("claude"); err != nil {
 			return claudeErrorMsg{Err: fmt.Errorf("claude CLI not found — install it from https://claude.ai/claude-code")}
 		}
 
 		ch := make(chan tea.Msg, 64)
-		go runClaudeProcess(ctx, prompt, ch)
+		go runClaudeProcess(ctx, prompt, model, ch)
 		return claudeNextMsg{ch: ch}
 	}
 }
@@ -152,17 +152,17 @@ func waitForNext(ch <-chan tea.Msg) tea.Cmd {
 
 // runClaudeProcess executes the claude CLI, scans stdout line-by-line,
 // parses stream-json, and sends messages to the channel.
-func runClaudeProcess(ctx context.Context, prompt string, ch chan<- tea.Msg) {
+func runClaudeProcess(ctx context.Context, prompt, model string, ch chan<- tea.Msg) {
 	defer close(ch)
 
-	birdyExe := birdyCmd()
 	args := []string{
 		"-p", prompt,
+		"--model", model,
 		"--output-format", "stream-json",
 		"--verbose",
 		"--max-turns", "25",
-		"--allowedTools", fmt.Sprintf("Bash(%s *)", birdyExe),
-		"--append-system-prompt", buildSystemPrompt(birdyExe),
+		"--allowedTools", fmt.Sprintf("Bash(%s *),Skill(birdy)", birdyCmd()),
+		"--append-system-prompt", buildSystemPrompt("/birdy"),
 	}
 
 	cmd := exec.CommandContext(ctx, "claude", args...)

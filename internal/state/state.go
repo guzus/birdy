@@ -11,6 +11,7 @@ import (
 type State struct {
 	path         string
 	LastUsedName string `json:"last_used_name"`
+	Model        string `json:"model,omitempty"`
 }
 
 func defaultPath() (string, error) {

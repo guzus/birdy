@@ -14,6 +14,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/guzus/birdy/internal/state"
 	"github.com/guzus/birdy/internal/store"
 )
 
@@ -37,6 +38,7 @@ type ChatModel struct {
 	accountCount int
 	autoQueried  bool
 	copied       bool
+	model        string
 }
 
 type clearCopiedMsg struct{}
@@ -51,7 +53,12 @@ func NewChatModel() ChatModel {
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(colorBlue)
 
-	m := ChatModel{input: ti, spinner: sp}
+	model := "sonnet"
+	if s, err := state.Load(); err == nil && s.Model != "" {
+		model = s.Model
+	}
+
+	m := ChatModel{input: ti, spinner: sp, model: model}
 	m.refreshAccountCount()
 	return m
 }
@@ -126,6 +133,23 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 				return m, nil
 			}
 
+		case "ctrl+t":
+			if !m.streaming {
+				switch m.model {
+				case "sonnet":
+					m.model = "opus"
+				case "opus":
+					m.model = "haiku"
+				default:
+					m.model = "sonnet"
+				}
+				if s, err := state.Load(); err == nil {
+					s.Model = m.model
+					_ = s.Save()
+				}
+				return m, nil
+			}
+
 		case "ctrl+y":
 			if text := m.lastAssistantContent(); text != "" {
 				if copyToClipboard(text) == nil {
@@ -145,7 +169,7 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			ctx, cancel := context.WithCancel(context.Background())
 			m.cancelStream = cancel
 			m.refreshViewport()
-			return m, startClaude(ctx, text)
+			return m, startClaude(ctx, text, m.model)
 		}
 
 	case clearCopiedMsg:
@@ -163,7 +187,7 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		ctx, cancel := context.WithCancel(context.Background())
 		m.cancelStream = cancel
 		m.refreshViewport()
-		return m, startClaude(ctx, prompt)
+		return m, startClaude(ctx, prompt, m.model)
 
 	case claudeNextMsg:
 		m.streamCh = msg.ch
@@ -311,7 +335,7 @@ func (m ChatModel) View() string {
 	}
 
 	leftHeader := headerStyle.Render(" birdy ")
-	rightInfo := fmt.Sprintf(" %s | %s ", accountInfo, status)
+	rightInfo := fmt.Sprintf(" %s | %s | %s ", accountInfo, m.model, status)
 	rightHeader := headerStyle.Render(rightInfo)
 
 	gap := m.width - lipgloss.Width(leftHeader) - lipgloss.Width(rightHeader)
@@ -325,7 +349,7 @@ func (m ChatModel) View() string {
 	input := inputBorderStyle.Render(m.input.View())
 
 	// Footer
-	footerText := "enter: send | ctrl+y: copy | tab: accounts | ctrl+c: quit"
+	footerText := "enter: send | ctrl+t: model | ctrl+y: copy | tab: accounts | ctrl+c: quit"
 	if m.streaming {
 		footerText = "esc: cancel | ctrl+c: quit"
 	}

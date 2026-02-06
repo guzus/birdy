@@ -118,7 +118,7 @@ func TestRunClaudeProcessCancelledContext(t *testing.T) {
 	cancel()
 
 	ch := make(chan tea.Msg, 64)
-	runClaudeProcess(ctx, "test", ch)
+	runClaudeProcess(ctx, "test", "sonnet", ch)
 
 	// Channel should be closed without sending an error
 	// (either the process fails to start or we detect context cancellation)
@@ -135,7 +135,7 @@ func TestRunClaudeProcessCancelledContext(t *testing.T) {
 func TestStartClaudeWithoutClaudeBinary(t *testing.T) {
 	// Temporarily modify PATH to exclude claude
 	ctx := context.Background()
-	cmd := startClaude(ctx, "test")
+	cmd := startClaude(ctx, "test", "sonnet")
 	msg := cmd()
 
 	// This should either be a claudeErrorMsg (claude not found)
