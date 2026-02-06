@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/guzus/birdy/internal/store"
 )
@@ -250,8 +251,9 @@ func (m ChatModel) renderMessages() string {
 			b.WriteString("\n\n")
 		case "assistant":
 			if msg.content != "" {
-				b.WriteString(assistantMsgStyle.Width(w).Render(msg.content))
-				b.WriteString("\n\n")
+				rendered := renderMarkdown(msg.content, w)
+				b.WriteString(rendered)
+				b.WriteString("\n")
 			}
 		case "tool":
 			b.WriteString(toolMsgStyle.Width(w).Render("  > " + msg.content))
@@ -329,6 +331,21 @@ func (m ChatModel) View() string {
 		input,
 		footer,
 	)
+}
+
+func renderMarkdown(content string, width int) string {
+	r, err := glamour.NewTermRenderer(
+		glamour.WithAutoStyle(),
+		glamour.WithWordWrap(width),
+	)
+	if err != nil {
+		return assistantMsgStyle.Width(width).Render(content)
+	}
+	out, err := r.Render(content)
+	if err != nil {
+		return assistantMsgStyle.Width(width).Render(content)
+	}
+	return strings.TrimRight(out, "\n")
 }
 
 func (m ChatModel) lastAssistantContent() string {
