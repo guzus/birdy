@@ -157,6 +157,7 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		m.streaming = false
 		m.streamCh = nil
 		m.cancelStream = nil
+		saveChatHistory(m.messages)
 		m.refreshViewport()
 		return m, nil
 
@@ -165,6 +166,7 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		m.streamCh = nil
 		m.cancelStream = nil
 		m.messages = append(m.messages, chatMessage{role: "error", content: msg.Err.Error()})
+		saveChatHistory(m.messages)
 		m.refreshViewport()
 		return m, nil
 	}
@@ -263,6 +265,10 @@ func (m ChatModel) View() string {
 	footerText := "enter: send | tab: accounts | ctrl+c: quit"
 	if m.streaming {
 		footerText = "esc: cancel | ctrl+c: quit"
+	}
+	histDir, _ := chatHistoryDir()
+	if histDir != "" {
+		footerText += "  |  history: " + histDir
 	}
 	footer := statusBarStyle.Width(m.width).Render(footerText)
 

@@ -157,10 +157,12 @@ func TestSystemPromptContainsKeyCommands(t *testing.T) {
 		"birdy home",
 		"birdy tweet",
 		"birdy account list",
+		"dive deeper",
+		"explore autonomously",
 	}
 	for _, cmd := range commands {
 		if !containsStr(systemPrompt, cmd) {
-			t.Errorf("system prompt missing command: %s", cmd)
+			t.Errorf("system prompt missing: %s", cmd)
 		}
 	}
 }

@@ -54,13 +54,13 @@ func TestSplashAutoAdvancesToChat(t *testing.T) {
 	m := NewSplashModel()
 	var cmd tea.Cmd
 
-	// Advance through 9 ticks
-	for i := 0; i < 9; i++ {
+	// Advance through 5 ticks
+	for i := 0; i < 5; i++ {
 		m, cmd = m.Update(tickMsg{})
 	}
 
 	if cmd == nil {
-		t.Fatal("expected command after 9 ticks")
+		t.Fatal("expected command after 5 ticks")
 	}
 	msg := cmd()
 	switchMsg, ok := msg.(switchScreenMsg)

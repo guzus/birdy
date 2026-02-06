@@ -51,7 +51,16 @@ Other:
   birdy status                  Show rotation status
 
 Use these commands to help the user. Run commands and explain the results clearly.
-When showing tweets, format them nicely. Be concise and helpful.`
+When showing tweets, format them nicely. Be concise and helpful.
+
+When the user asks you to "dive deeper", "explore", or "browse" their timeline:
+- Start with birdy home to get the timeline
+- Proactively read interesting tweet threads using birdy thread <id>
+- Check replies on popular tweets with birdy replies <id>
+- Look up users who posted interesting content with birdy about <username>
+- Browse their recent tweets with birdy user-tweets <username>
+- Follow conversation chains and summarize the most interesting findings
+- You can chain multiple commands without asking — explore autonomously and report back`
 
 // Message types for Bubble Tea streaming
 type claudeTokenMsg struct {

@@ -35,7 +35,7 @@ func (m SplashModel) Update(msg tea.Msg) (SplashModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tickMsg:
 		m.ticks++
-		if m.ticks >= 9 {
+		if m.ticks >= 5 {
 			return m, func() tea.Msg { return switchScreenMsg{target: screenChat} }
 		}
 		m.frame = (m.frame + 1) % 4
@@ -57,9 +57,8 @@ func (m SplashModel) View() string {
 		return ""
 	}
 
-	bird := birdFrames[m.frame]
-	brand := brandStyle.Render("b  i  r  d  y")
-	content := lipgloss.JoinVertical(lipgloss.Center, bird, "", brand)
+	bird := brandStyle.Render(birdFrames[m.frame])
+	content := bird
 
 	return lipgloss.Place(
 		m.width, m.height,

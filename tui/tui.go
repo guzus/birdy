@@ -1,6 +1,9 @@
 package tui
 
-import tea "github.com/charmbracelet/bubbletea"
+import (
+	"github.com/charmbracelet/bubbles/textinput"
+	tea "github.com/charmbracelet/bubbletea"
+)
 
 type screen int
 
@@ -34,7 +37,8 @@ func NewMainModel() MainModel {
 }
 
 func (m MainModel) Init() tea.Cmd {
-	return m.splash.Init()
+	// Start splash animation and begin loading home timeline in background
+	return tea.Batch(m.splash.Init(), m.chat.Init())
 }
 
 func (m MainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -60,12 +64,19 @@ func (m MainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.target {
 		case screenChat:
 			m.chat.refreshAccountCount()
-			return m, m.chat.Init()
+			// Don't re-Init chat — it's already running from startup
+			return m, textinput.Blink
 		case screenAccount:
 			m.account.loadAccounts()
 			return m, m.account.Init()
 		}
 		return m, nil
+
+	// Always route claude streaming messages to chat, even during splash
+	case autoQueryMsg, claudeNextMsg, claudeTokenMsg, claudeToolUseMsg, claudeDoneMsg, claudeErrorMsg:
+		var cmd tea.Cmd
+		m.chat, cmd = m.chat.Update(msg)
+		return m, cmd
 	}
 
 	var cmd tea.Cmd

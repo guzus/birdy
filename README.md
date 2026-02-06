@@ -2,6 +2,22 @@
 
 Multi-account proxy for the [bird](https://github.com/steipete/bird) CLI. Store multiple X/Twitter auth tokens and automatically rotate between accounts to reduce rate-limit risk.
 
+## Interactive TUI
+
+Launch the full-screen terminal interface with AI-powered chat:
+
+```bash
+birdy tui
+```
+
+![birdy TUI](assets/tui-chat.png)
+
+The TUI features:
+- **Chat** — Ask birdy to read your timeline, search tweets, post, and more via Claude
+- **Deep browsing** — Say "dive deeper" and birdy will autonomously explore threads, replies, and user profiles
+- **Account management** — Add, remove, and view accounts with `tab`
+- **Chat history** — Conversations are saved as markdown in `~/.config/birdy/chats/`
+
 ## How it works
 
 birdy sits in front of the `bird` CLI. When you run a bird command through birdy, it:
