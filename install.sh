@@ -15,7 +15,7 @@ case "$ARCH" in
 esac
 
 ASSET="birdy_${OS}_${ARCH}.tar.gz"
-BINARY="birdy_${OS}_${ARCH}"
+LEGACY_BINARY="birdy_${OS}_${ARCH}"
 
 echo "Installing birdy ${VERSION} (${OS}/${ARCH})..."
 
@@ -35,7 +35,20 @@ else
 fi
 
 tar xzf "$TMPDIR/$ASSET" -C "$TMPDIR"
-sudo install -m 755 "$TMPDIR/$BINARY" "$INSTALL_DIR/birdy"
+
+# GoReleaser typically archives the binary as "birdy", but older archives used
+# an OS/ARCH suffix. Support both.
+BIN_SRC="$TMPDIR/birdy"
+if [ ! -f "$BIN_SRC" ]; then
+  BIN_SRC="$TMPDIR/$LEGACY_BINARY"
+fi
+if [ ! -f "$BIN_SRC" ]; then
+  echo "Error: birdy binary not found after extracting $ASSET" >&2
+  echo "Expected $TMPDIR/birdy or $TMPDIR/$LEGACY_BINARY" >&2
+  exit 1
+fi
+
+sudo install -m 755 "$BIN_SRC" "$INSTALL_DIR/birdy"
 
 echo "birdy installed to $INSTALL_DIR/birdy"
 
