@@ -9,6 +9,15 @@ description: Install, operate, and troubleshoot birdy (multi-account proxy for t
 
 Use birdy to run `bird` commands through a rotating pool of X/Twitter sessions (auth cookies), reducing rate-limit risk.
 
+### 0. Preflight (CLI Required)
+
+If you need to run commands, ensure the `birdy` CLI is installed first:
+
+```bash
+bash skills/birdy/scripts/ensure_birdy.sh
+birdy version
+```
+
 ### 1. Install
 
 Prefer the installer (bundles bird as `birdy-bird`):
