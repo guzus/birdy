@@ -1,0 +1,5 @@
+interface:
+  display_name: "Birdy"
+  short_description: "Install and operate birdy (multi-account bird proxy)"
+  default_prompt: "Use $birdy to install birdy, configure accounts/rotation, run bird commands, and troubleshoot bird detection and Node requirements."
+

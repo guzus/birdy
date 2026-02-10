@@ -1,5 +1,6 @@
 # Binaries
-birdy
+/birdy
+/tui/birdy
 /dist/
 *.exe
 *.exe~
