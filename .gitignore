@@ -14,7 +14,6 @@ coverage.txt
 
 # Dependency
 vendor/
-/bundled/
 
 # IDE
 .idea/

@@ -1,10 +1,5 @@
 version: 2
 
-before:
-  hooks:
-    # Fetch and stage bird binaries so release archives can include them.
-    - python3 scripts/vendor_bird.py
-
 builds:
   - env:
       - CGO_ENABLED=0
@@ -25,8 +20,8 @@ archives:
   - format: tar.gz
     name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
     files:
-      - src: "bundled/bird/bird_{{ .Os }}_{{ .Arch }}{{ if eq .Os \"windows\" }}.exe{{ end }}"
-        dst: "bird_{{ .Os }}_{{ .Arch }}{{ if eq .Os \"windows\" }}.exe{{ end }}"
+      - src: "third_party/@steipete/bird/**/*"
+        dst: "bird"
     format_overrides:
       - goos: windows
         format: zip

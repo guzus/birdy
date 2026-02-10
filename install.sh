@@ -16,7 +16,6 @@ esac
 
 ASSET="birdy_${OS}_${ARCH}.tar.gz"
 BINARY="birdy_${OS}_${ARCH}"
-BIRD_BINARY="bird_${OS}_${ARCH}"
 
 echo "Installing birdy ${VERSION} (${OS}/${ARCH})..."
 
@@ -40,11 +39,40 @@ sudo install -m 755 "$TMPDIR/$BINARY" "$INSTALL_DIR/birdy"
 
 echo "birdy installed to $INSTALL_DIR/birdy"
 
-if [ -f "$TMPDIR/$BIRD_BINARY" ]; then
-  sudo install -m 755 "$TMPDIR/$BIRD_BINARY" "$INSTALL_DIR/birdy-bird"
-  echo "bird (bundled) installed to $INSTALL_DIR/birdy-bird"
+if [ -f "$TMPDIR/bird/dist/cli.js" ]; then
+  # Install the vendored bird npm package next to birdy and create a small wrapper
+  # so birdy can exec `birdy-bird` without needing the user to install bird.
+  sudo rm -rf "$INSTALL_DIR/bird"
+  sudo mkdir -p "$INSTALL_DIR/bird"
+  sudo cp -R "$TMPDIR/bird/." "$INSTALL_DIR/bird/"
+  sudo chmod +x "$INSTALL_DIR/bird/dist/cli.js" 2>/dev/null || true
+
+  WRAPPER="$TMPDIR/birdy-bird"
+  cat >"$WRAPPER" <<'EOF'
+#!/bin/sh
+set -e
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+CLI="$ROOT/bird/dist/cli.js"
+
+if [ ! -f "$CLI" ]; then
+  echo "Error: bundled bird CLI not found at $CLI" >&2
+  exit 1
+fi
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "Error: node (>= 22) is required to run the bundled bird CLI." >&2
+  exit 1
+fi
+
+exec node "$CLI" "$@"
+EOF
+  chmod +x "$WRAPPER"
+  sudo install -m 755 "$WRAPPER" "$INSTALL_DIR/birdy-bird"
+
+  echo "bird (bundled) installed to $INSTALL_DIR/bird (wrapper: $INSTALL_DIR/birdy-bird)"
 else
-  echo "Warning: bundled bird binary not found in the release archive."
+  echo "Warning: bundled bird package not found in the release archive."
   echo "Install bird separately from https://github.com/steipete/bird"
 fi
 

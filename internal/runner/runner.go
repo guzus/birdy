@@ -39,8 +39,10 @@ func Run(account *store.Account, args []string) (int, error) {
 //
 // Lookup order:
 // - BIRDY_BIRD_PATH (explicit override)
-// - PATH: bird, then birdy-bird
+// - PATH: birdy-bird, then bird
 // - next to the running birdy binary:
+//   - bird/dist/cli.js (bundled npm package)
+//   - third_party/@steipete/bird/dist/cli.js (vendored for repo builds)
 //   - bird / birdy-bird
 //   - bird_<goos>_<goarch> / birdy-bird_<goos>_<goarch>
 func findBird() (string, error) {
@@ -51,20 +53,9 @@ func findBird() (string, error) {
 		return p, nil
 	}
 
-	path, err := exec.LookPath("bird")
+	path, err := exec.LookPath("birdy-bird")
 	if err == nil {
 		return path, nil
-	}
-
-	path, err = exec.LookPath("birdy-bird")
-	if err == nil {
-		return path, nil
-	}
-
-	// Common local-dev location (NVM-installed bird). This is intentionally
-	// best-effort and only used if present.
-	if err := assertUsableBinary("/Users/alphanonce/.nvm/versions/node/v22.14.0/bin/bird"); err == nil {
-		return "/Users/alphanonce/.nvm/versions/node/v22.14.0/bin/bird", nil
 	}
 
 	if exe, err := os.Executable(); err == nil {
@@ -72,6 +63,8 @@ func findBird() (string, error) {
 		suffix := runtime.GOOS + "_" + runtime.GOARCH
 
 		candidates := []string{
+			filepath.Join(dir, "bird", "dist", "cli.js"),
+			filepath.Join(dir, "third_party", "@steipete", "bird", "dist", "cli.js"),
 			filepath.Join(dir, "bird"),
 			filepath.Join(dir, "birdy-bird"),
 			filepath.Join(dir, "bird_"+suffix),
@@ -96,10 +89,22 @@ func findBird() (string, error) {
 		}
 	}
 
+	// If running from the repo with `go run`, the executable lives in a temp dir,
+	// but cwd often points at the repo root.
+	if wd, err := os.Getwd(); err == nil {
+		c := filepath.Join(wd, "third_party", "@steipete", "bird", "dist", "cli.js")
+		if err := assertUsableBinary(c); err == nil {
+			return c, nil
+		}
+	}
+
+	path, err = exec.LookPath("bird")
+	if err == nil {
+		return path, nil
+	}
+
 	return "", fmt.Errorf(
-		"bird CLI not found.\n\nbirdy looks for:\n- `bird` or `birdy-bird` on your PATH\n- a bundled bird binary next to the birdy executable (e.g. `bird_%s_%s`)\n\nInstall bird from https://github.com/steipete/bird, or reinstall birdy using the installer which bundles bird.",
-		runtime.GOOS,
-		runtime.GOARCH,
+		"bird CLI not found.\n\nbirdy looks for:\n- `birdy-bird` on your PATH\n- a bundled bird package next to the birdy executable at `bird/dist/cli.js`\n- `bird` on your PATH\n\nInstall bird from https://github.com/steipete/bird, or reinstall birdy using the installer which bundles bird.",
 	)
 }
 
