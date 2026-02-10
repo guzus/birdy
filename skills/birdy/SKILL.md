@@ -42,6 +42,16 @@ go install github.com/guzus/birdy@latest
 
 birdy needs two cookies per account: `auth_token` and `ct0`.
 
+Optional: extract tokens automatically from your local browser cookies:
+
+```bash
+# Default tries Chrome, Safari, Firefox
+bash skills/birdy/scripts/extract_x_tokens.sh
+
+# Force a specific browser backend
+bash skills/birdy/scripts/extract_x_tokens.sh --browsers chrome
+```
+
 ```bash
 birdy account add personal
 birdy account add work --auth-token "xxx" --ct0 "yyy"
