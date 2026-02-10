@@ -31,24 +31,13 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: GoReleaser (skip homebrew)
-        if: ${{ secrets.GORELEASER_GITHUB_TOKEN == '' }}
+      - name: GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
           version: latest
+          # Homebrew publishing requires a PAT with access to the tap repo.
+          # This workflow always skips it; do it separately if needed.
           args: release --clean --skip=homebrew
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: GoReleaser (with homebrew)
-        if: ${{ secrets.GORELEASER_GITHUB_TOKEN != '' }}
-        uses: goreleaser/goreleaser-action@v6
-        with:
-          distribution: goreleaser
-          version: latest
-          args: release --clean
-        env:
-          # Use a PAT that can also push to the homebrew tap repo.
-          GITHUB_TOKEN: ${{ secrets.GORELEASER_GITHUB_TOKEN }}
-
