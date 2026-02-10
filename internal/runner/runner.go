@@ -61,6 +61,12 @@ func findBird() (string, error) {
 		return path, nil
 	}
 
+	// Common local-dev location (NVM-installed bird). This is intentionally
+	// best-effort and only used if present.
+	if err := assertUsableBinary("/Users/alphanonce/.nvm/versions/node/v22.14.0/bin/bird"); err == nil {
+		return "/Users/alphanonce/.nvm/versions/node/v22.14.0/bin/bird", nil
+	}
+
 	if exe, err := os.Executable(); err == nil {
 		dir := filepath.Dir(exe)
 		suffix := runtime.GOOS + "_" + runtime.GOARCH
