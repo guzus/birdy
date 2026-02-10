@@ -45,10 +45,14 @@ go install github.com/guzus/birdy@latest
 git clone https://github.com/guzus/birdy.git && cd birdy && make build
 ```
 
+If you install from source, you also need the upstream [bird](https://github.com/steipete/bird) CLI available (or set `BIRDY_BIRD_PATH` to its location). The `install.sh` installer bundles bird automatically.
+
 ## Prerequisites
 
-- [bird](https://github.com/steipete/bird) — must be installed and available on your PATH
+- The installer bundles the upstream [bird](https://github.com/steipete/bird) CLI and installs it as `birdy-bird` (birdy will auto-detect it).
 - [Claude Code](https://claude.ai/claude-code) (`claude` CLI) — required for the interactive TUI (`birdy tui`)
+
+To force a specific bird binary, set `BIRDY_BIRD_PATH=/path/to/bird`.
 
 ## Quick start
 

@@ -16,6 +16,7 @@ esac
 
 ASSET="birdy_${OS}_${ARCH}.tar.gz"
 BINARY="birdy_${OS}_${ARCH}"
+BIRD_BINARY="bird_${OS}_${ARCH}"
 
 echo "Installing birdy ${VERSION} (${OS}/${ARCH})..."
 
@@ -38,4 +39,13 @@ tar xzf "$TMPDIR/$ASSET" -C "$TMPDIR"
 sudo install -m 755 "$TMPDIR/$BINARY" "$INSTALL_DIR/birdy"
 
 echo "birdy installed to $INSTALL_DIR/birdy"
+
+if [ -f "$TMPDIR/$BIRD_BINARY" ]; then
+  sudo install -m 755 "$TMPDIR/$BIRD_BINARY" "$INSTALL_DIR/birdy-bird"
+  echo "bird (bundled) installed to $INSTALL_DIR/birdy-bird"
+else
+  echo "Warning: bundled bird binary not found in the release archive."
+  echo "Install bird separately from https://github.com/steipete/bird"
+fi
+
 birdy version
