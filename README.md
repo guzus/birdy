@@ -18,7 +18,7 @@ Launch the full-screen terminal interface with AI-powered chat:
 birdy tui
 ```
 
-![birdy TUI](assets/tui-chat.png)
+![birdy TUI](assets/tui.png)
 
 The TUI features:
 - **Chat** — Ask birdy to read your timeline, search tweets, post, and more via Claude
