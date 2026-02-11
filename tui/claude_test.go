@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -160,6 +161,9 @@ func TestSystemPromptContainsKeyCommands(t *testing.T) {
 		"birdy account list",
 		"dive deeper",
 		"explore autonomously",
+		"Execution policy (aggressive tool use)",
+		"Default to running birdy commands first.",
+		"Ask for confirmation only before state-changing actions",
 	}
 	for _, cmd := range commands {
 		if !containsStr(prompt, cmd) {
@@ -182,6 +186,99 @@ func TestBuildSystemPromptUsesCommand(t *testing.T) {
 	}
 	if !containsStr(prompt, "/usr/local/bin/birdy read") {
 		t.Error("expected system prompt to use the provided command for read")
+	}
+}
+
+func TestBuildClaudeArgsUsesProvidedCommand(t *testing.T) {
+	args := buildClaudeArgs("test prompt", "sonnet", "custom-birdy-cmd")
+
+	if len(args) == 0 {
+		t.Fatal("expected non-empty args")
+	}
+
+	joined := strings.Join(args, "\n")
+	if !containsStr(joined, "Bash(custom-birdy-cmd *),Skill(birdy)") {
+		t.Error("expected allowed tools to use provided command")
+	}
+	if !containsStr(joined, "custom-birdy-cmd home") {
+		t.Error("expected system prompt to use provided command")
+	}
+	if containsStr(joined, "/birdy home") {
+		t.Error("expected args to avoid hardcoded /birdy command")
+	}
+}
+
+func TestBuildTurnPromptIncludesHistoryAndContinuationInstruction(t *testing.T) {
+	msgs := []chatMessage{
+		{role: "user", content: "first question"},
+		{role: "assistant", content: "first answer"},
+		{role: "tool", content: "birdy home"},
+		{role: "user", content: "follow-up question"},
+	}
+
+	prompt := buildTurnPrompt(msgs)
+
+	if !containsStr(prompt, "Continue this ongoing birdy TUI chat session.") {
+		t.Error("expected continuation instruction in turn prompt")
+	}
+	if !containsStr(prompt, "User: first question") {
+		t.Error("expected first user message in prompt")
+	}
+	if !containsStr(prompt, "Assistant: first answer") {
+		t.Error("expected assistant message in prompt")
+	}
+	if !containsStr(prompt, "Tool: birdy home") {
+		t.Error("expected tool message in prompt")
+	}
+	if !containsStr(prompt, "User: follow-up question") {
+		t.Error("expected latest user message in prompt")
+	}
+}
+
+func TestBuildTurnPromptSkipsErrorMessages(t *testing.T) {
+	msgs := []chatMessage{
+		{role: "user", content: "hello"},
+		{role: "error", content: "oops"},
+		{role: "assistant", content: "hi"},
+	}
+	prompt := buildTurnPrompt(msgs)
+
+	if containsStr(prompt, "oops") {
+		t.Error("expected error content to be excluded from turn prompt")
+	}
+}
+
+func TestTokenBatcherFlushesOnNewline(t *testing.T) {
+	var b tokenBatcher
+	out, ok := b.add("hello\n")
+	if !ok {
+		t.Fatal("expected newline to trigger flush")
+	}
+	if out != "hello\n" {
+		t.Fatalf("unexpected flushed text %q", out)
+	}
+}
+
+func TestTokenBatcherFlushesOnSize(t *testing.T) {
+	var b tokenBatcher
+	chunk := strings.Repeat("a", 240)
+	out, ok := b.add(chunk)
+	if !ok {
+		t.Fatal("expected large chunk to trigger flush")
+	}
+	if out != chunk {
+		t.Fatalf("unexpected flushed text size=%d", len(out))
+	}
+}
+
+func TestTokenBatcherManualFlush(t *testing.T) {
+	var b tokenBatcher
+	if out, ok := b.add("abc"); ok || out != "" {
+		t.Fatal("expected small chunk to remain buffered")
+	}
+	out, ok := b.flush()
+	if !ok || out != "abc" {
+		t.Fatalf("expected manual flush to return buffered text, got ok=%v out=%q", ok, out)
 	}
 }
 

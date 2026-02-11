@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -25,23 +26,49 @@ type chatMessage struct {
 
 // ChatModel is the main chat screen with viewport, input, and streaming state.
 type ChatModel struct {
-	viewport     viewport.Model
-	input        textinput.Model
-	spinner      spinner.Model
-	messages     []chatMessage
-	streaming    bool
-	streamCh     <-chan tea.Msg
-	cancelStream context.CancelFunc
-	width        int
-	height       int
-	ready        bool
-	accountCount int
-	autoQueried  bool
-	copied       bool
-	model        string
+	viewport         viewport.Model
+	input            textinput.Model
+	spinner          spinner.Model
+	messages         []chatMessage
+	queuedPrompts    []string
+	queueNotice      string
+	queueNoticeID    int
+	streaming        bool
+	streamCh         <-chan tea.Msg
+	cancelStream     context.CancelFunc
+	width            int
+	height           int
+	ready            bool
+	accountCount     int
+	autoQueried      bool
+	copied           bool
+	model            string
+	mouseSeqMode     bool
+	markdownCache    map[string]string
+	mdRenderers      map[int]*glamour.TermRenderer
+	lastStreamRender time.Time
 }
 
 type clearCopiedMsg struct{}
+type clearQueueNoticeMsg struct {
+	ID int
+}
+
+var (
+	mouseSeqPattern        = regexp.MustCompile(`(?:\[\<\d+;\d+;\d+[mM])+`)
+	mouseSeqTailPattern    = regexp.MustCompile(`(?:\<\d+;\d+;\d+[mM])+`)
+	mouseTripletPattern    = regexp.MustCompile(`(?:\d+;\d+;\d+[mM])+`)
+	mouseSeqPartialPattern = regexp.MustCompile(`(?:\[\<[\d;]*|<[\d;]*)$`)
+	cprSeqPattern          = regexp.MustCompile(`(?:\[\d+;\d+R)+`)
+	cprPartialPattern      = regexp.MustCompile(`(?:\[\d+;\d*R?)$`)
+	rgbSeqPattern          = regexp.MustCompile(`(?:\\?1[01];)?rgb:[0-9A-Fa-f]{4}/[0-9A-Fa-f]{4}/[0-9A-Fa-f]{4}`)
+	rgbSeqPartialPattern   = regexp.MustCompile(`(?:\\?1[01];)?rgb:[0-9A-Fa-f/]*$`)
+	oscPrefixPattern       = regexp.MustCompile(`(?:\]|\x1b\])(?:10|11);`)
+	colorTripletPattern    = regexp.MustCompile(`[0-9A-Fa-f]{4}/[0-9A-Fa-f]{4}/[0-9A-Fa-f]{4}`)
+	oscResiduePattern      = regexp.MustCompile(`\\+;\\*|;\\+|\\+$`)
+	ansiCsiPattern         = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
+	ansiOscPattern         = regexp.MustCompile(`\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)`)
+)
 
 func NewChatModel() ChatModel {
 	ti := textinput.New()
@@ -58,7 +85,13 @@ func NewChatModel() ChatModel {
 		model = s.Model
 	}
 
-	m := ChatModel{input: ti, spinner: sp, model: model}
+	m := ChatModel{
+		input:         ti,
+		spinner:       sp,
+		model:         model,
+		markdownCache: make(map[string]string, 128),
+		mdRenderers:   make(map[int]*glamour.TermRenderer, 8),
+	}
 	m.refreshAccountCount()
 	return m
 }
@@ -76,7 +109,7 @@ func (m ChatModel) Init() tea.Cmd {
 
 const (
 	headerHeight = 1
-	inputHeight  = 3 // border top + input + border bottom
+	inputHeight  = 4 // border top + queue row + input row + border bottom
 	footerHeight = 1
 	chatOverhead = headerHeight + inputHeight + footerHeight
 )
@@ -95,9 +128,18 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
+		prevWidth := m.width
 		m.width = msg.Width
 		m.height = msg.Height
-		m.input.Width = m.width - 6 // border (2) + padding (2) + margin
+		if prevWidth != 0 && prevWidth != m.width {
+			// Wrapped markdown output depends on width.
+			m.markdownCache = make(map[string]string, 128)
+		}
+		inputWidth := m.width - 6 // border (2) + padding (2) + margin
+		if inputWidth < 1 {
+			inputWidth = 1
+		}
+		m.input.Width = inputWidth
 
 		vpHeight := m.height - chatOverhead
 		if vpHeight < 1 {
@@ -116,20 +158,39 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		if m.handleLeakedMouseKey(msg) {
+			m.input.SetValue(sanitizePromptInput(m.input.Value()))
+			return m, nil
+		}
+
 		switch msg.String() {
 		case "tab":
-			if !m.streaming {
-				return m, func() tea.Msg { return switchScreenMsg{target: screenAccount} }
+			if m.streaming {
+				queued, text := m.enqueueCurrentInput()
+				if queued {
+					m.queueNoticeID++
+					id := m.queueNoticeID
+					m.queueNotice = "queued: " + summarizeQueueNotice(text, 40)
+					return m, tea.Tick(1500*time.Millisecond, func(time.Time) tea.Msg {
+						return clearQueueNoticeMsg{ID: id}
+					})
+				}
+				return m, nil
 			}
+			return m, func() tea.Msg { return switchScreenMsg{target: screenAccount} }
 
 		case "esc":
 			if m.streaming && m.cancelStream != nil {
 				m.cancelStream()
 				m.cancelStream = nil
 				m.streaming = false
+				m.lastStreamRender = time.Time{}
 				m.streamCh = nil
 				m.messages = append(m.messages, chatMessage{role: "error", content: "cancelled"})
 				m.refreshViewport()
+				if cmd := m.startNextQueuedPrompt(); cmd != nil {
+					return m, cmd
+				}
 				return m, nil
 			}
 
@@ -159,21 +220,22 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			}
 
 		case "enter":
-			text := strings.TrimSpace(m.input.Value())
+			text := strings.TrimSpace(sanitizePromptInput(m.input.Value()))
 			if text == "" || m.streaming {
 				break
 			}
 			m.input.Reset()
-			m.messages = append(m.messages, chatMessage{role: "user", content: text})
-			m.streaming = true
-			ctx, cancel := context.WithCancel(context.Background())
-			m.cancelStream = cancel
-			m.refreshViewport()
-			return m, startClaude(ctx, text, m.model)
+			return m, m.beginPrompt(text)
 		}
 
 	case clearCopiedMsg:
 		m.copied = false
+		return m, nil
+
+	case clearQueueNoticeMsg:
+		if msg.ID == m.queueNoticeID {
+			m.queueNotice = ""
+		}
 		return m, nil
 
 	case autoQueryMsg:
@@ -182,12 +244,7 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		}
 		m.autoQueried = true
 		prompt := "Give me a brief summary of what's on my home timeline."
-		m.messages = append(m.messages, chatMessage{role: "user", content: prompt})
-		m.streaming = true
-		ctx, cancel := context.WithCancel(context.Background())
-		m.cancelStream = cancel
-		m.refreshViewport()
-		return m, startClaude(ctx, prompt, m.model)
+		return m, m.beginPrompt(prompt)
 
 	case claudeNextMsg:
 		m.streamCh = msg.ch
@@ -195,17 +252,48 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 
 	case claudeTokenMsg:
 		// Append to last assistant message, or create a new one
+		text := sanitizeStreamOutput(msg.Text)
+		if text == "" {
+			if m.streamCh != nil {
+				return m, waitForNext(m.streamCh)
+			}
+			return m, nil
+		}
 		if len(m.messages) == 0 || m.messages[len(m.messages)-1].role != "assistant" {
 			m.messages = append(m.messages, chatMessage{role: "assistant"})
 		}
-		m.messages[len(m.messages)-1].content += msg.Text
-		m.refreshViewport()
+		m.messages[len(m.messages)-1].content += text
+		if m.shouldRefreshStream(text) {
+			m.refreshViewport()
+		}
+		if m.streamCh != nil {
+			return m, waitForNext(m.streamCh)
+		}
+
+	case claudeSnapshotMsg:
+		text := sanitizeStreamOutput(msg.Text)
+		if text == "" {
+			if m.streamCh != nil {
+				return m, waitForNext(m.streamCh)
+			}
+			return m, nil
+		}
+		if len(m.messages) == 0 || m.messages[len(m.messages)-1].role != "assistant" {
+			m.messages = append(m.messages, chatMessage{role: "assistant"})
+		}
+		m.messages[len(m.messages)-1].content = text
+		if m.shouldRefreshStream(text) {
+			m.refreshViewport()
+		}
 		if m.streamCh != nil {
 			return m, waitForNext(m.streamCh)
 		}
 
 	case claudeToolUseMsg:
-		m.messages = append(m.messages, chatMessage{role: "tool", content: msg.Command})
+		cmd := sanitizeStreamOutput(msg.Command)
+		if cmd != "" {
+			m.messages = append(m.messages, chatMessage{role: "tool", content: cmd})
+		}
 		m.refreshViewport()
 		if m.streamCh != nil {
 			return m, waitForNext(m.streamCh)
@@ -213,20 +301,34 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 
 	case claudeDoneMsg:
 		m.streaming = false
+		m.lastStreamRender = time.Time{}
 		m.streamCh = nil
 		m.cancelStream = nil
 		saveChatHistory(m.messages)
 		m.refreshViewport()
+		if cmd := m.startNextQueuedPrompt(); cmd != nil {
+			return m, cmd
+		}
 		return m, nil
 
 	case claudeErrorMsg:
 		m.streaming = false
+		m.lastStreamRender = time.Time{}
 		m.streamCh = nil
 		m.cancelStream = nil
 		m.messages = append(m.messages, chatMessage{role: "error", content: msg.Err.Error()})
 		saveChatHistory(m.messages)
 		m.refreshViewport()
+		if cmd := m.startNextQueuedPrompt(); cmd != nil {
+			return m, cmd
+		}
 		return m, nil
+
+	case spinner.TickMsg:
+		// Keep the inline "thinking..." spinner inside viewport content animated.
+		if m.streaming && m.isInlineThinkingShown() {
+			m.refreshViewportNoScroll()
+		}
 	}
 
 	// Update viewport (scroll)
@@ -243,14 +345,14 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 	case tea.MouseMsg:
 		skipInput = true
 	case tea.KeyMsg:
-		s := v.String()
-		if strings.Contains(s, "[<") || strings.Contains(s, "[M") {
+		if m.isMouseEscapeKey(v) {
 			skipInput = true
 		}
 	}
 	if !skipInput {
 		var tiCmd tea.Cmd
 		m.input, tiCmd = m.input.Update(msg)
+		m.input.SetValue(sanitizePromptInput(m.input.Value()))
 		if tiCmd != nil {
 			cmds = append(cmds, tiCmd)
 		}
@@ -267,7 +369,75 @@ func (m *ChatModel) refreshViewport() {
 	m.viewport.GotoBottom()
 }
 
-func (m ChatModel) renderMessages() string {
+func (m *ChatModel) refreshViewportNoScroll() {
+	if !m.ready {
+		return
+	}
+	m.viewport.SetContent(m.renderMessages())
+}
+
+func (m *ChatModel) enqueueCurrentInput() (bool, string) {
+	text := strings.TrimSpace(sanitizePromptInput(m.input.Value()))
+	if text == "" {
+		return false, ""
+	}
+	m.queuedPrompts = append(m.queuedPrompts, text)
+	m.input.Reset()
+	return true, text
+}
+
+func (m *ChatModel) startNextQueuedPrompt() tea.Cmd {
+	if len(m.queuedPrompts) == 0 {
+		return nil
+	}
+	next := m.queuedPrompts[0]
+	m.queuedPrompts = m.queuedPrompts[1:]
+	return m.beginPrompt(next)
+}
+
+func (m *ChatModel) beginPrompt(prompt string) tea.Cmd {
+	m.messages = append(m.messages, chatMessage{role: "user", content: prompt})
+	m.streaming = true
+	m.lastStreamRender = time.Time{}
+	ctx, cancel := context.WithCancel(context.Background())
+	m.cancelStream = cancel
+	m.refreshViewport()
+	return tea.Batch(startClaude(ctx, buildTurnPrompt(m.messages), m.model), m.spinner.Tick)
+}
+
+func (m *ChatModel) shouldRefreshStream(delta string) bool {
+	now := time.Now()
+	if m.lastStreamRender.IsZero() {
+		m.lastStreamRender = now
+		return true
+	}
+
+	// Force refresh quickly on structural tokens.
+	if strings.Contains(delta, "\n") || strings.Contains(delta, "```") {
+		m.lastStreamRender = now
+		return true
+	}
+
+	// Limit re-render frequency to keep the UI responsive under high token rate.
+	if now.Sub(m.lastStreamRender) >= 40*time.Millisecond {
+		m.lastStreamRender = now
+		return true
+	}
+	return false
+}
+
+func (m *ChatModel) isInlineThinkingShown() bool {
+	if len(m.messages) == 0 {
+		return false
+	}
+	last := m.messages[len(m.messages)-1]
+	if last.role == "assistant" {
+		return last.content == ""
+	}
+	return last.role == "user" || last.role == "tool"
+}
+
+func (m *ChatModel) renderMessages() string {
 	if len(m.messages) == 0 {
 		return lipgloss.NewStyle().
 			Foreground(colorMuted).
@@ -276,21 +446,22 @@ func (m ChatModel) renderMessages() string {
 	}
 
 	w := m.width - 2 // small margin
-	if w < 20 {
-		w = 20
+	if w < 1 {
+		w = 1
 	}
 
 	var b strings.Builder
-	for _, msg := range m.messages {
+	for i, msg := range m.messages {
 		switch msg.role {
 		case "user":
-			b.WriteString(userMsgStyle.Width(w).Render("You: " + msg.content))
+			b.WriteString(userMsgStyle.Copy().PaddingLeft(2).Width(w).Render("You: " + msg.content))
 			b.WriteString("\n\n")
 		case "assistant":
 			if msg.content != "" {
-				rendered := renderMarkdown(msg.content, w)
-				b.WriteString(rendered)
-				b.WriteString("\n")
+				useCache := !(m.streaming && i == len(m.messages)-1)
+				b.WriteString(m.renderAssistantMarkdown(msg.content, w, useCache))
+				// Keep assistant replies visually separated from following turns.
+				b.WriteString("\n\n")
 			}
 		case "tool":
 			b.WriteString(toolMsgStyle.Width(w).Render("  > " + msg.content))
@@ -301,15 +472,10 @@ func (m ChatModel) renderMessages() string {
 		}
 	}
 
-	// Show thinking indicator when streaming and last message has no assistant content yet
-	if m.streaming {
-		lastIsAssistantEmpty := len(m.messages) > 0 && m.messages[len(m.messages)-1].role == "assistant" && m.messages[len(m.messages)-1].content == ""
-		lastIsUser := len(m.messages) > 0 && m.messages[len(m.messages)-1].role == "user"
-		lastIsTool := len(m.messages) > 0 && m.messages[len(m.messages)-1].role == "tool"
-		if lastIsAssistantEmpty || lastIsUser || lastIsTool {
-			b.WriteString(toolMsgStyle.Render(m.spinner.View() + " thinking..."))
-			b.WriteString("\n\n")
-		}
+	// Show thinking indicator when streaming and last message has no assistant content yet.
+	if m.streaming && m.isInlineThinkingShown() {
+		b.WriteString(toolMsgStyle.Render(m.spinner.View() + " thinking..."))
+		b.WriteString("\n\n")
 	}
 
 	return b.String()
@@ -329,29 +495,34 @@ func (m ChatModel) View() string {
 		}
 	}
 
-	status := "ready"
-	if m.streaming {
-		status = m.spinner.View() + " thinking..."
+	headerWidth := m.width
+	if headerWidth < 1 {
+		headerWidth = 1
+	}
+	leftText := " birdy "
+	if lipgloss.Width(leftText) > headerWidth {
+		leftText = leftText[:headerWidth]
 	}
 
-	leftHeader := headerStyle.Render(" birdy ")
-	rightInfo := fmt.Sprintf(" %s | %s | %s ", accountInfo, m.model, status)
-	rightHeader := headerStyle.Render(rightInfo)
-
-	gap := m.width - lipgloss.Width(leftHeader) - lipgloss.Width(rightHeader)
+	rightSpace := headerWidth - lipgloss.Width(leftText)
+	if rightSpace < 0 {
+		rightSpace = 0
+	}
+	rightText := m.headerRightInfo(accountInfo, rightSpace)
+	gap := headerWidth - lipgloss.Width(leftText) - lipgloss.Width(rightText)
 	if gap < 0 {
 		gap = 0
 	}
-	headerFill := headerStyle.Render(strings.Repeat(" ", gap))
-	header := leftHeader + headerFill + rightHeader
+	headerText := leftText + strings.Repeat(" ", gap) + rightText
+	header := headerStyle.Copy().Padding(0).Width(headerWidth).MaxWidth(headerWidth).Render(headerText)
 
-	// Input
-	input := inputBorderStyle.Render(m.input.View())
+	// Input (queue indicator on the top-right row inside the command bar)
+	input := inputBorderStyle.Render(m.renderCommandBarContent())
 
 	// Footer
 	footerText := "enter: send | ctrl+t: model | ctrl+y: copy | tab: accounts | ctrl+c: quit"
 	if m.streaming {
-		footerText = "esc: cancel | ctrl+c: quit"
+		footerText = "tab: queue | esc: cancel | ctrl+c: quit"
 	}
 	if m.copied {
 		footerText = "copied to clipboard!"
@@ -370,11 +541,142 @@ func (m ChatModel) View() string {
 	)
 }
 
-func renderMarkdown(content string, width int) string {
-	r, err := glamour.NewTermRenderer(
-		glamour.WithAutoStyle(),
-		glamour.WithWordWrap(width),
-	)
+func (m ChatModel) headerRightInfo(accountInfo string, available int) string {
+	if available <= 0 {
+		return ""
+	}
+
+	statusLabel := "ready"
+	if m.streaming {
+		statusLabel = "thinking"
+	}
+
+	candidates := []string{
+		fmt.Sprintf("%s | %s | %s", accountInfo, m.model, statusLabel),
+		fmt.Sprintf("%s | %s", m.model, statusLabel),
+		statusLabel,
+		"",
+	}
+
+	for _, c := range candidates {
+		if lipgloss.Width(c) <= available {
+			return c
+		}
+	}
+	return ""
+}
+
+func (m ChatModel) renderCommandBarContent() string {
+	innerWidth := m.input.Width
+	if innerWidth < 1 {
+		innerWidth = 1
+	}
+
+	queueLabel := m.commandBarQueueLabel(innerWidth)
+	queueNotice := m.commandBarQueueNotice(innerWidth)
+	topRow := composeTopRow(innerWidth, queueNotice, queueLabel)
+	topRow = lipgloss.NewStyle().Foreground(colorMuted).Render(topRow)
+
+	return topRow + "\n" + m.input.View()
+}
+
+func (m ChatModel) commandBarQueueLabel(available int) string {
+	if available <= 0 || len(m.queuedPrompts) == 0 {
+		return ""
+	}
+
+	long := fmt.Sprintf("queued: %d", len(m.queuedPrompts))
+	short := fmt.Sprintf("q:%d", len(m.queuedPrompts))
+
+	label := long
+	if lipgloss.Width(label) > available {
+		label = short
+	}
+	if lipgloss.Width(label) > available {
+		return ""
+	}
+
+	return label
+}
+
+func (m ChatModel) commandBarQueueNotice(available int) string {
+	if available <= 0 || m.queueNotice == "" {
+		return ""
+	}
+	return m.queueNotice
+}
+
+func summarizeQueueNotice(s string, max int) string {
+	s = strings.Join(strings.Fields(strings.TrimSpace(s)), " ")
+	if max <= 0 {
+		return ""
+	}
+	if len(s) <= max {
+		return s
+	}
+	if max <= 3 {
+		return strings.Repeat(".", max)
+	}
+	return s[:max-3] + "..."
+}
+
+func composeTopRow(width int, left, right string) string {
+	if width <= 0 {
+		return ""
+	}
+
+	if right == "" {
+		left = summarizeQueueNotice(left, width)
+		pad := width - lipgloss.Width(left)
+		if pad < 0 {
+			pad = 0
+		}
+		return left + strings.Repeat(" ", pad)
+	}
+
+	rw := lipgloss.Width(right)
+	if rw >= width {
+		return summarizeQueueNotice(right, width)
+	}
+
+	leftWidth := width - rw
+	left = summarizeQueueNotice(left, leftWidth)
+	pad := leftWidth - lipgloss.Width(left)
+	if pad < 0 {
+		pad = 0
+	}
+	return left + strings.Repeat(" ", pad) + right
+}
+
+func (m *ChatModel) renderAssistantMarkdown(content string, width int, useCache bool) string {
+	if content == "" {
+		return ""
+	}
+
+	if useCache {
+		if m.markdownCache == nil {
+			m.markdownCache = make(map[string]string, 128)
+		}
+		key := fmt.Sprintf("%d|%s", width, content)
+		if cached, ok := m.markdownCache[key]; ok {
+			return cached
+		}
+		rendered := m.renderMarkdown(content, width)
+		if len(m.markdownCache) > 2048 {
+			m.markdownCache = make(map[string]string, 128)
+		}
+		m.markdownCache[key] = rendered
+		return rendered
+	}
+
+	return m.renderMarkdown(content, width)
+}
+
+func (m *ChatModel) renderMarkdown(content string, width int) string {
+	if width < 1 {
+		width = 1
+	}
+	r, err := m.markdownRenderer(width)
 	if err != nil {
 		return assistantMsgStyle.Width(width).Render(content)
 	}
@@ -383,6 +685,26 @@ func renderMarkdown(content string, width int) string {
 		return assistantMsgStyle.Width(width).Render(content)
 	}
 	return strings.TrimRight(out, "\n")
+}
+
+func (m *ChatModel) markdownRenderer(width int) (*glamour.TermRenderer, error) {
+	if m.mdRenderers == nil {
+		m.mdRenderers = make(map[int]*glamour.TermRenderer, 8)
+	}
+	if r, ok := m.mdRenderers[width]; ok {
+		return r, nil
+	}
+
+	r, err := glamour.NewTermRenderer(
+		// Fixed style avoids terminal capability/background probes.
+		glamour.WithStandardStyle("dark"),
+		glamour.WithWordWrap(width),
+	)
+	if err != nil {
+		return nil, err
+	}
+	m.mdRenderers[width] = r
+	return r, nil
 }
 
 func (m ChatModel) lastAssistantContent() string {
@@ -406,4 +728,115 @@ func copyToClipboard(text string) error {
 	}
 	cmd.Stdin = strings.NewReader(text)
 	return cmd.Run()
+}
+
+func (m *ChatModel) isMouseEscapeKey(msg tea.KeyMsg) bool {
+	s := msg.String()
+	if strings.Contains(s, "[<") || strings.Contains(s, "[M") || strings.Contains(s, "[m") {
+		return true
+	}
+
+	// Some terminals leak mouse protocol in fragmented key events:
+	// alt+[  64;20;8  M
+	if s == "alt+[" {
+		return true
+	}
+	return false
+}
+
+func (m *ChatModel) handleLeakedMouseKey(msg tea.KeyMsg) bool {
+	s := msg.String()
+
+	if m.mouseSeqMode {
+		// End of leaked sequence ("M" or "m"). We swallow both terminator and body.
+		if strings.ContainsAny(s, "Mm") {
+			m.mouseSeqMode = false
+			return true
+		}
+		if isMouseSeqBodyFragment(s) {
+			return true
+		}
+		// Unexpected key: abort fragment mode and let normal handling continue.
+		m.mouseSeqMode = false
+		return false
+	}
+
+	if s == "alt+[" {
+		m.mouseSeqMode = true
+		return true
+	}
+
+	return m.isMouseEscapeKey(msg)
+}
+
+func isMouseSeqBodyFragment(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if (r >= '0' && r <= '9') || r == ';' || r == '<' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func sanitizePromptInput(s string) string {
+	if s == "" {
+		return s
+	}
+
+	cleaned := strings.ReplaceAll(s, "\x1b", "")
+	cleaned = strings.ReplaceAll(cleaned, "\a", "")
+
+	cleaned = mouseSeqPattern.ReplaceAllString(cleaned, "")
+	cleaned = mouseSeqTailPattern.ReplaceAllString(cleaned, "")
+	cleaned = mouseTripletPattern.ReplaceAllString(cleaned, "")
+	cleaned = mouseSeqPartialPattern.ReplaceAllString(cleaned, "")
+	cleaned = cprSeqPattern.ReplaceAllString(cleaned, "")
+	cleaned = cprPartialPattern.ReplaceAllString(cleaned, "")
+
+	cleaned = oscPrefixPattern.ReplaceAllString(cleaned, "")
+	cleaned = rgbSeqPattern.ReplaceAllString(cleaned, "")
+	cleaned = rgbSeqPartialPattern.ReplaceAllString(cleaned, "")
+	cleaned = colorTripletPattern.ReplaceAllString(cleaned, "")
+	cleaned = oscResiduePattern.ReplaceAllString(cleaned, "")
+
+	// Keep prompt input printable and single-line.
+	var b strings.Builder
+	for _, r := range cleaned {
+		if r < 0x20 || r == 0x7f {
+			continue
+		}
+		b.WriteRune(r)
+	}
+
+	return b.String()
+}
+
+func sanitizeStreamOutput(s string) string {
+	if s == "" {
+		return s
+	}
+
+	cleaned := ansiOscPattern.ReplaceAllString(s, "")
+	cleaned = ansiCsiPattern.ReplaceAllString(cleaned, "")
+	cleaned = strings.ReplaceAll(cleaned, "\r", "")
+	cleaned = strings.ReplaceAll(cleaned, "\x1b", "")
+	cleaned = strings.ReplaceAll(cleaned, "\a", "")
+
+	var b strings.Builder
+	for _, r := range cleaned {
+		// Keep common readable whitespace; strip other control chars.
+		if r == '\n' || r == '\t' {
+			b.WriteRune(r)
+			continue
+		}
+		if r < 0x20 || r == 0x7f {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }

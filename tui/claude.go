@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -64,6 +66,14 @@ Other:
 
 IMPORTANT: Always use the exact command "%[1]s" — never use "go run .", "birdy", or any other alternative.
 
+Execution policy (aggressive tool use):
+- Default to running birdy commands first. Do not answer from memory when a command can verify.
+- For factual questions, run at least one relevant read command before answering.
+- For research/exploration tasks, run multiple commands in sequence without waiting for confirmation.
+- If output is ambiguous, run follow-up commands until you can provide a clear, evidence-based answer.
+- Include concise evidence by referencing which commands were run.
+- Ask for confirmation only before state-changing actions (tweet, reply, follow, unfollow, unbookmark).
+
 Use these commands to help the user. Run commands and explain the results clearly.
 When showing tweets, format them nicely. Be concise and helpful.
 
@@ -77,8 +87,78 @@ When the user asks you to "dive deeper", "explore", or "browse" their timeline:
 - You can chain multiple commands without asking — explore autonomously and report back`, cmd)
 }
 
+func buildClaudeArgs(prompt, model, cmd string) []string {
+	return []string{
+		"-p", prompt,
+		"--model", model,
+		"--output-format", "stream-json",
+		"--verbose",
+		"--max-turns", "25",
+		"--allowedTools", fmt.Sprintf("Bash(%s *),Skill(birdy)", cmd),
+		"--append-system-prompt", buildSystemPrompt(cmd),
+	}
+}
+
+func buildTurnPrompt(messages []chatMessage) string {
+	const (
+		maxMessages = 20
+		maxChars    = 1600
+	)
+
+	if len(messages) == 0 {
+		return ""
+	}
+
+	start := len(messages) - maxMessages
+	if start < 0 {
+		start = 0
+	}
+
+	var b strings.Builder
+	b.WriteString("Continue this ongoing birdy TUI chat session.\n")
+	b.WriteString("Do not restart with a generic greeting. Respond directly to the latest user message.\n\n")
+	b.WriteString("Conversation history (oldest to newest):\n")
+
+	for _, m := range messages[start:] {
+		text := strings.TrimSpace(m.content)
+		if text == "" {
+			continue
+		}
+		text = truncatePromptText(text, maxChars)
+
+		switch m.role {
+		case "user":
+			b.WriteString("User: ")
+			b.WriteString(text)
+			b.WriteString("\n")
+		case "assistant":
+			b.WriteString("Assistant: ")
+			b.WriteString(text)
+			b.WriteString("\n")
+		case "tool":
+			b.WriteString("Tool: ")
+			b.WriteString(text)
+			b.WriteString("\n")
+		}
+	}
+
+	return strings.TrimSpace(b.String())
+}
+
+func truncatePromptText(s string, maxChars int) string {
+	if maxChars <= 0 || len(s) <= maxChars {
+		return s
+	}
+	trimmed := strings.TrimSpace(s[:maxChars])
+	return trimmed + " ...[truncated " + strconv.Itoa(len(s)-maxChars) + " chars]"
+}
+
 // Message types for Bubble Tea streaming
 type claudeTokenMsg struct {
+	Text string
+}
+
+type claudeSnapshotMsg struct {
 	Text string
 }
 
@@ -123,6 +203,41 @@ type cliContentBlock struct {
 	Input json.RawMessage `json:"input,omitempty"`
 }
 
+type tokenBatcher struct {
+	pending strings.Builder
+	last    time.Time
+}
+
+func (b *tokenBatcher) add(delta string) (string, bool) {
+	if delta == "" {
+		return "", false
+	}
+	b.pending.WriteString(delta)
+	now := time.Now()
+	if b.last.IsZero() {
+		b.last = now
+	}
+
+	// Flush quickly on structure or enough buffered text.
+	if strings.Contains(delta, "\n") || strings.Contains(delta, "```") || b.pending.Len() >= 240 || now.Sub(b.last) >= 35*time.Millisecond {
+		out := b.pending.String()
+		b.pending.Reset()
+		b.last = now
+		return out, true
+	}
+	return "", false
+}
+
+func (b *tokenBatcher) flush() (string, bool) {
+	if b.pending.Len() == 0 {
+		return "", false
+	}
+	out := b.pending.String()
+	b.pending.Reset()
+	b.last = time.Now()
+	return out, true
+}
+
 // startClaude spawns a claude process and returns a channel-based message
 // for the Bubble Tea streaming pattern. The context allows cancelling the
 // subprocess when the user presses escape or quits the TUI.
@@ -132,7 +247,7 @@ func startClaude(ctx context.Context, prompt, model string) tea.Cmd {
 			return claudeErrorMsg{Err: fmt.Errorf("claude CLI not found — install it from https://claude.ai/claude-code")}
 		}
 
-		ch := make(chan tea.Msg, 64)
+		ch := make(chan tea.Msg, 256)
 		go runClaudeProcess(ctx, prompt, model, ch)
 		return claudeNextMsg{ch: ch}
 	}
@@ -155,15 +270,7 @@ func waitForNext(ch <-chan tea.Msg) tea.Cmd {
 func runClaudeProcess(ctx context.Context, prompt, model string, ch chan<- tea.Msg) {
 	defer close(ch)
 
-	args := []string{
-		"-p", prompt,
-		"--model", model,
-		"--output-format", "stream-json",
-		"--verbose",
-		"--max-turns", "25",
-		"--allowedTools", fmt.Sprintf("Bash(%s *),Skill(birdy)", birdyCmd()),
-		"--append-system-prompt", buildSystemPrompt("/birdy"),
-	}
+	args := buildClaudeArgs(prompt, model, birdyCmd())
 
 	cmd := exec.CommandContext(ctx, "claude", args...)
 
@@ -187,10 +294,42 @@ func runClaudeProcess(ctx context.Context, prompt, model string, ch chan<- tea.M
 	var prevText string
 	seenToolIDs := make(map[string]bool)
 	gotAnyMessage := false
+	var batch tokenBatcher
+	var pendingSnapshot string
+	var lastSnapshot time.Time
 
 	// Also support raw API streaming format (fallback)
 	var toolInput strings.Builder
 	inToolBlock := false
+	flushPendingToken := func() {
+		if text, ok := batch.flush(); ok {
+			ch <- claudeTokenMsg{Text: text}
+		}
+	}
+	emitToken := func(delta string) {
+		if text, ok := batch.add(delta); ok {
+			ch <- claudeTokenMsg{Text: text}
+		}
+	}
+	flushPendingSnapshot := func() {
+		if pendingSnapshot != "" {
+			ch <- claudeSnapshotMsg{Text: pendingSnapshot}
+			pendingSnapshot = ""
+			lastSnapshot = time.Now()
+		}
+	}
+	emitSnapshot := func(text string, force bool) {
+		if text == "" {
+			return
+		}
+		pendingSnapshot = text
+		now := time.Now()
+		if force || lastSnapshot.IsZero() || now.Sub(lastSnapshot) >= 35*time.Millisecond || strings.Contains(text, "\n") {
+			ch <- claudeSnapshotMsg{Text: text}
+			pendingSnapshot = ""
+			lastSnapshot = now
+		}
+	}
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -225,6 +364,8 @@ func runClaudeProcess(ctx context.Context, prompt, model string, ch chan<- tea.M
 				case "tool_use":
 					if block.ID != "" && !seenToolIDs[block.ID] {
 						seenToolIDs[block.ID] = true
+						flushPendingSnapshot()
+						flushPendingToken()
 						var input struct {
 							Command string `json:"command"`
 						}
@@ -237,10 +378,10 @@ func runClaudeProcess(ctx context.Context, prompt, model string, ch chan<- tea.M
 				}
 			}
 
-			// Emit only the new text since last event
-			if len(fullText) > len(prevText) {
-				delta := fullText[len(prevText):]
-				ch <- claudeTokenMsg{Text: delta}
+			// CLI wrapper events carry the full accumulated assistant text.
+			// Treat it as authoritative to avoid delta drift/corruption.
+			if fullText != prevText {
+				emitSnapshot(fullText, false)
 				prevText = fullText
 			}
 
@@ -260,7 +401,7 @@ func runClaudeProcess(ctx context.Context, prompt, model string, ch chan<- tea.M
 			switch raw.Delta.Type {
 			case "text_delta":
 				if raw.Delta.Text != "" {
-					ch <- claudeTokenMsg{Text: raw.Delta.Text}
+					emitToken(raw.Delta.Text)
 				}
 			case "input_json_delta":
 				if inToolBlock {
@@ -283,6 +424,8 @@ func runClaudeProcess(ctx context.Context, prompt, model string, ch chan<- tea.M
 		case "content_block_stop":
 			// Raw API format: tool_use block complete
 			if inToolBlock {
+				flushPendingSnapshot()
+				flushPendingToken()
 				var input struct {
 					Command string `json:"command"`
 				}
@@ -296,23 +439,27 @@ func runClaudeProcess(ctx context.Context, prompt, model string, ch chan<- tea.M
 			// Final result from CLI wrapper format
 			gotAnyMessage = true
 			if event.IsError && event.Result != "" {
+				flushPendingSnapshot()
+				flushPendingToken()
 				ch <- claudeErrorMsg{Err: fmt.Errorf("%s", event.Result)}
-			} else if event.Result != "" && len(event.Result) > len(prevText) {
-				// Emit any remaining text not yet streamed
-				delta := event.Result[len(prevText):]
-				if delta != "" {
-					ch <- claudeTokenMsg{Text: delta}
-				}
+			} else if event.Result != "" && event.Result != prevText {
+				emitSnapshot(event.Result, true)
 			}
+			flushPendingSnapshot()
+			flushPendingToken()
 			_ = cmd.Wait()
 			return
 
 		case "message_stop":
 			// Raw API format: conversation turn complete
+			flushPendingSnapshot()
+			flushPendingToken()
 			_ = cmd.Wait()
 			return
 		}
 	}
+	flushPendingSnapshot()
+	flushPendingToken()
 
 	_ = cmd.Wait()
 

@@ -73,7 +73,7 @@ func (m MainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	// Always route claude streaming messages to chat, even during splash
-	case autoQueryMsg, claudeNextMsg, claudeTokenMsg, claudeToolUseMsg, claudeDoneMsg, claudeErrorMsg:
+	case autoQueryMsg, claudeNextMsg, claudeTokenMsg, claudeSnapshotMsg, claudeToolUseMsg, claudeDoneMsg, claudeErrorMsg:
 		var cmd tea.Cmd
 		m.chat, cmd = m.chat.Update(msg)
 		return m, cmd
