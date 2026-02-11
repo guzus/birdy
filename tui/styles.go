@@ -80,6 +80,20 @@ var (
 				Foreground(colorBlue).
 				Padding(0, 1)
 
+	footerPathStyle = lipgloss.NewStyle().
+				Foreground(colorBorderSoft).
+				Background(colorDarkBg).
+				Italic(true)
+
+	scrollbarTrackStyle = lipgloss.NewStyle().
+				Foreground(colorBorderSoft).
+				Background(colorDarkBg)
+
+	scrollbarThumbStyle = lipgloss.NewStyle().
+				Foreground(colorBlue).
+				Background(colorDarkBg).
+				Bold(true)
+
 	userMsgStyle = lipgloss.NewStyle().
 			Foreground(colorBlue).
 			Background(colorDarkBg).
@@ -119,11 +133,21 @@ var (
 
 	accountSelectedStyle = lipgloss.NewStyle().
 			Foreground(colorBlue).
+			Background(colorPanelAlt).
 			Bold(true)
 
 	accountNormalStyle = lipgloss.NewStyle().
 				Foreground(colorLightFg).
 				Background(colorDarkBg)
+
+	accountListHeaderStyle = lipgloss.NewStyle().
+				Foreground(colorMuted).
+				Background(colorDarkBg).
+				Bold(true)
+
+	accountHintStyle = lipgloss.NewStyle().
+			Foreground(colorMuted).
+			Background(colorDarkBg)
 
 	accountHeaderStyle = lipgloss.NewStyle().
 				Background(colorPanel).

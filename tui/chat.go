@@ -137,11 +137,12 @@ func (m ChatModel) Init() tea.Cmd {
 }
 
 const (
+	topGutterHeight = 1
 	headerHeight = 3
 	feedChrome   = 3 // panel border + section title row
 	commandHeight = 5 // panel border + title row + simple input block
-	footerHeight  = 3 // panel border + key hints row
-	chatOverhead  = headerHeight + feedChrome + commandHeight + footerHeight
+	footerHeight  = 4 // panel border + key hints row + save-path row
+	chatOverhead  = topGutterHeight + headerHeight + feedChrome + commandHeight + footerHeight
 )
 
 func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
@@ -157,6 +158,10 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 	}
 
 	if mm, ok := msg.(tea.MouseMsg); ok {
+		if m.historyMode {
+			// Keep history list anchored; history navigation is keyboard-driven.
+			return m, nil
+		}
 		if !m.shouldHandleMouseWheel(mm) {
 			return m, nil
 		}
@@ -177,10 +182,7 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		}
 		m.input.Width = inputWidth
 
-		vpWidth := m.width - 2 // feed panel border
-		if vpWidth < 1 {
-			vpWidth = 1
-		}
+		vpWidth := m.viewportContentWidth()
 
 		vpHeight := m.height - chatOverhead
 		if vpHeight < 1 {
@@ -218,6 +220,7 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 					m.historyIndex--
 					m.refreshHistoryPreview()
 					m.refreshViewport()
+					m.viewport.GotoTop()
 				}
 				return m, nil
 			case "down", "j":
@@ -225,6 +228,7 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 					m.historyIndex++
 					m.refreshHistoryPreview()
 					m.refreshViewport()
+					m.viewport.GotoTop()
 				}
 				return m, nil
 			case "home", "g":
@@ -232,6 +236,7 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 					m.historyIndex = 0
 					m.refreshHistoryPreview()
 					m.refreshViewport()
+					m.viewport.GotoTop()
 				}
 				return m, nil
 			case "end", "G":
@@ -239,6 +244,7 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 					m.historyIndex = n - 1
 					m.refreshHistoryPreview()
 					m.refreshViewport()
+					m.viewport.GotoTop()
 				}
 				return m, nil
 			case "enter":
@@ -250,14 +256,12 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 
 		switch msg.String() {
 		case "/":
-			if m.streaming {
-				break
-			}
 			if strings.TrimSpace(m.input.Value()) != "" {
 				break
 			}
 			m.openHistoryMode()
 			m.refreshViewport()
+			m.viewport.GotoTop()
 			return m, nil
 
 		case "tab":
@@ -414,6 +418,18 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		m.lastStreamRender = time.Time{}
 		m.streamCh = nil
 		m.cancelStream = nil
+		if m.historyMode {
+			m.queueNoticeID++
+			id := m.queueNoticeID
+			m.queueNotice = "stream failed in background"
+			m.refreshViewport()
+			if cmd := m.startNextQueuedPrompt(); cmd != nil {
+				return m, cmd
+			}
+			return m, tea.Tick(2*time.Second, func(time.Time) tea.Msg {
+				return clearQueueNoticeMsg{ID: id}
+			})
+		}
 		m.messages = append(m.messages, chatMessage{role: "error", content: msg.Err.Error()})
 		saveChatHistory(m.messages)
 		m.refreshViewport()
@@ -663,7 +679,7 @@ func (m *ChatModel) renderHistoryMessages() string {
 	var b strings.Builder
 	b.WriteString(toolMsgStyle.Width(w).Render("saved at: " + chatHistoryDisplayDir()))
 	b.WriteString("\n")
-	b.WriteString(toolMsgStyle.Width(w).Render("up/down: select | enter: load | esc or /: close"))
+	b.WriteString(toolMsgStyle.Width(w).Render("up/down: select | enter: open full chat | esc or /: close"))
 	b.WriteString("\n\n")
 
 	if m.historyError != "" {
@@ -703,9 +719,12 @@ func (m *ChatModel) renderHistoryMessages() string {
 	selectedLine := strings.Replace(selected, os.Getenv("HOME"), "~", 1)
 	b.WriteString(toolMsgStyle.Width(w).Render(selectedLine))
 	b.WriteString("\n\n")
-	b.WriteString(sectionTitleStyle.Width(w).Render("PREVIEW"))
+	b.WriteString(sectionTitleStyle.Width(w).Render("GLIMPSE"))
 	b.WriteString("\n")
-	b.WriteString(m.renderAssistantMarkdown(m.historyPreview, w, true))
+	b.WriteString(toolMsgStyle.Width(w).Render("Press Enter to open full transcript in feed."))
+	b.WriteString("\n")
+	previewLines := m.historyPreviewLines()
+	b.WriteString(m.renderMarkdownSnippet(m.historyPreview, w, previewLines))
 	b.WriteString("\n")
 	return b.String()
 }
@@ -783,13 +802,14 @@ func (m ChatModel) View() string {
 	if m.historyMode {
 		feedLabel = "HISTORY"
 	}
-	feedTitle := sectionTitleStyle.Width(m.viewport.Width).Render(feedLabel)
+	feedBodyWidth := m.feedBodyWidth()
+	feedTitle := sectionTitleStyle.Width(feedBodyWidth).Render(feedLabel)
 	body := lipgloss.NewStyle().
 		Background(colorDarkBg).
 		Foreground(colorLightFg).
-		Width(m.viewport.Width).
+		Width(feedBodyWidth).
 		Height(m.viewport.Height).
-		Render(m.viewport.View())
+		Render(m.renderFeedBodyWithScrollbar())
 	feedContent := lipgloss.JoinVertical(lipgloss.Left, feedTitle, body)
 	feed := feedPanelStyle.Width(panelWidth).Render(feedContent)
 
@@ -821,17 +841,15 @@ func (m ChatModel) View() string {
 	if m.copied {
 		keysText = "COPIED"
 	}
-	keysRow := keysLabel + keysText
-	rowWidth := lipgloss.Width(keysRow)
-	if rowWidth < keysRowWidth {
-		keysRow += strings.Repeat(" ", keysRowWidth-rowWidth)
-	} else if rowWidth > keysRowWidth {
-		keysRow = summarizeQueueNotice(keysRow, keysRowWidth)
-	}
-	keysContent := lipgloss.NewStyle().Foreground(colorMuted).Padding(0, 1).Render(keysRow)
+	keysRow := fitFooterRow(keysLabel+keysText, keysRowWidth)
+	saveRow := fitFooterRow("save: "+chatHistoryDisplayDir(), keysRowWidth)
+	keysTop := lipgloss.NewStyle().Foreground(colorMuted).Render(keysRow)
+	keysBottom := footerPathStyle.Render(saveRow)
+	keysContent := lipgloss.NewStyle().Padding(0, 1).Render(keysTop + "\n" + keysBottom)
 	footer := keysPanelStyle.Width(panelWidth).Render(keysContent)
 
 	layout := lipgloss.JoinVertical(lipgloss.Left,
+		lipgloss.NewStyle().Width(panelWidth).Render(" "),
 		header,
 		feed,
 		command,
@@ -883,7 +901,7 @@ func (m ChatModel) renderCommandBarContent() string {
 		innerWidth = 1
 	}
 	if m.historyMode {
-		help := summarizeQueueNotice("enter: load selected chat | up/down: navigate | esc or /: close", innerWidth)
+		help := summarizeQueueNotice("enter: open full chat | up/down: navigate | esc or /: close", innerWidth)
 		selected := "no history selected"
 		if len(m.historyFiles) > 0 && m.historyIndex >= 0 && m.historyIndex < len(m.historyFiles) {
 			selected = strings.Replace(m.historyFiles[m.historyIndex], os.Getenv("HOME"), "~", 1)
@@ -933,6 +951,138 @@ func (m ChatModel) commandQueueState() string {
 	return fmt.Sprintf("%d", len(m.queuedPrompts))
 }
 
+func (m ChatModel) feedBodyWidth() int {
+	w := m.width - 2 // feed panel border
+	if w < 1 {
+		w = 1
+	}
+	return w
+}
+
+func (m ChatModel) viewportContentWidth() int {
+	w := m.feedBodyWidth()
+	if w > 1 {
+		return w - 1 // reserve one column for scrollbar
+	}
+	return w
+}
+
+func (m ChatModel) renderFeedBodyWithScrollbar() string {
+	content := m.viewport.View()
+	feedW := m.feedBodyWidth()
+	contentW := m.viewport.Width
+	if contentW < 1 {
+		contentW = 1
+	}
+	if feedW <= contentW {
+		return content
+	}
+
+	h := m.viewport.Height
+	if h < 1 {
+		h = 1
+	}
+	lines := strings.Split(content, "\n")
+	if len(lines) < h {
+		pad := make([]string, h-len(lines))
+		lines = append(lines, pad...)
+	} else if len(lines) > h {
+		lines = lines[:h]
+	}
+
+	thumbTop, thumbHeight := m.feedScrollbarGeometry(h)
+	var b strings.Builder
+	for i := 0; i < h; i++ {
+		line := lipgloss.NewStyle().
+			MaxWidth(contentW).
+			Width(contentW).
+			Render(lines[i])
+
+		barStyle := scrollbarTrackStyle
+		barRune := "│"
+		if i >= thumbTop && i < thumbTop+thumbHeight {
+			barStyle = scrollbarThumbStyle
+			barRune = "█"
+		}
+		b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, line, barStyle.Render(barRune)))
+		if i < h-1 {
+			b.WriteRune('\n')
+		}
+	}
+	return b.String()
+}
+
+func (m ChatModel) historyPreviewLines() int {
+	h := m.viewport.Height
+	if h <= 0 {
+		return 6
+	}
+	// Keep timestamp list visible and preview intentionally concise.
+	const fixedRows = 18
+	n := h - fixedRows
+	if n < 4 {
+		return 4
+	}
+	if n > 10 {
+		return 10
+	}
+	return n
+}
+
+func (m ChatModel) renderMarkdownSnippet(content string, width, maxLines int) string {
+	rendered := m.renderAssistantMarkdown(content, width, true)
+	lines := strings.Split(rendered, "\n")
+	if maxLines <= 0 || len(lines) <= maxLines {
+		return rendered
+	}
+	lines = lines[:maxLines]
+	lines = append(lines, toolMsgStyle.Width(width).Render("..."))
+	return strings.Join(lines, "\n")
+}
+
+func (m ChatModel) feedScrollbarGeometry(height int) (thumbTop, thumbHeight int) {
+	if height <= 0 {
+		return 0, 0
+	}
+	total := m.viewport.TotalLineCount()
+	if total <= 0 {
+		return 0, height
+	}
+	if total <= height {
+		return 0, height
+	}
+
+	thumbHeight = (height*height + total - 1) / total
+	if thumbHeight < 1 {
+		thumbHeight = 1
+	}
+	if thumbHeight > height {
+		thumbHeight = height
+	}
+
+	maxOffset := total - height
+	if maxOffset <= 0 || height <= thumbHeight {
+		return 0, thumbHeight
+	}
+
+	y := m.viewport.YOffset
+	if y < 0 {
+		y = 0
+	}
+	if y > maxOffset {
+		y = maxOffset
+	}
+	thumbTop = (y*(height-thumbHeight) + maxOffset/2) / maxOffset
+	if thumbTop < 0 {
+		thumbTop = 0
+	}
+	maxTop := height - thumbHeight
+	if thumbTop > maxTop {
+		thumbTop = maxTop
+	}
+	return thumbTop, thumbHeight
+}
+
 func (m ChatModel) historySelectionStatus() string {
 	if len(m.historyFiles) == 0 {
 		return "0/0"
@@ -948,39 +1098,27 @@ func (m ChatModel) footerHintText(available int) string {
 	var candidates []string
 	if m.historyMode {
 		candidates = []string{
-			"up/down: select | enter: load | esc: close | /: close | ctrl+c: quit",
-			"up/down: select | enter: load | esc: close | ctrl+c: quit",
-			"enter: load | esc: close | ctrl+c: quit",
+			"up/down: select | enter: open | esc: close | /: close | ctrl+c: quit",
+			"up/down: select | enter: open | esc: close | ctrl+c: quit",
+			"enter: open | esc: close | ctrl+c: quit",
 			"esc: close",
 		}
 	} else if m.streaming {
 		candidates = []string{
-			"tab: queue | esc: cancel | home/end: pause/live | ctrl+c: quit | hist: /",
-			"tab: queue | esc: cancel | ctrl+c: quit | hist: /",
-			"tab: queue | esc: cancel | ctrl+c: quit",
+			"up/down: scroll | tab: queue | esc: cancel | home/end: pause/live | ctrl+c: quit | hist: /",
+			"up/down: scroll | tab: queue | esc: cancel | ctrl+c: quit | hist: /",
+			"up/down: scroll | tab: queue | esc: cancel | ctrl+c: quit",
 			"esc: cancel | ctrl+c: quit",
 			"esc: cancel",
 		}
 	} else {
 		candidates = []string{
-			"enter: send | ctrl+t: model | ctrl+y: copy | tab: accounts | ctrl+c: quit | hist: /",
-			"enter: send | ctrl+t: model | tab: accounts | ctrl+c: quit | hist: /",
-			"enter: send | tab: accounts | ctrl+c: quit | hist: /",
-			"enter: send | tab: accounts | ctrl+c: quit",
+			"up/down: scroll | enter: send | ctrl+t: model | ctrl+y: copy | tab: accounts | ctrl+c: quit | hist: /",
+			"up/down: scroll | enter: send | ctrl+t: model | tab: accounts | ctrl+c: quit | hist: /",
+			"up/down: scroll | enter: send | tab: accounts | ctrl+c: quit | hist: /",
+			"up/down: scroll | enter: send | tab: accounts | ctrl+c: quit",
 			"enter: send | ctrl+c: quit",
 		}
-	}
-
-	savePath := "save: " + chatHistoryDisplayDir()
-	for _, c := range candidates {
-		withSave := c + " | " + savePath
-		if lipgloss.Width(withSave) <= available {
-			return withSave
-		}
-	}
-
-	if lipgloss.Width(savePath) <= available {
-		return savePath
 	}
 
 	for _, c := range candidates {
@@ -988,7 +1126,19 @@ func (m ChatModel) footerHintText(available int) string {
 			return c
 		}
 	}
-	return summarizeQueueNotice(savePath, available)
+	return summarizeQueueNotice(candidates[len(candidates)-1], available)
+}
+
+func fitFooterRow(text string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	text = summarizeQueueNotice(text, width)
+	pad := width - lipgloss.Width(text)
+	if pad < 0 {
+		pad = 0
+	}
+	return text + strings.Repeat(" ", pad)
 }
 
 func (m *ChatModel) loadSelectedHistory() tea.Cmd {

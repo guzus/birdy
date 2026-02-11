@@ -17,6 +17,14 @@ const (
 	accountViewAdd
 )
 
+const (
+	accountTopGutterHeight = 1
+	accountHeaderHeight    = 3
+	accountBodyChrome      = 3 // panel border + section title
+	accountFooterHeight    = 3
+	accountOverhead        = accountTopGutterHeight + accountHeaderHeight + accountBodyChrome + accountFooterHeight
+)
+
 // AccountModel manages the account list and add-account form.
 type AccountModel struct {
 	width    int
@@ -42,6 +50,11 @@ func (m *AccountModel) initInputs() {
 	for i := range m.inputs {
 		t := textinput.New()
 		t.CharLimit = 256
+		t.Prompt = ""
+		t.PromptStyle = lipgloss.NewStyle().Foreground(colorLightFg).Background(colorDarkBg)
+		t.TextStyle = lipgloss.NewStyle().Foreground(colorLightFg).Background(colorDarkBg)
+		t.PlaceholderStyle = lipgloss.NewStyle().Foreground(colorMuted).Background(colorDarkBg)
+		t.Cursor.Style = lipgloss.NewStyle().Foreground(colorDarkBg).Background(colorBlue)
 		switch i {
 		case 0:
 			t.Placeholder = "account name"
@@ -75,6 +88,13 @@ func (m AccountModel) Update(msg tea.Msg) (AccountModel, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		inputWidth := m.accountBodyWidth() - 18
+		if inputWidth < 20 {
+			inputWidth = 20
+		}
+		for i := range m.inputs {
+			m.inputs[i].Width = inputWidth
+		}
 		return m, nil
 
 	case tea.KeyMsg:
@@ -220,67 +240,85 @@ func (m AccountModel) View() string {
 	if m.width == 0 {
 		return ""
 	}
+	panelWidth := m.accountPanelWidth()
+	innerWidth := m.accountBodyWidth()
 
-	// Header
-	title := "Accounts"
+	title := "ACCOUNTS"
+	mode := "LIST"
 	if m.view == accountViewAdd {
-		title = "Add Account"
+		mode = "ADD"
 	}
-	header := accountHeaderStyle.
-		Width(m.width).
-		Render(title)
+	right := fmt.Sprintf("%d configured | %s", len(m.accounts), mode)
+	headerText := composeTopRow(innerWidth, title, right)
+	header := headerStyle.Copy().Width(panelWidth).Render(headerText)
 
-	// Content
 	var content string
+	bodyLabel := "LIST"
 	if m.view == accountViewAdd {
 		content = m.viewAddForm()
+		bodyLabel = "ADD ACCOUNT"
 	} else {
 		content = m.viewList()
 	}
 
-	// Footer
 	var footer string
 	if m.view == accountViewAdd {
-		footer = statusBarStyle.Width(m.width).
-			Render("tab: next field | enter: save | esc: cancel")
+		footer = keysPanelStyle.Width(panelWidth).
+			Render(composeTopRow(innerWidth, "KEYS", "tab: next | enter: save | esc: back"))
 	} else {
-		footer = statusBarStyle.Width(m.width).
-			Render("j/k: navigate | a: add | d: delete | tab/esc: back")
+		footer = keysPanelStyle.Width(panelWidth).
+			Render(composeTopRow(innerWidth, "KEYS", "j/k: move | a: add | d: delete | tab/esc: back"))
 	}
 
-	// Fill middle area
-	contentHeight := m.height - 2 // header + footer
+	contentHeight := m.height - accountOverhead
 	if contentHeight < 1 {
 		contentHeight = 1
 	}
 	content = lipgloss.NewStyle().
 		Height(contentHeight).
-		Width(m.width).
+		Width(innerWidth).
+		Background(colorDarkBg).
 		Render(content)
+	bodyTitle := sectionTitleStyle.Width(innerWidth).Render(bodyLabel)
+	bodyPanel := feedPanelStyle.Width(panelWidth).Render(lipgloss.JoinVertical(lipgloss.Left, bodyTitle, content))
 
-	return lipgloss.JoinVertical(lipgloss.Left, header, content, footer)
+	layout := lipgloss.JoinVertical(lipgloss.Left,
+		lipgloss.NewStyle().Width(panelWidth).Render(" "),
+		header,
+		bodyPanel,
+		footer,
+	)
+	return appStyle.Copy().Width(m.width).Height(m.height).Render(layout)
 }
 
 func (m AccountModel) viewList() string {
+	w := m.accountBodyWidth()
+	if w < 1 {
+		w = 1
+	}
+
 	if m.err != "" {
-		return "\n" + errorMsgStyle.Padding(0, 2).Render("Error: "+m.err)
+		return errorMsgStyle.Width(w).Padding(1, 1).Render("Error: " + m.err)
 	}
 
 	if len(m.accounts) == 0 {
 		return lipgloss.NewStyle().
 			Foreground(colorMuted).
-			Padding(1, 2).
+			Background(colorDarkBg).
+			Padding(1, 1).
+			Width(w).
 			Render("No accounts configured. Press 'a' to add one.")
 	}
 
 	var b strings.Builder
+	b.WriteString(accountListHeaderStyle.Width(w).Render(fmt.Sprintf("%-24s %-6s %-16s", "NAME", "USES", "LAST USED")))
 	b.WriteString("\n")
 	for i, a := range m.accounts {
-		cursor := "  "
-		style := accountNormalStyle
+		prefix := "  "
+		style := accountNormalStyle.Copy()
 		if i == m.cursor {
-			cursor = "> "
-			style = accountSelectedStyle
+			prefix = "> "
+			style = accountSelectedStyle.Copy()
 		}
 
 		lastUsed := "never"
@@ -288,28 +326,66 @@ func (m AccountModel) viewList() string {
 			lastUsed = a.LastUsed.Format("2006-01-02 15:04")
 		}
 
-		line := fmt.Sprintf("%s%-16s  %3d uses   last: %s",
-			cursor, a.Name, a.UseCount, lastUsed)
-		b.WriteString(style.Render(line))
+		nameCol := fitAccountText(a.Name, 24)
+		line := fmt.Sprintf("%s%-24s %-6d %-16s", prefix, nameCol, a.UseCount, lastUsed)
+		b.WriteString(style.Width(w).Render(line))
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
+	b.WriteString(accountHintStyle.Width(w).Render("Tip: press 'a' to add another account"))
+
+	return b.String()
+}
+
+func (m AccountModel) viewAddForm() string {
+	w := m.accountBodyWidth()
+	if w < 1 {
+		w = 1
+	}
+
+	var b strings.Builder
+	b.WriteString(accountHintStyle.Width(w).Render("Add a new account. Fields are saved locally only."))
+	b.WriteString("\n\n")
+
+	labels := [3]string{"Name", "Auth Token", "CT0"}
+	for i, label := range labels {
+		l := accountFormLabelStyle.Render(label + ":")
+		b.WriteString(l + " " + m.inputs[i].View() + "\n\n")
+	}
+
+	if m.err != "" {
+		b.WriteString(errorMsgStyle.Width(w).Render("Error: " + m.err))
 		b.WriteString("\n")
 	}
 
 	return b.String()
 }
 
-func (m AccountModel) viewAddForm() string {
-	var b strings.Builder
-	b.WriteString("\n")
-
-	labels := [3]string{"Name:", "Auth Token:", "CT0:"}
-	for i, label := range labels {
-		l := accountFormLabelStyle.Render(label)
-		b.WriteString("  " + l + " " + m.inputs[i].View() + "\n\n")
+func (m AccountModel) accountPanelWidth() int {
+	w := m.width - 2
+	if w < 1 {
+		w = 1
 	}
+	return w
+}
 
-	if m.err != "" {
-		b.WriteString("  " + errorMsgStyle.Render("Error: "+m.err) + "\n")
+func (m AccountModel) accountBodyWidth() int {
+	w := m.width - 4
+	if w < 1 {
+		w = 1
 	}
+	return w
+}
 
-	return b.String()
+func fitAccountText(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	if len(s) <= max {
+		return s
+	}
+	if max <= 3 {
+		return strings.Repeat(".", max)
+	}
+	return s[:max-3] + "..."
 }

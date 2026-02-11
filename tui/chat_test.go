@@ -43,6 +43,9 @@ func TestChatWindowSize(t *testing.T) {
 	if !m.ready {
 		t.Error("expected ready=true after WindowSizeMsg")
 	}
+	if m.viewport.Width != 77 {
+		t.Errorf("expected viewport width 77 with scrollbar reservation, got %d", m.viewport.Width)
+	}
 }
 
 func TestChatTabSwitchesToAccounts(t *testing.T) {
@@ -156,6 +159,29 @@ func TestChatSlashTypesNormallyWhenInputNotEmpty(t *testing.T) {
 	}
 }
 
+func TestChatSlashOpensHistoryModeWhileStreaming(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	chatsDir := filepath.Join(home, ".config", "birdy", "chats")
+	if err := os.MkdirAll(chatsDir, 0700); err != nil {
+		t.Fatalf("mkdir chats: %v", err)
+	}
+	historyPath := filepath.Join(chatsDir, "2026-02-11_123000.md")
+	if err := os.WriteFile(historyPath, []byte("# birdy chat\n\nhello"), 0600); err != nil {
+		t.Fatalf("write history: %v", err)
+	}
+
+	m := NewChatModel()
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.streaming = true
+	m.input.SetValue("")
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	if !m.historyMode {
+		t.Fatal("expected slash to open history mode while streaming")
+	}
+}
+
 func TestChatHistoryModeReplacesFeedLabel(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -230,6 +256,61 @@ func TestChatHistoryEnterLoadsSelectedChat(t *testing.T) {
 	}
 }
 
+func TestHistoryViewShowsGlimpseAndList(t *testing.T) {
+	m := NewChatModel()
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.historyMode = true
+	m.historyFiles = []string{
+		"/tmp/2026-02-11_120000.md",
+		"/tmp/2026-02-11_121500.md",
+	}
+	m.historyIndex = 1
+	m.historyPreview = strings.Repeat("line\n", 80)
+
+	out := m.renderHistoryMessages()
+	if !contains(out, "GLIMPSE") {
+		t.Fatalf("expected glimpse section, got %q", out)
+	}
+	if !contains(out, "Press Enter to open full transcript in feed.") {
+		t.Fatalf("expected enter hint in glimpse, got %q", out)
+	}
+	if !contains(out, "  1. 2026-02-11 12:00:00") || !contains(out, ">  2. 2026-02-11 12:15:00") {
+		t.Fatalf("expected timestamp list rows, got %q", out)
+	}
+}
+
+func TestHistoryOpenResetsViewportToTop(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	chatsDir := filepath.Join(home, ".config", "birdy", "chats")
+	if err := os.MkdirAll(chatsDir, 0700); err != nil {
+		t.Fatalf("mkdir chats: %v", err)
+	}
+	historyPath := filepath.Join(chatsDir, "2026-02-11_123000.md")
+	if err := os.WriteFile(historyPath, []byte("# birdy chat\n\nhello"), 0600); err != nil {
+		t.Fatalf("write history: %v", err)
+	}
+
+	m := NewChatModel()
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	var msgs []chatMessage
+	for i := 0; i < 220; i++ {
+		msgs = append(msgs, chatMessage{role: "user", content: fmt.Sprintf("line %d", i)})
+	}
+	m.messages = msgs
+	m.refreshViewport()
+	m.viewport.GotoBottom()
+	if m.viewport.YOffset == 0 {
+		t.Fatal("expected non-zero offset before opening history")
+	}
+
+	m.input.SetValue("")
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	if m.viewport.YOffset != 0 {
+		t.Fatalf("expected history open to reset viewport to top, got %d", m.viewport.YOffset)
+	}
+}
+
 func TestRenderCommandBarContentHistoryModeShowsLoadHelp(t *testing.T) {
 	m := NewChatModel()
 	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -237,7 +318,7 @@ func TestRenderCommandBarContentHistoryModeShowsLoadHelp(t *testing.T) {
 	m.historyFiles = []string{"/tmp/chat.md"}
 	m.historyIndex = 0
 	content := m.renderCommandBarContent()
-	if !contains(content, "enter: load selected chat") {
+	if !contains(content, "enter: open full chat") {
 		t.Fatalf("expected load helper text, got %q", content)
 	}
 	if !contains(content, "/tmp/chat.md") {
@@ -442,6 +523,34 @@ func TestChatErrorMsg(t *testing.T) {
 	}
 }
 
+func TestChatErrorMsgWhileHistoryModeDoesNotAppendRawError(t *testing.T) {
+	m := NewChatModel()
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.streaming = true
+	m.historyMode = true
+	m.messages = []chatMessage{
+		{role: "user", content: "hello"},
+		{role: "assistant", content: "partial"},
+	}
+
+	m, cmd := m.Update(claudeErrorMsg{Err: fmt.Errorf("test error")})
+	if cmd == nil {
+		t.Fatal("expected clear-notice timer command")
+	}
+	if m.streaming {
+		t.Error("expected streaming=false after error")
+	}
+	if len(m.messages) != 2 {
+		t.Fatalf("expected no new error message while in history mode, got %d messages", len(m.messages))
+	}
+	if contains(m.renderMessages(), "test error") {
+		t.Fatal("expected raw error text hidden while browsing history")
+	}
+	if !contains(m.queueNotice, "stream failed") {
+		t.Fatalf("expected background failure notice, got %q", m.queueNotice)
+	}
+}
+
 func TestChatRenderMessagesEmpty(t *testing.T) {
 	m := NewChatModel()
 	content := m.renderMessages()
@@ -536,6 +645,19 @@ func TestChatFooterShowsEscDuringStreaming(t *testing.T) {
 	view := m.View()
 	if !contains(view, "esc: cancel") {
 		t.Error("expected 'esc: cancel' in footer during streaming")
+	}
+	if !contains(view, "up/down: scroll") {
+		t.Error("expected keyboard scroll hint in footer during streaming")
+	}
+}
+
+func TestChatFooterShowsSavePathOnBottomLine(t *testing.T) {
+	m := NewChatModel()
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	view := m.View()
+	if !contains(view, "save: ~/.config/birdy/chats") {
+		t.Fatalf("expected save path in footer, got %q", view)
 	}
 }
 
@@ -964,6 +1086,44 @@ func TestRenderMessagesRespectsNarrowWidthAfterResize(t *testing.T) {
 		if lipgloss.Width(line) > 10 {
 			t.Fatalf("line exceeds width after narrow resize: %q", line)
 		}
+	}
+}
+
+func TestFeedScrollbarGeometryIndicatesMiddleScroll(t *testing.T) {
+	m := NewChatModel()
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	var msgs []chatMessage
+	for i := 0; i < 320; i++ {
+		msgs = append(msgs, chatMessage{role: "user", content: fmt.Sprintf("line %d", i)})
+	}
+	m.messages = msgs
+	m.refreshViewport()
+
+	mid := m.viewport.TotalLineCount() / 2
+	m.viewport.SetYOffset(mid)
+	top, h := m.feedScrollbarGeometry(m.viewport.Height)
+	if h <= 0 || h >= m.viewport.Height {
+		t.Fatalf("expected partial thumb height, got %d for viewport height %d", h, m.viewport.Height)
+	}
+	if top <= 0 || top >= m.viewport.Height-1 {
+		t.Fatalf("expected thumb to indicate middle area, got top=%d height=%d viewportHeight=%d", top, h, m.viewport.Height)
+	}
+}
+
+func TestRenderFeedBodyWithScrollbarShowsThumb(t *testing.T) {
+	m := NewChatModel()
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	var msgs []chatMessage
+	for i := 0; i < 260; i++ {
+		msgs = append(msgs, chatMessage{role: "user", content: fmt.Sprintf("line %d", i)})
+	}
+	m.messages = msgs
+	m.refreshViewport()
+	m.viewport.SetYOffset(m.viewport.TotalLineCount() / 3)
+
+	body := ansiCsiPattern.ReplaceAllString(m.renderFeedBodyWithScrollbar(), "")
+	if !contains(body, "█") {
+		t.Fatalf("expected rendered feed scrollbar thumb, got %q", body)
 	}
 }
 
