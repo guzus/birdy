@@ -2,6 +2,8 @@ package tui
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -109,6 +111,137 @@ func TestChatEnterBlockedDuringStreaming(t *testing.T) {
 
 	if len(m.messages) != prevMsgCount {
 		t.Error("enter during streaming should not add messages")
+	}
+}
+
+func TestChatSlashOpensHistoryModeWhenInputEmpty(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	chatsDir := filepath.Join(home, ".config", "birdy", "chats")
+	if err := os.MkdirAll(chatsDir, 0700); err != nil {
+		t.Fatalf("mkdir chats: %v", err)
+	}
+	historyPath := filepath.Join(chatsDir, "2026-02-11_123000.md")
+	if err := os.WriteFile(historyPath, []byte("# birdy chat\n\nhello"), 0600); err != nil {
+		t.Fatalf("write history: %v", err)
+	}
+
+	m := NewChatModel()
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.input.SetValue("")
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	if !m.historyMode {
+		t.Fatal("expected slash to open history mode when input is empty")
+	}
+	if len(m.historyFiles) == 0 {
+		t.Fatal("expected history files to be loaded")
+	}
+	if !contains(m.renderMessages(), "saved at:") {
+		t.Fatal("expected history panel content")
+	}
+}
+
+func TestChatSlashTypesNormallyWhenInputNotEmpty(t *testing.T) {
+	m := NewChatModel()
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.input.SetValue("abc")
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	if m.historyMode {
+		t.Fatal("expected slash not to open history mode when input has text")
+	}
+	if got := m.input.Value(); got != "abc/" {
+		t.Fatalf("expected slash to be typed into input, got %q", got)
+	}
+}
+
+func TestChatHistoryModeReplacesFeedLabel(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	chatsDir := filepath.Join(home, ".config", "birdy", "chats")
+	if err := os.MkdirAll(chatsDir, 0700); err != nil {
+		t.Fatalf("mkdir chats: %v", err)
+	}
+	historyPath := filepath.Join(chatsDir, "2026-02-11_123000.md")
+	if err := os.WriteFile(historyPath, []byte("# birdy chat\n\nhello"), 0600); err != nil {
+		t.Fatalf("write history: %v", err)
+	}
+
+	m := NewChatModel()
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	if !m.historyMode {
+		t.Fatal("expected history mode to be active")
+	}
+
+	view := m.View()
+	if !contains(view, "HISTORY") {
+		t.Fatal("expected history label in view")
+	}
+	if contains(view, "FEED") {
+		t.Fatal("expected FEED label to be hidden in history mode")
+	}
+}
+
+func TestChatHistoryEnterLoadsSelectedChat(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	chatsDir := filepath.Join(home, ".config", "birdy", "chats")
+	if err := os.MkdirAll(chatsDir, 0700); err != nil {
+		t.Fatalf("mkdir chats: %v", err)
+	}
+	contents := strings.Join([]string{
+		"# birdy chat — 2026-02-11 12:30:00",
+		"",
+		"## You",
+		"",
+		"hello",
+		"",
+		"## birdy",
+		"",
+		"hi there",
+		"",
+	}, "\n")
+	historyPath := filepath.Join(chatsDir, "2026-02-11_123000.md")
+	if err := os.WriteFile(historyPath, []byte(contents), 0600); err != nil {
+		t.Fatalf("write history: %v", err)
+	}
+
+	m := NewChatModel()
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	if !m.historyMode {
+		t.Fatal("expected history mode to be active")
+	}
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if m.historyMode {
+		t.Fatal("expected enter to exit history mode after loading")
+	}
+	if len(m.messages) < 2 {
+		t.Fatalf("expected loaded messages, got %d", len(m.messages))
+	}
+	if m.messages[0].role != "user" || m.messages[0].content != "hello" {
+		t.Fatalf("unexpected first loaded message: %#v", m.messages[0])
+	}
+	if !contains(m.queueNotice, "loaded:") {
+		t.Fatalf("expected loaded notice, got %q", m.queueNotice)
+	}
+}
+
+func TestRenderCommandBarContentHistoryModeShowsLoadHelp(t *testing.T) {
+	m := NewChatModel()
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.historyMode = true
+	m.historyFiles = []string{"/tmp/chat.md"}
+	m.historyIndex = 0
+	content := m.renderCommandBarContent()
+	if !contains(content, "enter: load selected chat") {
+		t.Fatalf("expected load helper text, got %q", content)
+	}
+	if !contains(content, "/tmp/chat.md") {
+		t.Fatalf("expected selected file path, got %q", content)
 	}
 }
 
@@ -406,6 +539,185 @@ func TestChatFooterShowsEscDuringStreaming(t *testing.T) {
 	}
 }
 
+func TestChatScrollDisablesAutoFollow(t *testing.T) {
+	m := NewChatModel()
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	var msgs []chatMessage
+	for i := 0; i < 220; i++ {
+		msgs = append(msgs, chatMessage{role: "user", content: fmt.Sprintf("line %d", i)})
+	}
+	m.messages = msgs
+	m.followOutput = true
+	m.refreshViewport()
+	if !m.viewport.AtBottom() {
+		t.Fatal("expected viewport at bottom before scroll")
+	}
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	if m.followOutput {
+		t.Fatal("expected user scroll to disable auto-follow")
+	}
+}
+
+func TestRefreshViewportPreservesScrollWhenAutoFollowDisabled(t *testing.T) {
+	m := NewChatModel()
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	var msgs []chatMessage
+	for i := 0; i < 220; i++ {
+		msgs = append(msgs, chatMessage{role: "user", content: fmt.Sprintf("line %d", i)})
+	}
+	m.messages = msgs
+	m.followOutput = true
+	m.refreshViewport()
+	m.viewport.GotoTop()
+	m.followOutput = false
+	prev := m.viewport.YOffset
+
+	m.messages = append(m.messages, chatMessage{role: "assistant", content: "new line from stream"})
+	m.refreshViewport()
+
+	if got := m.viewport.YOffset; got != prev {
+		t.Fatalf("expected y-offset preserved when auto-follow is disabled, got %d want %d", got, prev)
+	}
+}
+
+func TestChatMouseWheelBurstCoalescing(t *testing.T) {
+	m := NewChatModel()
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	var msgs []chatMessage
+	for i := 0; i < 260; i++ {
+		msgs = append(msgs, chatMessage{role: "user", content: fmt.Sprintf("line %d", i)})
+	}
+	m.messages = msgs
+	m.refreshViewport()
+
+	now := time.Unix(1700000000, 0)
+	m.nowFn = func() time.Time { return now }
+	wheelUp := tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonWheelUp}
+
+	before := m.viewport.YOffset
+	m, _ = m.Update(wheelUp)
+	afterFirst := m.viewport.YOffset
+	if afterFirst >= before {
+		t.Fatalf("expected first wheel event to scroll up, before=%d after=%d", before, afterFirst)
+	}
+
+	m, _ = m.Update(wheelUp)
+	afterSecond := m.viewport.YOffset
+	if afterSecond != afterFirst {
+		t.Fatalf("expected second wheel event in same instant to be coalesced, got %d then %d", afterFirst, afterSecond)
+	}
+
+	now = now.Add(8 * time.Millisecond)
+	m, _ = m.Update(wheelUp)
+	afterThird := m.viewport.YOffset
+	if afterThird >= afterSecond {
+		t.Fatalf("expected later wheel event to scroll up again, got %d then %d", afterSecond, afterThird)
+	}
+}
+
+func TestRenderStreamingTailMarkdownThrottlesRerender(t *testing.T) {
+	m := NewChatModel()
+	m.followOutput = true
+	now := time.Unix(1700000000, 0)
+	m.nowFn = func() time.Time { return now }
+
+	_ = m.renderStreamingTailMarkdown("hello", 80)
+	if got := m.streamTailContent; got != "hello" {
+		t.Fatalf("expected initial streaming tail content cached, got %q", got)
+	}
+
+	now = now.Add(10 * time.Millisecond)
+	_ = m.renderStreamingTailMarkdown("hello world", 80)
+	if got := m.streamTailContent; got != "hello" {
+		t.Fatalf("expected fast non-structural update to be throttled, got %q", got)
+	}
+
+	now = now.Add(130 * time.Millisecond)
+	_ = m.renderStreamingTailMarkdown("hello world", 80)
+	if got := m.streamTailContent; got != "hello world" {
+		t.Fatalf("expected delayed update to rerender, got %q", got)
+	}
+}
+
+func TestRenderStreamingTailMarkdownSkipsWhileNotFollowing(t *testing.T) {
+	m := NewChatModel()
+	m.followOutput = true
+	now := time.Unix(1700000000, 0)
+	m.nowFn = func() time.Time { return now }
+
+	_ = m.renderStreamingTailMarkdown("alpha", 80)
+	if got := m.streamTailContent; got != "alpha" {
+		t.Fatalf("expected baseline cache, got %q", got)
+	}
+
+	m.followOutput = false
+	now = now.Add(500 * time.Millisecond)
+	_ = m.renderStreamingTailMarkdown("alpha beta gamma", 80)
+	if got := m.streamTailContent; got != "alpha" {
+		t.Fatalf("expected no rerender while not following output, got %q", got)
+	}
+}
+
+func TestChatTokenMsgDoesNotRefreshViewportWhenNotFollowing(t *testing.T) {
+	m := NewChatModel()
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	var msgs []chatMessage
+	for i := 0; i < 120; i++ {
+		msgs = append(msgs, chatMessage{role: "user", content: fmt.Sprintf("line %d", i)})
+	}
+	msgs = append(msgs, chatMessage{role: "assistant", content: "tail"})
+	m.messages = msgs
+	m.streaming = true
+	m.followOutput = true
+	m.refreshViewport()
+	m.viewport.GotoTop()
+	m.followOutput = false
+	before := m.viewport.View()
+
+	m, _ = m.Update(claudeTokenMsg{Text: " update"})
+	after := m.viewport.View()
+
+	if after != before {
+		t.Fatal("expected viewport to stay unchanged while not following output")
+	}
+}
+
+func TestChatScrollBackToBottomCatchesUpStreamedContent(t *testing.T) {
+	m := NewChatModel()
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	var msgs []chatMessage
+	for i := 0; i < 160; i++ {
+		msgs = append(msgs, chatMessage{role: "user", content: fmt.Sprintf("line %d", i)})
+	}
+	msgs = append(msgs, chatMessage{role: "assistant", content: "tail"})
+	m.messages = msgs
+	m.streaming = true
+	m.followOutput = true
+	m.refreshViewport()
+	m.viewport.GotoTop()
+	m.followOutput = false
+
+	m, _ = m.Update(claudeTokenMsg{Text: " updated"})
+	if m.followOutput {
+		t.Fatal("expected not following output while scrolled away")
+	}
+
+	for i := 0; i < 2000 && !m.viewport.AtBottom(); i++ {
+		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	}
+	if !m.viewport.AtBottom() {
+		t.Fatal("expected to reach bottom while scrolling down")
+	}
+	if !m.followOutput {
+		t.Fatal("expected followOutput to re-enable at bottom")
+	}
+	plainView := ansiCsiPattern.ReplaceAllString(m.viewport.View(), "")
+	if !contains(plainView, "tail updated") {
+		t.Fatalf("expected viewport to catch up with streamed tail content, got %q", plainView)
+	}
+}
+
 func TestCommandBarQueueLabelResponsive(t *testing.T) {
 	m := NewChatModel()
 	m.queuedPrompts = []string{"one", "two"}
@@ -529,6 +841,22 @@ func TestChatIgnoresSingleLeakedMouseKey(t *testing.T) {
 
 	if got := m.input.Value(); got != "hello" {
 		t.Errorf("expected leaked mouse key to be ignored, got input %q", got)
+	}
+}
+
+func TestChatLeakedMouseKeyDoesNotResanitizeUnchangedInput(t *testing.T) {
+	m := NewChatModel()
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	// Existing value may contain stale escape fragments from prior terminal noise.
+	// Leaked mouse events should be swallowed quickly without re-running sanitizer.
+	raw := "[43;1Rhello"
+	m.input.SetValue(raw)
+
+	leaked := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("[<65;25;12M")}
+	m, _ = m.Update(leaked)
+
+	if got := m.input.Value(); got != raw {
+		t.Errorf("expected leaked mouse key to avoid resanitizing unchanged input, got %q", got)
 	}
 }
 

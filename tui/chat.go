@@ -3,7 +3,9 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
@@ -44,9 +46,21 @@ type ChatModel struct {
 	copied           bool
 	model            string
 	mouseSeqMode     bool
+	followOutput     bool
+	historyMode      bool
+	historyFiles     []string
+	historyIndex     int
+	historyPreview   string
+	historyError     string
+	lastWheelAt      time.Time
+	streamTailContent    string
+	streamTailRendered   string
+	streamTailWidth      int
+	streamTailRenderedAt time.Time
 	markdownCache    map[string]string
 	mdRenderers      map[int]*glamour.TermRenderer
 	lastStreamRender time.Time
+	nowFn            func() time.Time
 }
 
 type clearCopiedMsg struct{}
@@ -89,8 +103,10 @@ func NewChatModel() ChatModel {
 		input:         ti,
 		spinner:       sp,
 		model:         model,
+		followOutput:  true,
 		markdownCache: make(map[string]string, 128),
 		mdRenderers:   make(map[int]*glamour.TermRenderer, 8),
+		nowFn:         time.Now,
 	}
 	m.refreshAccountCount()
 	return m
@@ -108,10 +124,11 @@ func (m ChatModel) Init() tea.Cmd {
 }
 
 const (
-	headerHeight = 1
-	inputHeight  = 4 // border top + queue row + input row + border bottom
-	footerHeight = 1
-	chatOverhead = headerHeight + inputHeight + footerHeight
+	headerHeight = 3
+	feedChrome   = 3 // panel border + section title row
+	commandHeight = 5 // panel border + title row + simple input block
+	footerHeight  = 3 // panel border + key hints row
+	chatOverhead  = headerHeight + feedChrome + commandHeight + footerHeight
 )
 
 func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
@@ -126,6 +143,12 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		}
 	}
 
+	if mm, ok := msg.(tea.MouseMsg); ok {
+		if !m.shouldHandleMouseWheel(mm) {
+			return m, nil
+		}
+	}
+
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		prevWidth := m.width
@@ -135,11 +158,16 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			// Wrapped markdown output depends on width.
 			m.markdownCache = make(map[string]string, 128)
 		}
-		inputWidth := m.width - 6 // border (2) + padding (2) + margin
+		inputWidth := m.width - 4 // command panel border + simple inline input
 		if inputWidth < 1 {
 			inputWidth = 1
 		}
 		m.input.Width = inputWidth
+
+		vpWidth := m.width - 2 // feed panel border
+		if vpWidth < 1 {
+			vpWidth = 1
+		}
 
 		vpHeight := m.height - chatOverhead
 		if vpHeight < 1 {
@@ -147,11 +175,11 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		}
 
 		if !m.ready {
-			m.viewport = viewport.New(m.width, vpHeight)
+			m.viewport = viewport.New(vpWidth, vpHeight)
 			m.viewport.SetContent(m.renderMessages())
 			m.ready = true
 		} else {
-			m.viewport.Width = m.width
+			m.viewport.Width = vpWidth
 			m.viewport.Height = vpHeight
 			m.viewport.SetContent(m.renderMessages())
 		}
@@ -159,11 +187,66 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 
 	case tea.KeyMsg:
 		if m.handleLeakedMouseKey(msg) {
-			m.input.SetValue(sanitizePromptInput(m.input.Value()))
+			// Leaked mouse/scroll escape keys are noise; swallow quickly.
+			// Avoid running full prompt sanitization on every burst event,
+			// which can stall the UI under heavy scroll input.
 			return m, nil
 		}
 
+		if m.historyMode {
+			switch msg.String() {
+			case "esc", "/":
+				m.historyMode = false
+				m.historyError = ""
+				m.refreshViewport()
+				return m, nil
+			case "up", "k":
+				if m.historyIndex > 0 {
+					m.historyIndex--
+					m.refreshHistoryPreview()
+					m.refreshViewport()
+				}
+				return m, nil
+			case "down", "j":
+				if m.historyIndex < len(m.historyFiles)-1 {
+					m.historyIndex++
+					m.refreshHistoryPreview()
+					m.refreshViewport()
+				}
+				return m, nil
+			case "home", "g":
+				if len(m.historyFiles) > 0 {
+					m.historyIndex = 0
+					m.refreshHistoryPreview()
+					m.refreshViewport()
+				}
+				return m, nil
+			case "end", "G":
+				if n := len(m.historyFiles); n > 0 {
+					m.historyIndex = n - 1
+					m.refreshHistoryPreview()
+					m.refreshViewport()
+				}
+				return m, nil
+			case "enter":
+				return m, m.loadSelectedHistory()
+			default:
+				return m, nil
+			}
+		}
+
 		switch msg.String() {
+		case "/":
+			if m.streaming {
+				break
+			}
+			if strings.TrimSpace(m.input.Value()) != "" {
+				break
+			}
+			m.openHistoryMode()
+			m.refreshViewport()
+			return m, nil
+
 		case "tab":
 			if m.streaming {
 				queued, text := m.enqueueCurrentInput()
@@ -263,7 +346,7 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			m.messages = append(m.messages, chatMessage{role: "assistant"})
 		}
 		m.messages[len(m.messages)-1].content += text
-		if m.shouldRefreshStream(text) {
+		if m.followOutput && m.shouldRefreshStream(text) {
 			m.refreshViewport()
 		}
 		if m.streamCh != nil {
@@ -282,7 +365,7 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			m.messages = append(m.messages, chatMessage{role: "assistant"})
 		}
 		m.messages[len(m.messages)-1].content = text
-		if m.shouldRefreshStream(text) {
+		if m.followOutput && m.shouldRefreshStream(text) {
 			m.refreshViewport()
 		}
 		if m.streamCh != nil {
@@ -294,7 +377,9 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		if cmd != "" {
 			m.messages = append(m.messages, chatMessage{role: "tool", content: cmd})
 		}
-		m.refreshViewport()
+		if m.followOutput {
+			m.refreshViewport()
+		}
 		if m.streamCh != nil {
 			return m, waitForNext(m.streamCh)
 		}
@@ -326,14 +411,29 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 
 	case spinner.TickMsg:
 		// Keep the inline "thinking..." spinner inside viewport content animated.
-		if m.streaming && m.isInlineThinkingShown() {
+		if m.streaming && m.followOutput && m.isInlineThinkingShown() {
 			m.refreshViewportNoScroll()
 		}
 	}
 
 	// Update viewport (scroll)
+	prevFollow := m.followOutput
+	prevYOffset := m.viewport.YOffset
 	var vpCmd tea.Cmd
 	m.viewport, vpCmd = m.viewport.Update(msg)
+	if m.viewport.YOffset != prevYOffset {
+		// User scrolled; stop auto-follow unless they've reached bottom again.
+		m.followOutput = m.viewport.AtBottom()
+		if m.followOutput && !prevFollow {
+			// Re-entering follow mode should immediately refresh the latest tail.
+			m.streamTailContent = ""
+			m.streamTailRendered = ""
+			m.streamTailRenderedAt = time.Time{}
+			m.streamTailWidth = 0
+			// User returned to bottom; catch up with latest streamed content.
+			m.refreshViewport()
+		}
+	}
 	if vpCmd != nil {
 		cmds = append(cmds, vpCmd)
 	}
@@ -351,8 +451,12 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 	}
 	if !skipInput {
 		var tiCmd tea.Cmd
+		prevValue := m.input.Value()
 		m.input, tiCmd = m.input.Update(msg)
-		m.input.SetValue(sanitizePromptInput(m.input.Value()))
+		// Sanitize only when the input actually changed.
+		if nextValue := m.input.Value(); nextValue != prevValue {
+			m.input.SetValue(sanitizePromptInput(nextValue))
+		}
 		if tiCmd != nil {
 			cmds = append(cmds, tiCmd)
 		}
@@ -366,7 +470,9 @@ func (m *ChatModel) refreshViewport() {
 		return
 	}
 	m.viewport.SetContent(m.renderMessages())
-	m.viewport.GotoBottom()
+	if m.followOutput {
+		m.viewport.GotoBottom()
+	}
 }
 
 func (m *ChatModel) refreshViewportNoScroll() {
@@ -398,6 +504,7 @@ func (m *ChatModel) startNextQueuedPrompt() tea.Cmd {
 func (m *ChatModel) beginPrompt(prompt string) tea.Cmd {
 	m.messages = append(m.messages, chatMessage{role: "user", content: prompt})
 	m.streaming = true
+	m.followOutput = true
 	m.lastStreamRender = time.Time{}
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancelStream = cancel
@@ -438,14 +545,21 @@ func (m *ChatModel) isInlineThinkingShown() bool {
 }
 
 func (m *ChatModel) renderMessages() string {
+	if m.historyMode {
+		return m.renderHistoryMessages()
+	}
+
 	if len(m.messages) == 0 {
 		return lipgloss.NewStyle().
 			Foreground(colorMuted).
 			Padding(1, 2).
-			Render("Type a message and press Enter to chat with birdy.\nbirdy can read tweets, search, post, and manage your accounts.")
+			Render("BIRDY terminal ready.\nType a message and press Enter.")
 	}
 
-	w := m.width - 2 // small margin
+	w := m.viewport.Width
+	if w < 1 {
+		w = m.width - 2
+	}
 	if w < 1 {
 		w = 1
 	}
@@ -458,8 +572,12 @@ func (m *ChatModel) renderMessages() string {
 			b.WriteString("\n\n")
 		case "assistant":
 			if msg.content != "" {
-				useCache := !(m.streaming && i == len(m.messages)-1)
-				b.WriteString(m.renderAssistantMarkdown(msg.content, w, useCache))
+				isStreamingTail := m.streaming && i == len(m.messages)-1
+				if isStreamingTail {
+					b.WriteString(m.renderStreamingTailMarkdown(msg.content, w))
+				} else {
+					b.WriteString(m.renderAssistantMarkdown(msg.content, w, true))
+				}
 				// Keep assistant replies visually separated from following turns.
 				b.WriteString("\n\n")
 			}
@@ -481,9 +599,111 @@ func (m *ChatModel) renderMessages() string {
 	return b.String()
 }
 
+func (m *ChatModel) openHistoryMode() {
+	m.historyMode = true
+	m.historyError = ""
+	m.historyFiles = nil
+	m.historyIndex = 0
+	m.historyPreview = ""
+
+	files, err := listChatHistoryFiles(128)
+	if err != nil {
+		m.historyError = fmt.Sprintf("failed to load history: %v", err)
+		return
+	}
+	m.historyFiles = files
+	if len(m.historyFiles) == 0 {
+		m.historyPreview = "No saved chats yet."
+		return
+	}
+	m.refreshHistoryPreview()
+}
+
+func (m *ChatModel) refreshHistoryPreview() {
+	if len(m.historyFiles) == 0 {
+		m.historyPreview = "No saved chats yet."
+		return
+	}
+	if m.historyIndex < 0 {
+		m.historyIndex = 0
+	}
+	if m.historyIndex >= len(m.historyFiles) {
+		m.historyIndex = len(m.historyFiles) - 1
+	}
+	path := m.historyFiles[m.historyIndex]
+	preview, err := loadChatHistoryPreview(path, 24000)
+	if err != nil {
+		m.historyError = fmt.Sprintf("failed to read %s: %v", filepath.Base(path), err)
+		m.historyPreview = ""
+		return
+	}
+	m.historyError = ""
+	m.historyPreview = preview
+}
+
+func (m *ChatModel) renderHistoryMessages() string {
+	w := m.viewport.Width
+	if w < 1 {
+		w = 1
+	}
+
+	var b strings.Builder
+	b.WriteString(toolMsgStyle.Width(w).Render("saved at: " + chatHistoryDisplayDir()))
+	b.WriteString("\n")
+	b.WriteString(toolMsgStyle.Width(w).Render("up/down: select | enter: load | esc or /: close"))
+	b.WriteString("\n\n")
+
+	if m.historyError != "" {
+		b.WriteString(errorMsgStyle.Width(w).Render(m.historyError))
+		b.WriteString("\n")
+		return b.String()
+	}
+
+	if len(m.historyFiles) == 0 {
+		b.WriteString(toolMsgStyle.Width(w).Render("No saved chats yet."))
+		b.WriteString("\n")
+		return b.String()
+	}
+
+	start := 0
+	const maxListRows = 8
+	if m.historyIndex >= maxListRows {
+		start = m.historyIndex - maxListRows + 1
+	}
+	end := start + maxListRows
+	if end > len(m.historyFiles) {
+		end = len(m.historyFiles)
+	}
+	for i := start; i < end; i++ {
+		line := fmt.Sprintf("  %2d. %s", i+1, chatHistoryFileLabel(m.historyFiles[i]))
+		style := toolMsgStyle
+		if i == m.historyIndex {
+			line = fmt.Sprintf("> %2d. %s", i+1, chatHistoryFileLabel(m.historyFiles[i]))
+			style = accountSelectedStyle
+		}
+		b.WriteString(style.Width(w).Render(line))
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
+
+	selected := m.historyFiles[m.historyIndex]
+	selectedLine := strings.Replace(selected, os.Getenv("HOME"), "~", 1)
+	b.WriteString(toolMsgStyle.Width(w).Render(selectedLine))
+	b.WriteString("\n\n")
+	b.WriteString(sectionTitleStyle.Width(w).Render("PREVIEW"))
+	b.WriteString("\n")
+	b.WriteString(m.renderAssistantMarkdown(m.historyPreview, w, true))
+	b.WriteString("\n")
+	return b.String()
+}
+
 func (m ChatModel) View() string {
 	if !m.ready {
 		return ""
+	}
+	panelWidth := m.width - 2
+	if panelWidth < 1 {
+		panelWidth = 1
 	}
 
 	// Header
@@ -495,50 +715,116 @@ func (m ChatModel) View() string {
 		}
 	}
 
-	headerWidth := m.width
+	headerWidth := m.width - 4
 	if headerWidth < 1 {
 		headerWidth = 1
 	}
-	leftText := " birdy "
-	if lipgloss.Width(leftText) > headerWidth {
-		leftText = leftText[:headerWidth]
+	leftCandidates := []string{
+		headerBrandStyle.Render("BIRDY") + " " + headerDeskStyle.Render("X DESK"),
+		"BIRDY X DESK",
+		headerBrandStyle.Render("BIRDY"),
+		"BIRDY",
 	}
 
-	rightSpace := headerWidth - lipgloss.Width(leftText)
-	if rightSpace < 0 {
-		rightSpace = 0
-	}
-	rightText := m.headerRightInfo(accountInfo, rightSpace)
-	gap := headerWidth - lipgloss.Width(leftText) - lipgloss.Width(rightText)
-	if gap < 0 {
-		gap = 0
-	}
-	headerText := leftText + strings.Repeat(" ", gap) + rightText
-	header := headerStyle.Copy().Padding(0).Width(headerWidth).MaxWidth(headerWidth).Render(headerText)
+	headerText := summarizeQueueNotice("BIRDY", headerWidth)
+	fallbackHeader := ""
+	for _, leftText := range leftCandidates {
+		leftWidth := lipgloss.Width(leftText)
+		if leftWidth > headerWidth {
+			continue
+		}
+		rightSpace := headerWidth - leftWidth
+		if rightSpace < 0 {
+			rightSpace = 0
+		}
+		rightText := m.headerRightInfo(accountInfo, rightSpace)
+		rightWidth := lipgloss.Width(rightText)
+		if leftWidth+rightWidth > headerWidth {
+			continue
+		}
 
-	// Input (queue indicator on the top-right row inside the command bar)
-	input := inputBorderStyle.Render(m.renderCommandBarContent())
-
-	// Footer
-	footerText := "enter: send | ctrl+t: model | ctrl+y: copy | tab: accounts | ctrl+c: quit"
-	if m.streaming {
-		footerText = "tab: queue | esc: cancel | ctrl+c: quit"
+		gap := headerWidth - leftWidth - rightWidth
+		// Keep compact status labels (READY/LIVE/PAUSED) visually attached
+		// to the desk label on narrow layouts.
+		if rightText != "" && !strings.Contains(rightText, "|") && leftWidth+1+rightWidth <= headerWidth {
+			gap = 1
+		}
+		if gap < 0 {
+			gap = 0
+		}
+		candidate := leftText + strings.Repeat(" ", gap) + rightText
+		if fallbackHeader == "" {
+			fallbackHeader = candidate
+		}
+		if rightText != "" {
+			headerText = candidate
+			break
+		}
 	}
+	if headerText == summarizeQueueNotice("BIRDY", headerWidth) && fallbackHeader != "" {
+		headerText = fallbackHeader
+	}
+	header := headerStyle.Copy().Width(panelWidth).Render(headerText)
+
+	feedLabel := "FEED"
+	if m.historyMode {
+		feedLabel = "HISTORY"
+	}
+	feedTitle := sectionTitleStyle.Width(m.viewport.Width).Render(feedLabel)
+	body := lipgloss.NewStyle().
+		Background(colorDarkBg).
+		Foreground(colorLightFg).
+		Width(m.viewport.Width).
+		Height(m.viewport.Height).
+		Render(m.viewport.View())
+	feedContent := lipgloss.JoinVertical(lipgloss.Left, feedTitle, body)
+	feed := feedPanelStyle.Width(panelWidth).Render(feedContent)
+
+	commandTitleRowWidth := m.width - 4
+	if commandTitleRowWidth < 1 {
+		commandTitleRowWidth = 1
+	}
+	commandLeft := "COMMAND"
+	commandRight := "QUEUE " + m.commandQueueState()
+	if m.historyMode {
+		commandLeft = "HISTORY NAV"
+		commandRight = m.historySelectionStatus()
+	}
+	commandTitleRow := composeTopRow(commandTitleRowWidth, commandLeft, commandRight)
+	commandTitle := commandMetaStyle.Copy().Bold(true).Render(commandTitleRow)
+	input := m.renderCommandBarContent()
+	command := commandPanelStyle.Width(panelWidth).Render(lipgloss.JoinVertical(lipgloss.Left, commandTitle, input))
+
+	keysRowWidth := m.width - 4 // keys panel border + row padding
+	if keysRowWidth < 1 {
+		keysRowWidth = 1
+	}
+	keysLabel := "KEYS  "
+	keysHintWidth := keysRowWidth - lipgloss.Width(keysLabel)
+	if keysHintWidth < 0 {
+		keysHintWidth = 0
+	}
+	keysText := m.footerHintText(keysHintWidth)
 	if m.copied {
-		footerText = "copied to clipboard!"
+		keysText = "COPIED"
 	}
-	histDir, _ := chatHistoryDir()
-	if histDir != "" {
-		footerText += "  |  history: " + histDir
+	keysRow := keysLabel + keysText
+	rowWidth := lipgloss.Width(keysRow)
+	if rowWidth < keysRowWidth {
+		keysRow += strings.Repeat(" ", keysRowWidth-rowWidth)
+	} else if rowWidth > keysRowWidth {
+		keysRow = summarizeQueueNotice(keysRow, keysRowWidth)
 	}
-	footer := statusBarStyle.Width(m.width).Render(footerText)
+	keysContent := lipgloss.NewStyle().Foreground(colorMuted).Padding(0, 1).Render(keysRow)
+	footer := keysPanelStyle.Width(panelWidth).Render(keysContent)
 
-	return lipgloss.JoinVertical(lipgloss.Left,
+	layout := lipgloss.JoinVertical(lipgloss.Left,
 		header,
-		m.viewport.View(),
-		input,
+		feed,
+		command,
 		footer,
 	)
+	return appStyle.Copy().Width(m.width).Height(m.height).Render(layout)
 }
 
 func (m ChatModel) headerRightInfo(accountInfo string, available int) string {
@@ -546,15 +832,27 @@ func (m ChatModel) headerRightInfo(accountInfo string, available int) string {
 		return ""
 	}
 
-	statusLabel := "ready"
-	if m.streaming {
-		statusLabel = "thinking"
+	statusLabel := "READY"
+	if m.historyMode {
+		statusLabel = "HISTORY"
+	} else if m.streaming {
+		statusLabel = "LIVE"
+		if !m.followOutput {
+			statusLabel = "PAUSED"
+		}
+	}
+
+	model := strings.ToUpper(m.model)
+	thinkingLabel := ""
+	if m.streaming && !m.historyMode {
+		thinkingLabel = " thinking..."
 	}
 
 	candidates := []string{
-		fmt.Sprintf("%s | %s | %s", accountInfo, m.model, statusLabel),
-		fmt.Sprintf("%s | %s", m.model, statusLabel),
-		statusLabel,
+		fmt.Sprintf("ACCTS %s | MODEL %s | %s%s", accountInfo, model, statusLabel, thinkingLabel),
+		fmt.Sprintf("%s | %s%s", model, statusLabel, thinkingLabel),
+		statusLabel + thinkingLabel,
+		thinkingLabel,
 		"",
 	}
 
@@ -570,6 +868,15 @@ func (m ChatModel) renderCommandBarContent() string {
 	innerWidth := m.input.Width
 	if innerWidth < 1 {
 		innerWidth = 1
+	}
+	if m.historyMode {
+		help := summarizeQueueNotice("enter: load selected chat | up/down: navigate | esc or /: close", innerWidth)
+		selected := "no history selected"
+		if len(m.historyFiles) > 0 && m.historyIndex >= 0 && m.historyIndex < len(m.historyFiles) {
+			selected = strings.Replace(m.historyFiles[m.historyIndex], os.Getenv("HOME"), "~", 1)
+		}
+		selected = summarizeQueueNotice(selected, innerWidth)
+		return lipgloss.NewStyle().Foreground(colorMuted).Render(help) + "\n" + toolMsgStyle.Width(innerWidth).Render(selected)
 	}
 
 	queueLabel := m.commandBarQueueLabel(innerWidth)
@@ -604,6 +911,104 @@ func (m ChatModel) commandBarQueueNotice(available int) string {
 		return ""
 	}
 	return m.queueNotice
+}
+
+func (m ChatModel) commandQueueState() string {
+	if len(m.queuedPrompts) == 0 {
+		return "IDLE"
+	}
+	return fmt.Sprintf("%d", len(m.queuedPrompts))
+}
+
+func (m ChatModel) historySelectionStatus() string {
+	if len(m.historyFiles) == 0 {
+		return "0/0"
+	}
+	return fmt.Sprintf("%d/%d", m.historyIndex+1, len(m.historyFiles))
+}
+
+func (m ChatModel) footerHintText(available int) string {
+	if available <= 0 {
+		return ""
+	}
+
+	var candidates []string
+	if m.historyMode {
+		candidates = []string{
+			"up/down: select | enter: load | esc: close | /: close | ctrl+c: quit",
+			"up/down: select | enter: load | esc: close | ctrl+c: quit",
+			"enter: load | esc: close | ctrl+c: quit",
+			"esc: close",
+		}
+	} else if m.streaming {
+		candidates = []string{
+			"tab: queue | esc: cancel | home/end: pause/live | ctrl+c: quit | hist: /",
+			"tab: queue | esc: cancel | ctrl+c: quit | hist: /",
+			"tab: queue | esc: cancel | ctrl+c: quit",
+			"esc: cancel | ctrl+c: quit",
+			"esc: cancel",
+		}
+	} else {
+		candidates = []string{
+			"enter: send | ctrl+t: model | ctrl+y: copy | tab: accounts | ctrl+c: quit | hist: /",
+			"enter: send | ctrl+t: model | tab: accounts | ctrl+c: quit | hist: /",
+			"enter: send | tab: accounts | ctrl+c: quit | hist: /",
+			"enter: send | tab: accounts | ctrl+c: quit",
+			"enter: send | ctrl+c: quit",
+		}
+	}
+
+	savePath := "save: " + chatHistoryDisplayDir()
+	for _, c := range candidates {
+		withSave := c + " | " + savePath
+		if lipgloss.Width(withSave) <= available {
+			return withSave
+		}
+	}
+
+	if lipgloss.Width(savePath) <= available {
+		return savePath
+	}
+
+	for _, c := range candidates {
+		if lipgloss.Width(c) <= available {
+			return c
+		}
+	}
+	return summarizeQueueNotice(savePath, available)
+}
+
+func (m *ChatModel) loadSelectedHistory() tea.Cmd {
+	if len(m.historyFiles) == 0 {
+		return nil
+	}
+	if m.historyIndex < 0 || m.historyIndex >= len(m.historyFiles) {
+		m.historyIndex = 0
+	}
+	path := m.historyFiles[m.historyIndex]
+	messages, err := loadChatHistoryMessages(path)
+	if err != nil {
+		m.historyError = fmt.Sprintf("failed to load %s: %v", filepath.Base(path), err)
+		m.refreshViewport()
+		return nil
+	}
+
+	m.messages = messages
+	m.streaming = false
+	m.streamCh = nil
+	m.cancelStream = nil
+	m.historyMode = false
+	m.historyError = ""
+	m.followOutput = true
+	m.lastStreamRender = time.Time{}
+	m.refreshViewport()
+
+	m.queueNoticeID++
+	id := m.queueNoticeID
+	m.queueNotice = "loaded: " + summarizeQueueNotice(chatHistoryFileLabel(path), 40)
+	return tea.Tick(1600*time.Millisecond, func(time.Time) tea.Msg {
+		return clearQueueNoticeMsg{ID: id}
+	})
 }
 
 func summarizeQueueNotice(s string, max int) string {
@@ -670,6 +1075,70 @@ func (m *ChatModel) renderAssistantMarkdown(content string, width int, useCache 
 	}
 
 	return m.renderMarkdown(content, width)
+}
+
+func (m *ChatModel) renderStreamingTailMarkdown(content string, width int) string {
+	if content == "" {
+		return ""
+	}
+	if width < 1 {
+		width = 1
+	}
+
+	// New turn or wrap-width change invalidates the tail cache.
+	if m.streamTailWidth != width || len(content) < len(m.streamTailContent) {
+		m.streamTailContent = ""
+		m.streamTailRendered = ""
+		m.streamTailRenderedAt = time.Time{}
+		m.streamTailWidth = width
+	}
+
+	if content == m.streamTailContent && m.streamTailRendered != "" {
+		return m.streamTailRendered
+	}
+
+	// While user is reviewing history, keep the last rendered snapshot and
+	// avoid expensive markdown work on every incoming token.
+	if !m.followOutput && m.streamTailRendered != "" {
+		return m.streamTailRendered
+	}
+
+	now := time.Now()
+	if m.nowFn != nil {
+		now = m.nowFn()
+	}
+
+	shouldRender := m.streamTailRendered == "" ||
+		now.Sub(m.streamTailRenderedAt) >= 120*time.Millisecond ||
+		hasStreamingStructureDelta(m.streamTailContent, content)
+
+	if !shouldRender && m.streamTailRendered != "" {
+		return m.streamTailRendered
+	}
+
+	rendered := m.renderMarkdown(content, width)
+	m.streamTailContent = content
+	m.streamTailRendered = rendered
+	m.streamTailRenderedAt = now
+	m.streamTailWidth = width
+	return rendered
+}
+
+func hasStreamingStructureDelta(prev, next string) bool {
+	if prev == "" {
+		return true
+	}
+	if !strings.HasPrefix(next, prev) {
+		return true
+	}
+	delta := next[len(prev):]
+	if delta == "" {
+		return false
+	}
+	if len(delta) >= 256 {
+		return true
+	}
+	return strings.Contains(delta, "\n") || strings.Contains(delta, "```")
 }
 
 func (m *ChatModel) renderMarkdown(content string, width int) string {
@@ -767,6 +1236,36 @@ func (m *ChatModel) handleLeakedMouseKey(msg tea.KeyMsg) bool {
 	}
 
 	return m.isMouseEscapeKey(msg)
+}
+
+func (m *ChatModel) shouldHandleMouseWheel(msg tea.MouseMsg) bool {
+	if msg.Action != tea.MouseActionPress {
+		return false
+	}
+	if !isWheelButton(msg.Button) {
+		return false
+	}
+
+	now := time.Now()
+	if m.nowFn != nil {
+		now = m.nowFn()
+	}
+
+	// Coalesce dense wheel bursts to avoid rendering stalls.
+	if !m.lastWheelAt.IsZero() && now.Sub(m.lastWheelAt) < 6*time.Millisecond {
+		return false
+	}
+	m.lastWheelAt = now
+	return true
+}
+
+func isWheelButton(btn tea.MouseButton) bool {
+	switch btn {
+	case tea.MouseButtonWheelUp, tea.MouseButtonWheelDown, tea.MouseButtonWheelLeft, tea.MouseButtonWheelRight:
+		return true
+	default:
+		return false
+	}
 }
 
 func isMouseSeqBodyFragment(s string) bool {
