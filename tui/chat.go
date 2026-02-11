@@ -796,7 +796,8 @@ func (m ChatModel) View() string {
 	if headerText == summarizeQueueNotice("BIRDY", headerWidth) && fallbackHeader != "" {
 		headerText = fallbackHeader
 	}
-	header := headerStyle.Copy().Width(panelWidth).Render(headerText)
+	headerStrip := inverseLineStyle.Width(headerWidth).Render(headerText)
+	header := headerStyle.Copy().Width(panelWidth).Render(headerStrip)
 
 	feedLabel := "FEED"
 	if m.historyMode {
@@ -843,7 +844,7 @@ func (m ChatModel) View() string {
 	}
 	keysRow := fitFooterRow(keysLabel+keysText, keysRowWidth)
 	saveRow := fitFooterRow("save: "+chatHistoryDisplayDir(), keysRowWidth)
-	keysTop := lipgloss.NewStyle().Foreground(colorMuted).Render(keysRow)
+	keysTop := inverseSubtleLineStyle.Width(keysRowWidth).Render(keysRow)
 	keysBottom := footerPathStyle.Render(saveRow)
 	keysContent := lipgloss.NewStyle().Padding(0, 1).Render(keysTop + "\n" + keysBottom)
 	footer := keysPanelStyle.Width(panelWidth).Render(keysContent)

@@ -80,6 +80,15 @@ var (
 				Foreground(colorBlue).
 				Padding(0, 1)
 
+	inverseLineStyle = lipgloss.NewStyle().
+				Foreground(colorDarkBg).
+				Background(colorLightFg).
+				Bold(true)
+
+	inverseSubtleLineStyle = lipgloss.NewStyle().
+					Foreground(colorDarkBg).
+					Background(colorLightFg)
+
 	footerPathStyle = lipgloss.NewStyle().
 				Foreground(colorBorderSoft).
 				Background(colorDarkBg).
