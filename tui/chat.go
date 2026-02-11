@@ -1099,26 +1099,26 @@ func (m ChatModel) footerHintText(available int) string {
 	var candidates []string
 	if m.historyMode {
 		candidates = []string{
-			"up/down: select | enter: open | esc: close | /: close | ctrl+c: quit",
-			"up/down: select | enter: open | esc: close | ctrl+c: quit",
+			"^/v: select | enter: open | esc: close | /: close | ctrl+c: quit",
+			"^/v: select | enter: open | esc: close | ctrl+c: quit",
 			"enter: open | esc: close | ctrl+c: quit",
 			"esc: close",
 		}
 	} else if m.streaming {
 		candidates = []string{
-			"up/down: scroll | tab: queue | esc: cancel | home/end: pause/live | ctrl+c: quit | hist: /",
-			"up/down: scroll | tab: queue | esc: cancel | ctrl+c: quit | hist: /",
-			"up/down: scroll | tab: queue | esc: cancel | ctrl+c: quit",
-			"esc: cancel | ctrl+c: quit",
+			"^/v: scroll | tab: queue | esc: cancel | home/end: pause/live | ctrl+c: quit | hist: /",
+			"^/v: scroll | tab: queue | esc: cancel | ctrl+c: quit | hist: /",
+			"^/v: scroll | tab: queue | esc: cancel | ctrl+c: quit",
+			"^/v: scroll | esc: cancel | ctrl+c: quit",
 			"esc: cancel",
 		}
 	} else {
 		candidates = []string{
-			"up/down: scroll | enter: send | ctrl+t: model | ctrl+y: copy | tab: accounts | ctrl+c: quit | hist: /",
-			"up/down: scroll | enter: send | ctrl+t: model | tab: accounts | ctrl+c: quit | hist: /",
-			"up/down: scroll | enter: send | tab: accounts | ctrl+c: quit | hist: /",
-			"up/down: scroll | enter: send | tab: accounts | ctrl+c: quit",
-			"enter: send | ctrl+c: quit",
+			"^/v: scroll | enter: send | ctrl+t: model | ctrl+y: copy | tab: accounts | ctrl+c: quit | hist: /",
+			"^/v: scroll | enter: send | ctrl+t: model | tab: accounts | ctrl+c: quit | hist: /",
+			"^/v: scroll | enter: send | tab: accounts | ctrl+c: quit | hist: /",
+			"^/v: scroll | enter: send | tab: accounts | ctrl+c: quit",
+			"^/v: scroll | enter: send | ctrl+c: quit",
 		}
 	}
 

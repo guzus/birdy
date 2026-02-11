@@ -2,6 +2,14 @@
 
 Multi-account proxy for the [bird](https://github.com/steipete/bird) CLI. Store multiple X/Twitter auth tokens and automatically rotate between accounts to reduce rate-limit risk.
 
+## First Run (Install + Open TUI)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/guzus/birdy/main/install.sh | bash && birdy account add main && birdy tui
+```
+
+`birdy account add main` will prompt you for `auth_token` and `ct0` from your X/Twitter browser session.
+
 ## Interactive TUI
 
 Launch the full-screen terminal interface with AI-powered chat:

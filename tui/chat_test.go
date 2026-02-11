@@ -646,7 +646,7 @@ func TestChatFooterShowsEscDuringStreaming(t *testing.T) {
 	if !contains(view, "esc: cancel") {
 		t.Error("expected 'esc: cancel' in footer during streaming")
 	}
-	if !contains(view, "up/down: scroll") {
+	if !contains(view, "^/v: scroll") {
 		t.Error("expected keyboard scroll hint in footer during streaming")
 	}
 }
