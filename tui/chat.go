@@ -89,6 +89,19 @@ func NewChatModel() ChatModel {
 	ti.Placeholder = "Ask birdy anything..."
 	ti.Focus()
 	ti.CharLimit = 4096
+	ti.PromptStyle = lipgloss.NewStyle().
+		Foreground(colorLightFg).
+		Background(colorDarkBg).
+		Bold(true)
+	ti.TextStyle = lipgloss.NewStyle().
+		Foreground(colorLightFg).
+		Background(colorDarkBg)
+	ti.PlaceholderStyle = lipgloss.NewStyle().
+		Foreground(colorMuted).
+		Background(colorDarkBg)
+	ti.Cursor.Style = lipgloss.NewStyle().
+		Foreground(colorDarkBg).
+		Background(colorBlue)
 
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot

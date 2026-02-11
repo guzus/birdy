@@ -31,13 +31,11 @@ var (
 			Bold(true)
 
 	headerBrandStyle = lipgloss.NewStyle().
-				Background(colorBlue).
-				Foreground(colorDarkBg).
+				Foreground(colorBlue).
 				Bold(true).
 				Padding(0, 1)
 
 	headerDeskStyle = lipgloss.NewStyle().
-			Background(colorPanel).
 			Foreground(colorLightFg).
 			Bold(true).
 			Padding(0, 1)
@@ -84,17 +82,21 @@ var (
 
 	userMsgStyle = lipgloss.NewStyle().
 			Foreground(colorBlue).
+			Background(colorDarkBg).
 			Bold(true)
 
 	assistantMsgStyle = lipgloss.NewStyle().
-				Foreground(colorLightFg)
+				Foreground(colorLightFg).
+				Background(colorDarkBg)
 
 	toolMsgStyle = lipgloss.NewStyle().
 			Foreground(colorMuted).
+			Background(colorDarkBg).
 			Italic(true)
 
 	errorMsgStyle = lipgloss.NewStyle().
 			Foreground(colorRed).
+			Background(colorDarkBg).
 			Bold(true)
 
 	statusBarStyle = lipgloss.NewStyle().
