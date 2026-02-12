@@ -11,6 +11,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
 
 func TestNewChatModel(t *testing.T) {
@@ -46,6 +47,79 @@ func TestChatWindowSize(t *testing.T) {
 	}
 	if m.viewport.Width != 77 {
 		t.Errorf("expected viewport width 77 with scrollbar reservation, got %d", m.viewport.Width)
+	}
+}
+
+func TestChatViewLineCount(t *testing.T) {
+	sizes := []struct {
+		w, h int
+	}{
+		{80, 24},
+		{120, 36},
+		{138, 40},
+		{160, 50},
+	}
+	for _, sz := range sizes {
+		t.Run(fmt.Sprintf("%dx%d", sz.w, sz.h), func(t *testing.T) {
+			m := NewChatModel()
+			m, _ = m.Update(tea.WindowSizeMsg{Width: sz.w, Height: sz.h})
+
+			view := m.View()
+			lines := strings.Split(view, "\n")
+			// Check visual height of each line too
+			for i, line := range lines {
+				w := lipgloss.Width(line)
+				if w > sz.w {
+					t.Errorf("line %d visual width %d > terminal width %d: %q", i, w, sz.w, line)
+				}
+			}
+			if len(lines) != sz.h {
+				t.Errorf("View() produced %d lines, expected %d (terminal height)", len(lines), sz.h)
+				// Show first and last few lines for debugging
+				for i := 0; i < len(lines) && i < 3; i++ {
+					t.Logf("  line[%d] w=%d: %q", i, lipgloss.Width(lines[i]), lines[i])
+				}
+				if len(lines) > 6 {
+					t.Log("  ...")
+				}
+				for i := max(3, len(lines)-3); i < len(lines); i++ {
+					t.Logf("  line[%d] w=%d: %q", i, lipgloss.Width(lines[i]), lines[i])
+				}
+			}
+		})
+	}
+}
+
+func TestChatViewLineCountWithColors(t *testing.T) {
+	// Regression test: with colors enabled (as in a real PTY), the textinput
+	// cursor adds 1 char beyond Width. If inputWidth doesn't account for this,
+	// the command panel line-wraps, View() exceeds terminal height, and
+	// Bubble Tea's renderer truncates the top line causing double rendering.
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.ANSI256)
+	defer lipgloss.SetColorProfile(prev)
+
+	sizes := []struct{ w, h int }{
+		{80, 24},
+		{120, 36},
+		{140, 40},
+		{160, 50},
+	}
+	for _, sz := range sizes {
+		t.Run(fmt.Sprintf("%dx%d", sz.w, sz.h), func(t *testing.T) {
+			m := NewChatModel()
+			m, _ = m.Update(tea.WindowSizeMsg{Width: sz.w, Height: sz.h})
+			view := m.View()
+			lines := strings.Split(view, "\n")
+			if len(lines) != sz.h {
+				t.Errorf("View() produced %d lines, expected %d", len(lines), sz.h)
+			}
+			for i, line := range lines {
+				if w := lipgloss.Width(line); w > sz.w {
+					t.Errorf("line %d visual width %d > terminal width %d", i, w, sz.w)
+				}
+			}
+		})
 	}
 }
 
@@ -134,6 +208,46 @@ func TestChatCtrlVPastesClipboardText(t *testing.T) {
 
 	if got := m.input.Value(); got != "hello world from clip" {
 		t.Fatalf("expected pasted content in input, got %q", got)
+	}
+}
+
+func TestCommandPanelWidthWithColors(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.ANSI256)
+	defer lipgloss.SetColorProfile(prev)
+
+	m := NewChatModel()
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
+
+	panelWidth := 138 // m.width - 2
+
+	// Build command panel exactly as View() does
+	commandTitleRowWidth := 140 - 4
+	commandTitleRow := composeTopRow(commandTitleRowWidth, "COMMAND", "QUEUE IDLE")
+	commandTitle := commandMetaStyle.Bold(true).Render(commandTitleRow)
+	t.Logf("commandTitle vw=%d", lipgloss.Width(commandTitle))
+
+	input := m.renderCommandBarContent()
+	inputLines := strings.Split(input, "\n")
+	for i, l := range inputLines {
+		t.Logf("input line[%d] vw=%d", i, lipgloss.Width(l))
+	}
+
+	joined := lipgloss.JoinVertical(lipgloss.Left, commandTitle, input)
+	joinedLines := strings.Split(joined, "\n")
+	for i, l := range joinedLines {
+		t.Logf("joined line[%d] vw=%d", i, lipgloss.Width(l))
+	}
+
+	command := commandPanelStyle.Width(panelWidth).Render(joined)
+	commandLines := strings.Split(command, "\n")
+	t.Logf("command panel: %d lines", len(commandLines))
+	for i, l := range commandLines {
+		w := lipgloss.Width(l)
+		t.Logf("  panel line[%d] vw=%d", i, w)
+		if w > 140 {
+			t.Errorf("panel line[%d] width %d > 140", i, w)
+		}
 	}
 }
 
@@ -267,6 +381,22 @@ func TestChatSlashOpensHistoryModeWhileStreaming(t *testing.T) {
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
 	if !m.historyMode {
 		t.Fatal("expected slash to open history mode while streaming")
+	}
+}
+
+func TestChatSlashDoesNotOpenHistoryWhenHidden(t *testing.T) {
+	t.Setenv("BIRDY_TUI_HIDE_HISTORY", "1")
+
+	m := NewChatModel()
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.input.SetValue("")
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	if m.historyMode {
+		t.Fatal("expected history mode to stay disabled")
+	}
+	if got := m.input.Value(); got != "/" {
+		t.Fatalf("expected slash to stay in input, got %q", got)
 	}
 }
 
@@ -553,6 +683,24 @@ func TestChatDoneMsg(t *testing.T) {
 	}
 }
 
+func TestChatDoneMsgDoesNotPersistHistoryWhenHidden(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("BIRDY_TUI_HIDE_HISTORY", "1")
+
+	m := NewChatModel()
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.streaming = true
+	m.messages = []chatMessage{{role: "user", content: "hello"}}
+
+	m, _ = m.Update(claudeDoneMsg{})
+
+	chatsDir := filepath.Join(home, ".config", "birdy", "chats")
+	if _, err := os.Stat(chatsDir); !os.IsNotExist(err) {
+		t.Fatalf("expected no chat history directory when hidden, got err=%v", err)
+	}
+}
+
 func TestChatDoneStartsNextQueuedPrompt(t *testing.T) {
 	m := NewChatModel()
 	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -608,6 +756,24 @@ func TestChatErrorMsg(t *testing.T) {
 	}
 	if m.messages[0].role != "error" {
 		t.Errorf("expected error role, got %q", m.messages[0].role)
+	}
+}
+
+func TestChatErrorMsgDoesNotPersistHistoryWhenHidden(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("BIRDY_TUI_HIDE_HISTORY", "1")
+
+	m := NewChatModel()
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.streaming = true
+	m.messages = []chatMessage{{role: "user", content: "hello"}}
+
+	m, _ = m.Update(claudeErrorMsg{Err: fmt.Errorf("test error")})
+
+	chatsDir := filepath.Join(home, ".config", "birdy", "chats")
+	if _, err := os.Stat(chatsDir); !os.IsNotExist(err) {
+		t.Fatalf("expected no chat history directory when hidden, got err=%v", err)
 	}
 }
 
@@ -746,6 +912,21 @@ func TestChatFooterShowsSavePathOnBottomLine(t *testing.T) {
 	view := m.View()
 	if !contains(view, "save: ~/.config/birdy/chats") {
 		t.Fatalf("expected save path in footer, got %q", view)
+	}
+}
+
+func TestChatFooterHidesHistoryHintsWhenHidden(t *testing.T) {
+	t.Setenv("BIRDY_TUI_HIDE_HISTORY", "true")
+
+	m := NewChatModel()
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	view := m.View()
+
+	if contains(view, "hist: /") {
+		t.Fatalf("expected history hint to be hidden, got %q", view)
+	}
+	if contains(view, "save: ~/.config/birdy/chats") {
+		t.Fatalf("expected save path to be hidden, got %q", view)
 	}
 }
 

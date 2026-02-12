@@ -28,41 +28,43 @@ type chatMessage struct {
 
 // ChatModel is the main chat screen with viewport, input, and streaming state.
 type ChatModel struct {
-	viewport             viewport.Model
-	input                textinput.Model
-	spinner              spinner.Model
-	messages             []chatMessage
-	queuedPrompts        []string
-	queueNotice          string
-	queueNoticeID        int
-	streaming            bool
-	streamCh             <-chan tea.Msg
-	cancelStream         context.CancelFunc
-	width                int
-	height               int
-	ready                bool
-	accountCount         int
-	autoQueried          bool
-	copied               bool
-	model                string
-	mouseSeqMode         bool
-	followOutput         bool
-	historyMode          bool
-	historyFiles         []string
-	historyIndex         int
-	historyPreview       string
-	historyError         string
-	lastWheelAt          time.Time
-	streamTailContent    string
-	streamTailRendered   string
-	streamTailWidth      int
-	streamTailRenderedAt time.Time
-	markdownCache        map[string]string
-	mdRenderers          map[int]*glamour.TermRenderer
-	lastStreamRender     time.Time
-	nowFn                func() time.Time
-	readClipboardFn      func() (string, error)
-	writeClipboardFn     func(string) error
+	viewport               viewport.Model
+	input                  textinput.Model
+	spinner                spinner.Model
+	messages               []chatMessage
+	queuedPrompts          []string
+	queueNotice            string
+	queueNoticeID          int
+	streaming              bool
+	streamCh               <-chan tea.Msg
+	cancelStream           context.CancelFunc
+	width                  int
+	height                 int
+	ready                  bool
+	accountCount           int
+	autoQueried            bool
+	cacheHomeSummaryOnDone bool
+	copied                 bool
+	model                  string
+	mouseSeqMode           bool
+	followOutput           bool
+	historyMode            bool
+	historyFiles           []string
+	historyIndex           int
+	historyPreview         string
+	historyError           string
+	hideHistory            bool
+	lastWheelAt            time.Time
+	streamTailContent      string
+	streamTailRendered     string
+	streamTailWidth        int
+	streamTailRenderedAt   time.Time
+	markdownCache          map[string]string
+	mdRenderers            map[int]*glamour.TermRenderer
+	lastStreamRender       time.Time
+	nowFn                  func() time.Time
+	readClipboardFn        func() (string, error)
+	writeClipboardFn       func(string) error
 }
 
 type clearCopiedMsg struct{}
@@ -93,6 +95,15 @@ var (
 	ansiCsiPattern         = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
 	ansiOscPattern         = regexp.MustCompile(`\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)`)
 )
+
+func hideHistoryEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("BIRDY_TUI_HIDE_HISTORY"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
 
 func NewChatModel() ChatModel {
 	ti := textinput.New()
@@ -127,6 +138,7 @@ func NewChatModel() ChatModel {
 		spinner:          sp,
 		model:            model,
 		followOutput:     true,
+		hideHistory:      hideHistoryEnabled(),
 		markdownCache:    make(map[string]string, 128),
 		mdRenderers:      make(map[int]*glamour.TermRenderer, 8),
 		nowFn:            time.Now,
@@ -188,7 +200,7 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			// Wrapped markdown output depends on width.
 			m.markdownCache = make(map[string]string, 128)
 		}
-		inputWidth := m.width - 4 // command panel border + simple inline input
+		inputWidth := m.width - 5 // command panel border + prompt "> " + cursor
 		if inputWidth < 1 {
 			inputWidth = 1
 		}
@@ -271,6 +283,9 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			if strings.TrimSpace(m.input.Value()) != "" {
 				break
 			}
+			if m.hideHistory {
+				break
+			}
 			m.openHistoryMode()
 			m.refreshViewport()
 			m.viewport.GotoTop()
@@ -298,6 +313,7 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 				m.streaming = false
 				m.lastStreamRender = time.Time{}
 				m.streamCh = nil
+				m.cacheHomeSummaryOnDone = false
 				m.messages = append(m.messages, chatMessage{role: "error", content: "cancelled"})
 				m.refreshViewport()
 				if cmd := m.startNextQueuedPrompt(); cmd != nil {
@@ -384,8 +400,26 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			return m, nil
 		}
 		m.autoQueried = true
-		prompt := "Give me a brief summary of what's on my home timeline."
-		return m, m.beginPrompt(prompt)
+
+		now := time.Now()
+		if m.nowFn != nil {
+			now = m.nowFn()
+		}
+		if summary, cachedAt, ok, err := loadHomeSummaryCache(now); err == nil && ok {
+			age := now.Sub(cachedAt)
+			if age < 0 {
+				age = 0
+			}
+			m.messages = append(m.messages,
+				chatMessage{role: "user", content: homeSummaryPrompt},
+				chatMessage{role: "tool", content: fmt.Sprintf("using cached home summary (%s old, ttl 1h)", formatHomeSummaryAge(age))},
+				chatMessage{role: "assistant", content: summary},
+			)
+			m.cacheHomeSummaryOnDone = false
+			m.refreshViewport()
+			return m, nil
+		}
+		return m, m.beginPrompt(homeSummaryPrompt)
 
 	case claudeNextMsg:
 		m.streamCh = msg.ch
@@ -447,7 +481,19 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		m.lastStreamRender = time.Time{}
 		m.streamCh = nil
 		m.cancelStream = nil
-		saveChatHistory(m.messages)
+		if m.cacheHomeSummaryOnDone {
+			m.cacheHomeSummaryOnDone = false
+			if summary := strings.TrimSpace(m.lastAssistantContent()); summary != "" {
+				now := time.Now()
+				if m.nowFn != nil {
+					now = m.nowFn()
+				}
+				_ = saveHomeSummaryCache(summary, now)
+			}
+		}
+		if !m.hideHistory {
+			saveChatHistory(m.messages)
+		}
 		m.refreshViewport()
 		if cmd := m.startNextQueuedPrompt(); cmd != nil {
 			return m, cmd
@@ -459,6 +505,7 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		m.lastStreamRender = time.Time{}
 		m.streamCh = nil
 		m.cancelStream = nil
+		m.cacheHomeSummaryOnDone = false
 		if m.historyMode {
 			m.queueNoticeID++
 			id := m.queueNoticeID
@@ -472,7 +519,9 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			})
 		}
 		m.messages = append(m.messages, chatMessage{role: "error", content: msg.Err.Error()})
-		saveChatHistory(m.messages)
+		if !m.hideHistory {
+			saveChatHistory(m.messages)
+		}
 		m.refreshViewport()
 		if cmd := m.startNextQueuedPrompt(); cmd != nil {
 			return m, cmd
@@ -576,6 +625,7 @@ func (m *ChatModel) beginPrompt(prompt string) tea.Cmd {
 	m.streaming = true
 	m.followOutput = true
 	m.lastStreamRender = time.Time{}
+	m.cacheHomeSummaryOnDone = prompt == homeSummaryPrompt
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancelStream = cancel
 	m.refreshViewport()
@@ -670,6 +720,9 @@ func (m *ChatModel) renderMessages() string {
 }
 
 func (m *ChatModel) openHistoryMode() {
+	if m.hideHistory {
+		return
+	}
 	m.historyMode = true
 	m.historyError = ""
 	m.historyFiles = nil
@@ -884,7 +937,11 @@ func (m ChatModel) View() string {
 		keysText = "COPIED"
 	}
 	keysRow := fitFooterRow(keysLabel+keysText, keysRowWidth)
-	saveRow := fitFooterRow("save: "+chatHistoryDisplayDir(), keysRowWidth)
+	saveText := ""
+	if !m.hideHistory {
+		saveText = "save: " + chatHistoryDisplayDir()
+	}
+	saveRow := fitFooterRow(saveText, keysRowWidth)
 	keysTop := inverseSubtleLineStyle.Width(keysRowWidth).Render(keysRow)
 	keysBottom := footerPathStyle.Render(saveRow)
 	keysContent := lipgloss.NewStyle().Padding(0, 1).Render(keysTop + "\n" + keysBottom)
@@ -1146,24 +1203,45 @@ func (m ChatModel) footerHintText(available int) string {
 			"esc: close",
 		}
 	} else if m.streaming {
-		candidates = []string{
-			"^/v: scroll | tab: queue | ctrl+v: paste | esc: cancel | home/end: pause/live | ctrl+c: quit | hist: /",
-			"^/v: scroll | tab: queue | esc: cancel | home/end: pause/live | ctrl+c: quit | hist: /",
-			"^/v: scroll | tab: queue | ctrl+v: paste | esc: cancel | ctrl+c: quit | hist: /",
-			"^/v: scroll | tab: queue | esc: cancel | ctrl+c: quit | hist: /",
-			"^/v: scroll | tab: queue | esc: cancel | ctrl+c: quit",
-			"^/v: scroll | esc: cancel | ctrl+c: quit",
-			"esc: cancel",
+		if m.hideHistory {
+			candidates = []string{
+				"^/v: scroll | tab: queue | ctrl+v: paste | esc: cancel | home/end: pause/live | ctrl+c: quit",
+				"^/v: scroll | tab: queue | esc: cancel | home/end: pause/live | ctrl+c: quit",
+				"^/v: scroll | tab: queue | esc: cancel | ctrl+c: quit",
+				"^/v: scroll | esc: cancel | ctrl+c: quit",
+				"esc: cancel",
+			}
+		} else {
+			candidates = []string{
+				"^/v: scroll | tab: queue | ctrl+v: paste | esc: cancel | home/end: pause/live | ctrl+c: quit | hist: /",
+				"^/v: scroll | tab: queue | esc: cancel | home/end: pause/live | ctrl+c: quit | hist: /",
+				"^/v: scroll | tab: queue | ctrl+v: paste | esc: cancel | ctrl+c: quit | hist: /",
+				"^/v: scroll | tab: queue | esc: cancel | ctrl+c: quit | hist: /",
+				"^/v: scroll | tab: queue | esc: cancel | ctrl+c: quit",
+				"^/v: scroll | esc: cancel | ctrl+c: quit",
+				"esc: cancel",
+			}
 		}
 	} else {
-		candidates = []string{
-			"^/v: scroll | enter: send | ctrl+t: model | ctrl+y: copy | ctrl+v: paste | tab: accounts | ctrl+c: quit | hist: /",
-			"^/v: scroll | enter: send | ctrl+t: model | ctrl+y: copy | tab: accounts | ctrl+c: quit | hist: /",
-			"^/v: scroll | enter: send | ctrl+v: paste | tab: accounts | ctrl+c: quit | hist: /",
-			"^/v: scroll | enter: send | ctrl+t: model | tab: accounts | ctrl+c: quit | hist: /",
-			"^/v: scroll | enter: send | tab: accounts | ctrl+c: quit | hist: /",
-			"^/v: scroll | enter: send | tab: accounts | ctrl+c: quit",
-			"^/v: scroll | enter: send | ctrl+c: quit",
+		if m.hideHistory {
+			candidates = []string{
+				"^/v: scroll | enter: send | ctrl+t: model | ctrl+y: copy | ctrl+v: paste | tab: accounts | ctrl+c: quit",
+				"^/v: scroll | enter: send | ctrl+t: model | ctrl+y: copy | tab: accounts | ctrl+c: quit",
+				"^/v: scroll | enter: send | ctrl+v: paste | tab: accounts | ctrl+c: quit",
+				"^/v: scroll | enter: send | ctrl+t: model | tab: accounts | ctrl+c: quit",
+				"^/v: scroll | enter: send | tab: accounts | ctrl+c: quit",
+				"^/v: scroll | enter: send | ctrl+c: quit",
+			}
+		} else {
+			candidates = []string{
+				"^/v: scroll | enter: send | ctrl+t: model | ctrl+y: copy | ctrl+v: paste | tab: accounts | ctrl+c: quit | hist: /",
+				"^/v: scroll | enter: send | ctrl+t: model | ctrl+y: copy | tab: accounts | ctrl+c: quit | hist: /",
+				"^/v: scroll | enter: send | ctrl+v: paste | tab: accounts | ctrl+c: quit | hist: /",
+				"^/v: scroll | enter: send | ctrl+t: model | tab: accounts | ctrl+c: quit | hist: /",
+				"^/v: scroll | enter: send | tab: accounts | ctrl+c: quit | hist: /",
+				"^/v: scroll | enter: send | tab: accounts | ctrl+c: quit",
+				"^/v: scroll | enter: send | ctrl+c: quit",
+			}
 		}
 	}
 

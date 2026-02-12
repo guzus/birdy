@@ -158,19 +158,60 @@ func serveHostedTTY(w http.ResponseWriter, r *http.Request) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		buf := make([]byte, 8192)
-		for {
-			n, readErr := ptmx.Read(buf)
-			if n > 0 {
-				if debugFile != nil {
-					fmt.Fprintf(debugFile, "--- chunk %d bytes ---\n%q\n", n, buf[:n])
+		const (
+			flushInterval = 8 * time.Millisecond
+			maxBatchBytes = 64 * 1024
+		)
+
+		chunks := make(chan []byte, 128)
+		go func() {
+			defer close(chunks)
+			buf := make([]byte, 8192)
+			for {
+				n, readErr := ptmx.Read(buf)
+				if n > 0 {
+					chunk := append([]byte(nil), buf[:n]...)
+					if debugFile != nil {
+						fmt.Fprintf(debugFile, "--- chunk %d bytes ---\n%q\n", n, chunk)
+					}
+					chunks <- chunk
 				}
-				if writeErr := conn.WriteMessage(websocket.BinaryMessage, buf[:n]); writeErr != nil {
+				if readErr != nil {
 					return
 				}
 			}
-			if readErr != nil {
-				return
+		}()
+
+		ticker := time.NewTicker(flushInterval)
+		defer ticker.Stop()
+
+		pending := make([]byte, 0, maxBatchBytes)
+		flush := func() bool {
+			if len(pending) == 0 {
+				return true
+			}
+			if writeErr := conn.WriteMessage(websocket.BinaryMessage, pending); writeErr != nil {
+				return false
+			}
+			pending = pending[:0]
+			return true
+		}
+
+		for {
+			select {
+			case chunk, ok := <-chunks:
+				if !ok {
+					_ = flush()
+					return
+				}
+				pending = append(pending, chunk...)
+				if len(pending) >= maxBatchBytes && !flush() {
+					return
+				}
+			case <-ticker.C:
+				if !flush() {
+					return
+				}
 			}
 		}
 	}()
@@ -353,8 +394,13 @@ const hostedPageHTML = `<!doctype html>
     ws.binaryType = "arraybuffer";
     const utf8Decoder = new TextDecoder();
 
+    let lastCols = 0;
+    let lastRows = 0;
     function sendResize() {
       if (ws.readyState !== WebSocket.OPEN) return;
+      if (term.cols === lastCols && term.rows === lastRows) return;
+      lastCols = term.cols;
+      lastRows = term.rows;
       ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
     }
 
@@ -410,10 +456,19 @@ const hostedPageHTML = `<!doctype html>
       }
     });
 
-    window.addEventListener("resize", fitAndResize);
-    window.addEventListener("load", fitAndResize);
+    let resizeRAF = 0;
+    function scheduleFitAndResize() {
+      if (resizeRAF !== 0) return;
+      resizeRAF = requestAnimationFrame(() => {
+        resizeRAF = 0;
+        fitAndResize();
+      });
+    }
+
+    window.addEventListener("resize", scheduleFitAndResize);
+    window.addEventListener("load", scheduleFitAndResize);
     if (typeof ResizeObserver !== "undefined") {
-      const observer = new ResizeObserver(fitAndResize);
+      const observer = new ResizeObserver(scheduleFitAndResize);
       observer.observe(termEl);
     }
   </script>

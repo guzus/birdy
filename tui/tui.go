@@ -64,8 +64,9 @@ func (m MainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.target {
 		case screenChat:
 			m.chat.refreshAccountCount()
-			// Don't re-Init chat — it's already running from startup
-			return m, textinput.Blink
+			// Clear screen forces the renderer to repaint all lines, avoiding
+			// diff artifacts from the splash→chat transition.
+			return m, tea.Batch(tea.ClearScreen, textinput.Blink)
 		case screenAccount:
 			m.account.loadAccounts()
 			return m, m.account.Init()

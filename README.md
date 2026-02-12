@@ -24,7 +24,7 @@ The TUI features:
 - **Chat** — Ask birdy to read your timeline, search tweets, post, and more via Claude
 - **Deep browsing** — Say "dive deeper" and birdy will autonomously explore threads, replies, and user profiles
 - **Account management** — Add, remove, and view accounts with `tab`
-- **Chat history** — Conversations are saved as markdown in `~/.config/birdy/chats/`
+- **Chat history** — Conversations are saved as markdown in `~/.config/birdy/chats/` (set `BIRDY_TUI_HIDE_HISTORY=1` to disable)
 
 ## Hosted Web TUI
 
@@ -44,6 +44,67 @@ Notes:
 - The host runs the same `birdy tui` session in a web terminal.
 - Share only the full URL with token.
 - You can set a fixed token with `--token` or `BIRDY_HOST_TOKEN`.
+- This is a shared session: everyone on the URL can see/control the same TUI.
+
+## Deploy on Railway
+
+This repo now includes a Railway-ready container setup:
+- `Dockerfile`
+- `scripts/entrypoint-railway.sh`
+- `.env.railway.example`
+
+### 1. Create service
+
+Create a Railway service from this repo. Railway will detect and build the `Dockerfile`.
+
+### 2. Add required variables
+
+Set these in Railway Variables:
+
+```bash
+# Required: browser access token for /?token=...
+BIRDY_HOST_TOKEN=replace-with-long-random-secret
+
+# Optional: hide/disable local chat history UI + persistence (recommended for public deploys)
+BIRDY_TUI_HIDE_HISTORY=1
+
+# Required: X/Twitter accounts as JSON (single line)
+BIRDY_ACCOUNTS=[{"name":"main","auth_token":"x_auth_token_here","ct0":"x_ct0_here"}]
+
+# Required for AI chat (pick one auth method)
+CLAUDE_CODE_OAUTH_TOKEN=replace-with-claude-code-oauth-token
+# or
+# ANTHROPIC_API_KEY=replace-with-anthropic-api-key
+# or
+# ANTHROPIC_AUTH_TOKEN=replace-with-anthropic-auth-token
+```
+
+### 3. Add persistent volume
+
+Mount a Railway volume at:
+
+```text
+/data
+```
+
+This preserves:
+- `~/.config/birdy/accounts.json`
+- `~/.config/birdy/state.json`
+- `~/.config/birdy/chats/`
+
+### 4. Deploy and open
+
+After deploy, open your Railway public URL with token:
+
+```text
+https://<your-service-domain>/?token=<BIRDY_HOST_TOKEN>
+```
+
+### Railway notes
+
+- Keep this service at `1` replica (session is shared and stateful).
+- The container uses Node 22 + Claude Code CLI + bundled bird CLI.
+- Rotate `BIRDY_HOST_TOKEN` if it leaks.
 
 ## How it works
 
