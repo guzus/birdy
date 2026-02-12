@@ -101,6 +101,28 @@ func serveHostedTTY(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
+	// Wait for the browser to send its terminal size before starting the TUI.
+	// This avoids a stale first frame rendered at a wrong size that xterm.js
+	// may not fully overwrite when the resize arrives.
+	initSize := pty.Winsize{Cols: 120, Rows: 36}
+	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	for {
+		_, payload, readErr := conn.ReadMessage()
+		if readErr != nil {
+			// Timed out or connection closed before we got a resize; use default.
+			break
+		}
+		var msg hostedWSMessage
+		if json.Unmarshal(payload, &msg) != nil {
+			continue
+		}
+		if msg.Type == "resize" && msg.Cols > 0 && msg.Rows > 0 {
+			initSize = pty.Winsize{Cols: msg.Cols, Rows: msg.Rows}
+			break
+		}
+	}
+	conn.SetReadDeadline(time.Time{}) // clear deadline
+
 	exePath, err := os.Executable()
 	if err != nil || strings.TrimSpace(exePath) == "" {
 		exePath = "birdy"
@@ -109,7 +131,7 @@ func serveHostedTTY(w http.ResponseWriter, r *http.Request) {
 	child := exec.Command(exePath, "tui")
 	child.Env = append(os.Environ(), "BIRDY_TUI_MOUSE=1")
 
-	ptmx, err := pty.StartWithSize(child, &pty.Winsize{Cols: 120, Rows: 36})
+	ptmx, err := pty.StartWithSize(child, &initSize)
 	if err != nil {
 		_ = conn.WriteMessage(websocket.TextMessage, []byte("\r\nfailed to start birdy tui\r\n"))
 		return
@@ -122,6 +144,17 @@ func serveHostedTTY(w http.ResponseWriter, r *http.Request) {
 		_ = child.Wait()
 	}()
 
+	// Debug: capture raw PTY output to /tmp/birdy-pty-debug.log
+	var debugFile *os.File
+	if os.Getenv("BIRDY_HOST_DEBUG") != "" {
+		debugFile, _ = os.Create("/tmp/birdy-pty-debug.log")
+	}
+	defer func() {
+		if debugFile != nil {
+			debugFile.Close()
+		}
+	}()
+
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -129,6 +162,9 @@ func serveHostedTTY(w http.ResponseWriter, r *http.Request) {
 		for {
 			n, readErr := ptmx.Read(buf)
 			if n > 0 {
+				if debugFile != nil {
+					fmt.Fprintf(debugFile, "--- chunk %d bytes ---\n%q\n", n, buf[:n])
+				}
 				if writeErr := conn.WriteMessage(websocket.BinaryMessage, buf[:n]); writeErr != nil {
 					return
 				}
@@ -240,10 +276,22 @@ const hostedPageHTML = `<!doctype html>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>birdy host</title>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.5.0/css/xterm.min.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css" />
   <style>
-    html, body { margin: 0; height: 100%; background: #000; color: #d8f2ff; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-    #root { display: grid; grid-template-rows: auto 1fr; height: 100%; }
+    html, body {
+      margin: 0;
+      height: 100%;
+      overflow: hidden;
+      background: #000;
+      color: #d8f2ff;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    #root {
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      height: 100%;
+      min-height: 100%;
+    }
     #top {
       box-sizing: border-box;
       display: flex;
@@ -257,7 +305,16 @@ const hostedPageHTML = `<!doctype html>
       letter-spacing: 0.03em;
     }
     #status { color: #cbd5e1; font-weight: 500; }
-    #term { width: 100%; height: 100%; padding: 8px; box-sizing: border-box; }
+    #term {
+      width: 100%;
+      height: 100%;
+      min-height: 0;
+      box-sizing: border-box;
+      overflow: hidden;
+    }
+    #term .xterm, #term .xterm-viewport {
+      height: 100%;
+    }
   </style>
 </head>
 <body>
@@ -266,7 +323,7 @@ const hostedPageHTML = `<!doctype html>
     <div id="term"></div>
   </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/xterm@5.5.0/lib/xterm.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xterm-addon-web-links@0.9.0/lib/xterm-addon-web-links.min.js"></script>
   <script>
@@ -277,7 +334,6 @@ const hostedPageHTML = `<!doctype html>
 
     const term = new Terminal({
       cursorBlink: true,
-      convertEol: true,
       scrollback: 5000,
       theme: {
         background: "#000000",
@@ -295,18 +351,32 @@ const hostedPageHTML = `<!doctype html>
     const wsProto = window.location.protocol === "https:" ? "wss" : "ws";
     const ws = new WebSocket(wsProto + "://" + window.location.host + "/ws?token=" + encodeURIComponent(token));
     ws.binaryType = "arraybuffer";
+    const utf8Decoder = new TextDecoder();
 
     function sendResize() {
       if (ws.readyState !== WebSocket.OPEN) return;
       ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
     }
 
+    function fitAndResize() {
+      fitAddon.fit();
+      sendResize();
+    }
+
     ws.onopen = () => {
       statusEl.textContent = "live";
-      sendResize();
+      fitAndResize();
+      requestAnimationFrame(fitAndResize);
+      setTimeout(fitAndResize, 100);
+      setTimeout(fitAndResize, 350);
       term.focus();
     };
     ws.onclose = () => {
+      // Flush any pending partial UTF-8 sequence buffered by the decoder.
+      const tail = utf8Decoder.decode();
+      if (tail) {
+        term.write(tail);
+      }
       statusEl.textContent = "disconnected";
     };
     ws.onerror = () => {
@@ -318,11 +388,19 @@ const hostedPageHTML = `<!doctype html>
         return;
       }
       if (event.data instanceof ArrayBuffer) {
-        term.write(new TextDecoder().decode(event.data));
+        const text = utf8Decoder.decode(event.data, { stream: true });
+        if (text) {
+          term.write(text);
+        }
         return;
       }
       if (event.data && event.data.arrayBuffer) {
-        event.data.arrayBuffer().then((buf) => term.write(new TextDecoder().decode(buf)));
+        event.data.arrayBuffer().then((buf) => {
+          const text = utf8Decoder.decode(buf, { stream: true });
+          if (text) {
+            term.write(text);
+          }
+        });
       }
     };
 
@@ -332,10 +410,12 @@ const hostedPageHTML = `<!doctype html>
       }
     });
 
-    window.addEventListener("resize", () => {
-      fitAddon.fit();
-      sendResize();
-    });
+    window.addEventListener("resize", fitAndResize);
+    window.addEventListener("load", fitAndResize);
+    if (typeof ResizeObserver !== "undefined") {
+      const observer = new ResizeObserver(fitAndResize);
+      observer.observe(termEl);
+    }
   </script>
 </body>
 </html>`
