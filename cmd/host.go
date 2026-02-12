@@ -10,7 +10,9 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/creack/pty"
@@ -21,7 +23,7 @@ import (
 const (
 	hostWSReadLimitBytes   int64 = 32 * 1024
 	hostWSMaxInputBytes          = 8 * 1024
-	hostWSMaxMsgsPerSecond       = 220
+	hostWSMaxMsgsPerSecond       = 300
 )
 
 var (
@@ -41,21 +43,16 @@ var hostCmd = &cobra.Command{
 		}
 
 		allowedOrigins := parseAllowedOrigins(os.Getenv("BIRDY_HOST_ALLOWED_ORIGINS"))
+		webDir, _ := resolveHostWebDir()
 
 		fmt.Fprintf(cmd.OutOrStdout(), "birdy web host starting at %s\n", hostAddrFlag)
 		fmt.Fprintf(cmd.OutOrStdout(), "open: %s\n", hostedAccessURL(hostAddrFlag))
 		fmt.Fprintln(cmd.OutOrStdout(), "invite code required to start session")
+		if webDir != "" {
+			fmt.Fprintf(cmd.OutOrStdout(), "web client: %s\n", webDir)
+		}
 
 		mux := http.NewServeMux()
-		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path != "/" {
-				http.NotFound(w, r)
-				return
-			}
-			setHostedSecurityHeaders(w)
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			_, _ = io.WriteString(w, hostedPageHTML)
-		})
 		mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			_, _ = io.WriteString(w, "ok")
@@ -67,6 +64,8 @@ var hostCmd = &cobra.Command{
 			}
 			serveHostedTTY(w, r, inviteCode)
 		})
+
+		mux.Handle("/", makeHostedWebHandler(webDir))
 
 		server := &http.Server{
 			Addr:              hostAddrFlag,
@@ -126,21 +125,23 @@ func serveHostedTTY(w http.ResponseWriter, r *http.Request, inviteCode string) {
 	defer conn.Close()
 
 	conn.SetReadLimit(hostWSReadLimitBytes)
+	if tcpConn, ok := conn.UnderlyingConn().(*net.TCPConn); ok {
+		_ = tcpConn.SetNoDelay(true)
+		_ = tcpConn.SetKeepAlive(true)
+		_ = tcpConn.SetKeepAlivePeriod(30 * time.Second)
+	}
 
 	if ok := authenticateHostedWS(conn, inviteCode); !ok {
 		return
 	}
 
 	// Wait for the browser to send its terminal size before starting the TUI.
-	// This avoids a stale first frame rendered at a wrong size that xterm.js
-	// may not fully overwrite when the resize arrives.
 	initSize := pty.Winsize{Cols: 120, Rows: 36}
 	limiter := hostWSRateLimiter{}
 	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 	for {
-		_, payload, readErr := conn.ReadMessage()
+		msgType, payload, readErr := conn.ReadMessage()
 		if readErr != nil {
-			// Timed out or connection closed before we got a resize; use default.
 			break
 		}
 		if !limiter.allow(time.Now(), hostWSMaxMsgsPerSecond) {
@@ -148,6 +149,9 @@ func serveHostedTTY(w http.ResponseWriter, r *http.Request, inviteCode string) {
 				websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "rate limit exceeded"),
 				time.Now().Add(time.Second))
 			return
+		}
+		if msgType != websocket.TextMessage {
+			continue
 		}
 		var msg hostedWSMessage
 		if json.Unmarshal(payload, &msg) != nil {
@@ -158,7 +162,7 @@ func serveHostedTTY(w http.ResponseWriter, r *http.Request, inviteCode string) {
 			break
 		}
 	}
-	conn.SetReadDeadline(time.Time{}) // clear deadline
+	conn.SetReadDeadline(time.Time{})
 
 	exePath, err := os.Executable()
 	if err != nil || strings.TrimSpace(exePath) == "" {
@@ -181,7 +185,6 @@ func serveHostedTTY(w http.ResponseWriter, r *http.Request, inviteCode string) {
 		_ = child.Wait()
 	}()
 
-	// Debug: capture raw PTY output to /tmp/birdy-pty-debug.log
 	var debugFile *os.File
 	if os.Getenv("BIRDY_HOST_DEBUG") != "" {
 		debugFile, _ = os.Create("/tmp/birdy-pty-debug.log")
@@ -192,11 +195,13 @@ func serveHostedTTY(w http.ResponseWriter, r *http.Request, inviteCode string) {
 		}
 	}()
 
+	var lastInputAtUnixNano atomic.Int64
+
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		const (
-			flushInterval = 8 * time.Millisecond
+			flushInterval = 4 * time.Millisecond
 			maxBatchBytes = 64 * 1024
 		)
 
@@ -223,6 +228,7 @@ func serveHostedTTY(w http.ResponseWriter, r *http.Request, inviteCode string) {
 		defer ticker.Stop()
 
 		pending := make([]byte, 0, maxBatchBytes)
+		lastFlushAt := time.Time{}
 		flush := func() bool {
 			if len(pending) == 0 {
 				return true
@@ -231,7 +237,17 @@ func serveHostedTTY(w http.ResponseWriter, r *http.Request, inviteCode string) {
 				return false
 			}
 			pending = pending[:0]
+			lastFlushAt = time.Now()
 			return true
+		}
+
+		hasRecentInput := func(now time.Time) bool {
+			ns := lastInputAtUnixNano.Load()
+			if ns == 0 {
+				return false
+			}
+			recentAt := time.Unix(0, ns)
+			return now.Sub(recentAt) <= 140*time.Millisecond
 		}
 
 		for {
@@ -244,6 +260,15 @@ func serveHostedTTY(w http.ResponseWriter, r *http.Request, inviteCode string) {
 				pending = append(pending, chunk...)
 				if len(pending) >= maxBatchBytes && !flush() {
 					return
+				}
+
+				now := time.Now()
+				if len(pending) > 0 && hasRecentInput(now) {
+					if lastFlushAt.IsZero() || now.Sub(lastFlushAt) >= time.Millisecond {
+						if !flush() {
+							return
+						}
+					}
 				}
 			case <-ticker.C:
 				if !flush() {
@@ -260,7 +285,7 @@ func serveHostedTTY(w http.ResponseWriter, r *http.Request, inviteCode string) {
 		default:
 		}
 
-		_, payload, readErr := conn.ReadMessage()
+		msgType, payload, readErr := conn.ReadMessage()
 		if readErr != nil {
 			return
 		}
@@ -269,6 +294,18 @@ func serveHostedTTY(w http.ResponseWriter, r *http.Request, inviteCode string) {
 				websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "rate limit exceeded"),
 				time.Now().Add(time.Second))
 			return
+		}
+
+		if msgType == websocket.BinaryMessage {
+			if len(payload) == 0 || len(payload) > hostWSMaxInputBytes {
+				continue
+			}
+			lastInputAtUnixNano.Store(time.Now().UnixNano())
+			_, _ = ptmx.Write(payload)
+			continue
+		}
+		if msgType != websocket.TextMessage {
+			continue
 		}
 
 		var msg hostedWSMessage
@@ -284,6 +321,7 @@ func serveHostedTTY(w http.ResponseWriter, r *http.Request, inviteCode string) {
 			if len(msg.Data) > hostWSMaxInputBytes {
 				continue
 			}
+			lastInputAtUnixNano.Store(time.Now().UnixNano())
 			_, _ = ptmx.Write([]byte(msg.Data))
 		case "resize":
 			if msg.Cols > 0 && msg.Rows > 0 {
@@ -432,228 +470,80 @@ func setHostedSecurityHeaders(w http.ResponseWriter) {
 	w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 	w.Header().Set("Content-Security-Policy",
 		"default-src 'self'; "+
-			"base-uri 'none'; frame-ancestors 'none'; form-action 'self'; "+
+			"base-uri 'none'; frame-ancestors 'none'; form-action 'none'; "+
 			"connect-src 'self' ws: wss:; "+
-			"script-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; "+
-			"style-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; "+
-			"img-src 'self' data:; font-src 'self' https://cdn.jsdelivr.net")
+			"script-src 'self'; style-src 'self'; "+
+			"img-src 'self' data:; font-src 'self'")
 }
 
-const hostedPageHTML = `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>birdy host</title>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css" />
-  <style>
-    html, body {
-      margin: 0;
-      height: 100%;
-      overflow: hidden;
-      background: #000;
-      color: #d8f2ff;
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    }
-    #root {
-      display: grid;
-      grid-template-rows: auto minmax(0, 1fr);
-      height: 100%;
-      min-height: 100%;
-    }
-    #top {
-      box-sizing: border-box;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 8px 12px;
-      border-bottom: 1px solid #0ea5e9;
-      background: #03101b;
-      color: #38bdf8;
-      font-weight: 700;
-      letter-spacing: 0.03em;
-    }
-    #status { color: #cbd5e1; font-weight: 500; }
-    #term {
-      width: 100%;
-      height: 100%;
-      min-height: 0;
-      box-sizing: border-box;
-      overflow: hidden;
-    }
-    #term .xterm, #term .xterm-viewport {
-      height: 100%;
-    }
-  </style>
-</head>
-<body>
-  <div id="root">
-    <div id="top"><span>BIRDY HOST</span><span id="status">invite code required</span></div>
-    <div id="term"></div>
-  </div>
+func resolveHostWebDir() (string, error) {
+	if v := strings.TrimSpace(os.Getenv("BIRDY_HOST_WEB_DIR")); v != "" {
+		idx := filepath.Join(v, "index.html")
+		if st, err := os.Stat(idx); err == nil && !st.IsDir() {
+			return v, nil
+		}
+		return "", fmt.Errorf("BIRDY_HOST_WEB_DIR=%q missing index.html", v)
+	}
 
-  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-web-links@0.9.0/lib/xterm-addon-web-links.min.js"></script>
-  <script>
-    const statusEl = document.getElementById("status");
-    const termEl = document.getElementById("term");
-    const inviteCodeKey = "birdy_host_invite_code";
+	candidates := []string{
+		filepath.Join("web", "dist"),
+		filepath.Join("app", "web", "dist"),
+		filepath.Join(string(filepath.Separator), "app", "web", "dist"),
+	}
+	for _, c := range candidates {
+		idx := filepath.Join(c, "index.html")
+		if st, err := os.Stat(idx); err == nil && !st.IsDir() {
+			return c, nil
+		}
+	}
+	return "", nil
+}
 
-    const term = new Terminal({
-      cursorBlink: true,
-      scrollback: 5000,
-      theme: {
-        background: "#000000",
-        foreground: "#d8f2ff",
-        cursor: "#38bdf8"
-      }
-    });
-    const fitAddon = new FitAddon.FitAddon();
-    const linksAddon = new WebLinksAddon.WebLinksAddon();
-    term.loadAddon(fitAddon);
-    term.loadAddon(linksAddon);
-    term.open(termEl);
-    fitAddon.fit();
+func makeHostedWebHandler(webDir string) http.Handler {
+	if webDir == "" {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			setHostedSecurityHeaders(w)
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = io.WriteString(w, "birdy host web client not built. Run: cd web && bun install && bun run build\n")
+		})
+	}
 
-    let ws = null;
-    let inviteCode = "";
-    let authed = false;
-    const utf8Decoder = new TextDecoder();
+	root := filepath.Clean(webDir)
+	indexPath := filepath.Join(root, "index.html")
+	fs := http.FileServer(http.Dir(root))
 
-    let lastCols = 0;
-    let lastRows = 0;
-    function sendResize() {
-      if (!authed || !ws || ws.readyState !== WebSocket.OPEN) return;
-      if (term.cols === lastCols && term.rows === lastRows) return;
-      lastCols = term.cols;
-      lastRows = term.rows;
-      ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
-    }
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		setHostedSecurityHeaders(w)
 
-    function fitAndResize() {
-      fitAddon.fit();
-      sendResize();
-    }
+		// Only serve GET/HEAD for static assets.
+		switch r.Method {
+		case http.MethodGet, http.MethodHead:
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
 
-    function startAuthFlow() {
-      const prior = window.sessionStorage.getItem(inviteCodeKey) || "";
-      const entered = window.prompt("Enter invite code", prior);
-      if (entered === null) {
-        statusEl.textContent = "invite code required";
-        return;
-      }
-      inviteCode = entered.trim();
-      if (!inviteCode) {
-        statusEl.textContent = "invite code required";
-        return;
-      }
-      connect();
-    }
+		if r.URL.Path == "/" {
+			http.ServeFile(w, r, indexPath)
+			return
+		}
 
-    function connect() {
-      const wsProto = window.location.protocol === "https:" ? "wss" : "ws";
-      ws = new WebSocket(wsProto + "://" + window.location.host + "/ws");
-      ws.binaryType = "arraybuffer";
-      authed = false;
-      statusEl.textContent = "authenticating...";
+		// Serve file if it exists, otherwise fall back to index.html for SPA routes.
+		rel := filepath.Clean(filepath.FromSlash(strings.TrimPrefix(r.URL.Path, "/")))
+		candidate := filepath.Join(root, rel)
+		if !strings.HasPrefix(candidate, root+string(filepath.Separator)) {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
+			fs.ServeHTTP(w, r)
+			return
+		}
 
-      ws.onopen = () => {
-        ws.send(JSON.stringify({ type: "auth", code: inviteCode }));
-      };
-
-      ws.onclose = () => {
-        const tail = utf8Decoder.decode();
-        if (tail) {
-          term.write(tail);
-        }
-        if (!authed) {
-          window.sessionStorage.removeItem(inviteCodeKey);
-          statusEl.textContent = "invalid invite code";
-          setTimeout(startAuthFlow, 150);
-          return;
-        }
-        statusEl.textContent = "disconnected";
-      };
-
-      ws.onerror = () => {
-        statusEl.textContent = authed ? "error" : "auth failed";
-      };
-
-      ws.onmessage = (event) => {
-        if (typeof event.data === "string") {
-          let control = null;
-          try {
-            control = JSON.parse(event.data);
-          } catch (_) {
-            control = null;
-          }
-          if (control && control.type === "auth") {
-            if (!control.ok) {
-              statusEl.textContent = control.error || "invalid invite code";
-              return;
-            }
-            authed = true;
-            window.sessionStorage.setItem(inviteCodeKey, inviteCode);
-            statusEl.textContent = "live";
-            fitAndResize();
-            requestAnimationFrame(fitAndResize);
-            setTimeout(fitAndResize, 100);
-            setTimeout(fitAndResize, 350);
-            term.focus();
-            return;
-          }
-          if (authed) {
-            term.write(event.data);
-          }
-          return;
-        }
-        if (!authed) return;
-        if (event.data instanceof ArrayBuffer) {
-          const text = utf8Decoder.decode(event.data, { stream: true });
-          if (text) {
-            term.write(text);
-          }
-          return;
-        }
-        if (event.data && event.data.arrayBuffer) {
-          event.data.arrayBuffer().then((buf) => {
-            const text = utf8Decoder.decode(buf, { stream: true });
-            if (text) {
-              term.write(text);
-            }
-          });
-        }
-      };
-    }
-
-    term.onData((data) => {
-      if (authed && ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: "input", data }));
-      }
-    });
-
-    let resizeRAF = 0;
-    function scheduleFitAndResize() {
-      if (resizeRAF !== 0) return;
-      resizeRAF = requestAnimationFrame(() => {
-        resizeRAF = 0;
-        fitAndResize();
-      });
-    }
-
-    window.addEventListener("resize", scheduleFitAndResize);
-    window.addEventListener("load", () => {
-      scheduleFitAndResize();
-      startAuthFlow();
-    });
-    if (typeof ResizeObserver !== "undefined") {
-      const observer = new ResizeObserver(scheduleFitAndResize);
-      observer.observe(termEl);
-    }
-  </script>
-</body>
-</html>`
+		http.ServeFile(w, r, indexPath)
+	})
+}
 
 func init() {
 	hostCmd.Flags().StringVar(&hostAddrFlag, "addr", "127.0.0.1:8787", "listen address for hosted TUI")

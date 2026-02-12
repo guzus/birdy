@@ -31,3 +31,8 @@ Thumbs.db
 .env
 .env.*
 !.env.railway.example
+
+# Web client
+web/node_modules/
+web/dist/
+web/.vite/

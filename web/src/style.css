@@ -1,0 +1,57 @@
+:root {
+  --bg: #000;
+  --fg: #d8f2ff;
+  --muted: #cbd5e1;
+  --accent: #38bdf8;
+  --top-bg: #03101b;
+  --border: #0ea5e9;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+#root {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100%;
+  min-height: 100%;
+}
+
+#top {
+  box-sizing: border-box;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--top-bg);
+  color: var(--accent);
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+#status {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+#term {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  box-sizing: border-box;
+  overflow: hidden;
+  touch-action: none;
+}
+
+#term .xterm,
+#term .xterm-viewport {
+  height: 100%;
+}

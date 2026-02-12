@@ -1,5 +1,14 @@
 # syntax=docker/dockerfile:1
 
+FROM oven/bun:1.2.23 AS webbuilder
+WORKDIR /web
+
+COPY web/package.json web/bun.lock ./
+RUN bun install --frozen-lockfile
+
+COPY web/ ./
+RUN bun run build
+
 FROM golang:1.25-bookworm AS builder
 WORKDIR /src
 
@@ -19,6 +28,7 @@ RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" "@steipete
 WORKDIR /app
 
 COPY --from=builder /out/birdy /usr/local/bin/birdy
+COPY --from=webbuilder /web/dist /app/web/dist
 COPY scripts/entrypoint-railway.sh /usr/local/bin/entrypoint-railway
 
 RUN /usr/local/bin/birdy version >/dev/null \

@@ -8,3 +8,7 @@ dist/
 coverage.txt
 .idea/
 .vscode/
+
+web/node_modules/
+web/dist/
+web/.vite/
