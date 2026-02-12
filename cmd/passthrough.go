@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/guzus/birdy/internal/rotation"
 	"github.com/guzus/birdy/internal/runner"
@@ -11,9 +12,21 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var readOnlyBlockedBirdCommands = map[string]struct{}{
+	"tweet":      {},
+	"reply":      {},
+	"follow":     {},
+	"unfollow":   {},
+	"unbookmark": {},
+}
+
 func runPassthrough(cmd *cobra.Command, args []string) error {
 	if len(args) == 0 {
 		return cmd.Help()
+	}
+
+	if blocked, name := isReadOnlyBirdCommand(args); blocked {
+		return fmt.Errorf("%q is disabled in read-only mode (BIRDY_READ_ONLY)", name)
 	}
 
 	st, err := store.Open()
@@ -73,4 +86,37 @@ func runPassthrough(cmd *cobra.Command, args []string) error {
 		os.Exit(exitCode)
 	}
 	return nil
+}
+
+func isReadOnlyBirdCommand(args []string) (bool, string) {
+	if !readOnlyModeEnabled() {
+		return false, ""
+	}
+
+	cmd := firstBirdCommand(args)
+	if cmd == "" {
+		return false, ""
+	}
+	_, blocked := readOnlyBlockedBirdCommands[cmd]
+	return blocked, cmd
+}
+
+func readOnlyModeEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("BIRDY_READ_ONLY"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func firstBirdCommand(args []string) string {
+	for _, arg := range args {
+		a := strings.TrimSpace(strings.ToLower(arg))
+		if a == "" || strings.HasPrefix(a, "-") {
+			continue
+		}
+		return a
+	}
+	return ""
 }

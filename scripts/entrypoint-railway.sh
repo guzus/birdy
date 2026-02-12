@@ -2,9 +2,10 @@
 set -eu
 
 PORT="${PORT:-8787}"
+INVITE_CODE="${BIRDY_HOST_INVITE_CODE:-${BIRDY_HOST_TOKEN:-}}"
 
-if [ -z "${BIRDY_HOST_TOKEN:-}" ]; then
-  echo "BIRDY_HOST_TOKEN is required" >&2
+if [ -z "${INVITE_CODE}" ]; then
+  echo "BIRDY_HOST_INVITE_CODE is required (or legacy BIRDY_HOST_TOKEN)" >&2
   exit 1
 fi
 
@@ -14,4 +15,4 @@ fi
 
 mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/birdy"
 
-exec /usr/local/bin/birdy host --addr "0.0.0.0:${PORT}" --token "${BIRDY_HOST_TOKEN}"
+exec /usr/local/bin/birdy host --addr "0.0.0.0:${PORT}" --invite-code "${INVITE_CODE}"

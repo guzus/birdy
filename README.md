@@ -34,17 +34,19 @@ Run birdy as a browser-accessible terminal session:
 birdy host --addr 0.0.0.0:8787
 ```
 
-birdy will print a token-protected URL like:
+birdy will print the local URL:
 
 ```text
-http://127.0.0.1:8787/?token=...
+http://127.0.0.1:8787
 ```
+
+Users must enter an invite code to connect.
 
 Notes:
 - The host runs the same `birdy tui` session in a web terminal.
-- Share only the full URL with token.
-- You can set a fixed token with `--token` or `BIRDY_HOST_TOKEN`.
-- This is a shared session: everyone on the URL can see/control the same TUI.
+- Set invite code with `--invite-code` or `BIRDY_HOST_INVITE_CODE`.
+- For public deployments, set `BIRDY_READ_ONLY=1`.
+- This is a shared session: everyone who knows the invite code can see/control the same TUI.
 
 ## Deploy on Railway
 
@@ -62,8 +64,14 @@ Create a Railway service from this repo. Railway will detect and build the `Dock
 Set these in Railway Variables:
 
 ```bash
-# Required: browser access token for /?token=...
-BIRDY_HOST_TOKEN=replace-with-long-random-secret
+# Required: invite code users enter in the browser
+BIRDY_HOST_INVITE_CODE=replace-with-long-random-secret
+
+# Recommended for public deployments: disable write actions
+BIRDY_READ_ONLY=1
+
+# Optional: lock websocket origins to specific public domains
+# BIRDY_HOST_ALLOWED_ORIGINS=https://your-domain.example,https://<railway-domain>
 
 # Optional: hide/disable local chat history UI + persistence (recommended for public deploys)
 BIRDY_TUI_HIDE_HISTORY=1
@@ -94,17 +102,17 @@ This preserves:
 
 ### 4. Deploy and open
 
-After deploy, open your Railway public URL with token:
+After deploy, open your Railway public URL and enter your invite code:
 
 ```text
-https://<your-service-domain>/?token=<BIRDY_HOST_TOKEN>
+https://<your-service-domain>
 ```
 
 ### Railway notes
 
 - Keep this service at `1` replica (session is shared and stateful).
 - The container uses Node 22 + Claude Code CLI + bundled bird CLI.
-- Rotate `BIRDY_HOST_TOKEN` if it leaks.
+- Rotate `BIRDY_HOST_INVITE_CODE` if it leaks.
 
 ## How it works
 

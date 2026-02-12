@@ -1,9 +1,7 @@
 package cmd
 
 import (
-	"crypto/rand"
 	"crypto/subtle"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,9 +18,15 @@ import (
 	"github.com/spf13/cobra"
 )
 
+const (
+	hostWSReadLimitBytes   int64 = 32 * 1024
+	hostWSMaxInputBytes          = 8 * 1024
+	hostWSMaxMsgsPerSecond       = 220
+)
+
 var (
-	hostAddrFlag  string
-	hostTokenFlag string
+	hostAddrFlag       string
+	hostInviteCodeFlag string
 )
 
 var hostCmd = &cobra.Command{
@@ -31,17 +35,16 @@ var hostCmd = &cobra.Command{
 	Long:    "Start a browser-accessible terminal session that runs `birdy tui` over WebSocket.",
 	GroupID: "birdy",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		token, generated, err := ensureHostToken(hostTokenFlag)
+		inviteCode, err := ensureHostInviteCode(hostInviteCodeFlag)
 		if err != nil {
 			return err
 		}
 
-		accessURL := hostedAccessURL(hostAddrFlag, token)
+		allowedOrigins := parseAllowedOrigins(os.Getenv("BIRDY_HOST_ALLOWED_ORIGINS"))
+
 		fmt.Fprintf(cmd.OutOrStdout(), "birdy web host starting at %s\n", hostAddrFlag)
-		fmt.Fprintf(cmd.OutOrStdout(), "open: %s\n", accessURL)
-		if generated {
-			fmt.Fprintln(cmd.OutOrStdout(), "token was generated automatically for this run")
-		}
+		fmt.Fprintf(cmd.OutOrStdout(), "open: %s\n", hostedAccessURL(hostAddrFlag))
+		fmt.Fprintln(cmd.OutOrStdout(), "invite code required to start session")
 
 		mux := http.NewServeMux()
 		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -49,10 +52,7 @@ var hostCmd = &cobra.Command{
 				http.NotFound(w, r)
 				return
 			}
-			if !isHostAuthorized(r, token) {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
-				return
-			}
+			setHostedSecurityHeaders(w)
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			_, _ = io.WriteString(w, hostedPageHTML)
 		})
@@ -61,11 +61,11 @@ var hostCmd = &cobra.Command{
 			_, _ = io.WriteString(w, "ok")
 		})
 		mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
-			if !isHostAuthorized(r, token) {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+			if !isHostOriginAllowed(r, allowedOrigins) {
+				http.Error(w, "forbidden origin", http.StatusForbidden)
 				return
 			}
-			serveHostedTTY(w, r)
+			serveHostedTTY(w, r, inviteCode)
 		})
 
 		server := &http.Server{
@@ -81,36 +81,73 @@ var hostCmd = &cobra.Command{
 type hostedWSMessage struct {
 	Type string `json:"type"`
 	Data string `json:"data,omitempty"`
+	Code string `json:"code,omitempty"`
 	Cols uint16 `json:"cols,omitempty"`
 	Rows uint16 `json:"rows,omitempty"`
+}
+
+type hostedWSAuthMessage struct {
+	Type  string `json:"type"`
+	OK    bool   `json:"ok"`
+	Error string `json:"error,omitempty"`
 }
 
 var hostUpgrader = websocket.Upgrader{
 	ReadBufferSize:  8 * 1024,
 	WriteBufferSize: 8 * 1024,
-	CheckOrigin: func(r *http.Request) bool {
-		// Token auth gates access; allow browser clients from arbitrary origins.
+	CheckOrigin: func(_ *http.Request) bool {
+		// Origin checks are enforced in the HTTP handler.
 		return true
 	},
 }
 
-func serveHostedTTY(w http.ResponseWriter, r *http.Request) {
+type hostWSRateLimiter struct {
+	windowStart time.Time
+	count       int
+}
+
+func (l *hostWSRateLimiter) allow(now time.Time, limit int) bool {
+	if limit <= 0 {
+		return true
+	}
+	if l.windowStart.IsZero() || now.Sub(l.windowStart) >= time.Second {
+		l.windowStart = now
+		l.count = 0
+	}
+	l.count++
+	return l.count <= limit
+}
+
+func serveHostedTTY(w http.ResponseWriter, r *http.Request, inviteCode string) {
 	conn, err := hostUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
 	}
 	defer conn.Close()
 
+	conn.SetReadLimit(hostWSReadLimitBytes)
+
+	if ok := authenticateHostedWS(conn, inviteCode); !ok {
+		return
+	}
+
 	// Wait for the browser to send its terminal size before starting the TUI.
 	// This avoids a stale first frame rendered at a wrong size that xterm.js
 	// may not fully overwrite when the resize arrives.
 	initSize := pty.Winsize{Cols: 120, Rows: 36}
+	limiter := hostWSRateLimiter{}
 	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 	for {
 		_, payload, readErr := conn.ReadMessage()
 		if readErr != nil {
 			// Timed out or connection closed before we got a resize; use default.
 			break
+		}
+		if !limiter.allow(time.Now(), hostWSMaxMsgsPerSecond) {
+			_ = conn.WriteControl(websocket.CloseMessage,
+				websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "rate limit exceeded"),
+				time.Now().Add(time.Second))
+			return
 		}
 		var msg hostedWSMessage
 		if json.Unmarshal(payload, &msg) != nil {
@@ -151,7 +188,7 @@ func serveHostedTTY(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() {
 		if debugFile != nil {
-			debugFile.Close()
+			_ = debugFile.Close()
 		}
 	}()
 
@@ -172,7 +209,7 @@ func serveHostedTTY(w http.ResponseWriter, r *http.Request) {
 				if n > 0 {
 					chunk := append([]byte(nil), buf[:n]...)
 					if debugFile != nil {
-						fmt.Fprintf(debugFile, "--- chunk %d bytes ---\n%q\n", n, chunk)
+						_, _ = fmt.Fprintf(debugFile, "--- chunk %d bytes ---\\n%q\\n", n, chunk)
 					}
 					chunks <- chunk
 				}
@@ -227,6 +264,12 @@ func serveHostedTTY(w http.ResponseWriter, r *http.Request) {
 		if readErr != nil {
 			return
 		}
+		if !limiter.allow(time.Now(), hostWSMaxMsgsPerSecond) {
+			_ = conn.WriteControl(websocket.CloseMessage,
+				websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "rate limit exceeded"),
+				time.Now().Add(time.Second))
+			return
+		}
 
 		var msg hostedWSMessage
 		if err := json.Unmarshal(payload, &msg); err != nil {
@@ -235,9 +278,13 @@ func serveHostedTTY(w http.ResponseWriter, r *http.Request) {
 
 		switch msg.Type {
 		case "input":
-			if msg.Data != "" {
-				_, _ = ptmx.Write([]byte(msg.Data))
+			if msg.Data == "" {
+				continue
 			}
+			if len(msg.Data) > hostWSMaxInputBytes {
+				continue
+			}
+			_, _ = ptmx.Write([]byte(msg.Data))
 		case "resize":
 			if msg.Cols > 0 && msg.Rows > 0 {
 				_ = pty.Setsize(ptmx, &pty.Winsize{Cols: msg.Cols, Rows: msg.Rows})
@@ -246,52 +293,119 @@ func serveHostedTTY(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func ensureHostToken(flagValue string) (token string, generated bool, err error) {
-	token = strings.TrimSpace(flagValue)
-	if token == "" {
-		token = strings.TrimSpace(os.Getenv("BIRDY_HOST_TOKEN"))
-	}
-	if token != "" {
-		return token, false, nil
-	}
+func authenticateHostedWS(conn *websocket.Conn, inviteCode string) bool {
+	conn.SetReadDeadline(time.Now().Add(20 * time.Second))
+	defer conn.SetReadDeadline(time.Time{})
 
-	buf := make([]byte, 18)
-	if _, err := rand.Read(buf); err != nil {
-		return "", false, fmt.Errorf("failed to generate host token: %w", err)
-	}
-	return base64.RawURLEncoding.EncodeToString(buf), true, nil
-}
-
-func isHostAuthorized(r *http.Request, expectedToken string) bool {
-	if expectedToken == "" {
-		return true
-	}
-	got := hostRequestToken(r)
-	if got == "" {
+	_, payload, err := conn.ReadMessage()
+	if err != nil {
 		return false
 	}
-	return subtle.ConstantTimeCompare([]byte(expectedToken), []byte(got)) == 1
-}
 
-func hostRequestToken(r *http.Request) string {
-	if q := strings.TrimSpace(r.URL.Query().Get("token")); q != "" {
-		return q
+	var msg hostedWSMessage
+	if err := json.Unmarshal(payload, &msg); err != nil || msg.Type != "auth" {
+		_ = conn.WriteJSON(hostedWSAuthMessage{Type: "auth", OK: false, Error: "missing auth message"})
+		_ = conn.WriteControl(websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "missing auth"),
+			time.Now().Add(time.Second))
+		return false
 	}
 
-	auth := strings.TrimSpace(r.Header.Get("Authorization"))
-	if auth == "" {
+	if subtle.ConstantTimeCompare([]byte(strings.TrimSpace(msg.Code)), []byte(inviteCode)) != 1 {
+		_ = conn.WriteJSON(hostedWSAuthMessage{Type: "auth", OK: false, Error: "invalid invite code"})
+		_ = conn.WriteControl(websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "invalid invite code"),
+			time.Now().Add(time.Second))
+		return false
+	}
+
+	if err := conn.WriteJSON(hostedWSAuthMessage{Type: "auth", OK: true}); err != nil {
+		return false
+	}
+	return true
+}
+
+func ensureHostInviteCode(flagValue string) (string, error) {
+	code := strings.TrimSpace(flagValue)
+	if code == "" {
+		code = strings.TrimSpace(os.Getenv("BIRDY_HOST_INVITE_CODE"))
+	}
+	if code == "" {
+		code = strings.TrimSpace(os.Getenv("BIRDY_HOST_TOKEN"))
+	}
+	if code == "" {
+		return "", fmt.Errorf("missing invite code: set --invite-code or BIRDY_HOST_INVITE_CODE")
+	}
+	return code, nil
+}
+
+func parseAllowedOrigins(raw string) map[string]struct{} {
+	out := make(map[string]struct{})
+	for _, part := range strings.Split(raw, ",") {
+		norm := normalizeOrigin(part)
+		if norm == "" {
+			continue
+		}
+		out[norm] = struct{}{}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func normalizeOrigin(v string) string {
+	v = strings.TrimSpace(strings.ToLower(v))
+	if v == "" {
 		return ""
 	}
-	const bearer = "bearer "
-	if len(auth) >= len(bearer) && strings.EqualFold(auth[:len(bearer)], bearer) {
-		return strings.TrimSpace(auth[len(bearer):])
+	u, err := url.Parse(v)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return ""
 	}
-	return ""
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host
 }
 
-func hostedAccessURL(addr, token string) string {
+func requestScheme(r *http.Request) string {
+	if xf := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")); xf != "" {
+		if i := strings.IndexByte(xf, ','); i >= 0 {
+			xf = xf[:i]
+		}
+		xf = strings.TrimSpace(strings.ToLower(xf))
+		if xf == "https" || xf == "http" {
+			return xf
+		}
+	}
+	if r.TLS != nil {
+		return "https"
+	}
+	return "http"
+}
+
+func isHostOriginAllowed(r *http.Request, allowed map[string]struct{}) bool {
+	origin := normalizeOrigin(r.Header.Get("Origin"))
+	if origin == "" {
+		return false
+	}
+
+	expected := requestScheme(r) + "://" + r.Host
+	if subtle.ConstantTimeCompare([]byte(origin), []byte(expected)) == 1 {
+		return true
+	}
+
+	if len(allowed) == 0 {
+		return false
+	}
+	_, ok := allowed[origin]
+	return ok
+}
+
+func hostedAccessURL(addr string) string {
 	host := advertisedHost(addr)
-	return "http://" + host + "/?token=" + url.QueryEscape(token)
+	return "http://" + host
 }
 
 func advertisedHost(addr string) string {
@@ -309,6 +423,20 @@ func advertisedHost(addr string) string {
 		host = "127.0.0.1"
 	}
 	return net.JoinHostPort(host, port)
+}
+
+func setHostedSecurityHeaders(w http.ResponseWriter) {
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+	w.Header().Set("Content-Security-Policy",
+		"default-src 'self'; "+
+			"base-uri 'none'; frame-ancestors 'none'; form-action 'self'; "+
+			"connect-src 'self' ws: wss:; "+
+			"script-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; "+
+			"style-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; "+
+			"img-src 'self' data:; font-src 'self' https://cdn.jsdelivr.net")
 }
 
 const hostedPageHTML = `<!doctype html>
@@ -360,7 +488,7 @@ const hostedPageHTML = `<!doctype html>
 </head>
 <body>
   <div id="root">
-    <div id="top"><span>BIRDY HOST</span><span id="status">connecting...</span></div>
+    <div id="top"><span>BIRDY HOST</span><span id="status">invite code required</span></div>
     <div id="term"></div>
   </div>
 
@@ -370,8 +498,7 @@ const hostedPageHTML = `<!doctype html>
   <script>
     const statusEl = document.getElementById("status");
     const termEl = document.getElementById("term");
-    const params = new URLSearchParams(window.location.search);
-    const token = params.get("token") || "";
+    const inviteCodeKey = "birdy_host_invite_code";
 
     const term = new Terminal({
       cursorBlink: true,
@@ -389,15 +516,15 @@ const hostedPageHTML = `<!doctype html>
     term.open(termEl);
     fitAddon.fit();
 
-    const wsProto = window.location.protocol === "https:" ? "wss" : "ws";
-    const ws = new WebSocket(wsProto + "://" + window.location.host + "/ws?token=" + encodeURIComponent(token));
-    ws.binaryType = "arraybuffer";
+    let ws = null;
+    let inviteCode = "";
+    let authed = false;
     const utf8Decoder = new TextDecoder();
 
     let lastCols = 0;
     let lastRows = 0;
     function sendResize() {
-      if (ws.readyState !== WebSocket.OPEN) return;
+      if (!authed || !ws || ws.readyState !== WebSocket.OPEN) return;
       if (term.cols === lastCols && term.rows === lastRows) return;
       lastCols = term.cols;
       lastRows = term.rows;
@@ -409,49 +536,99 @@ const hostedPageHTML = `<!doctype html>
       sendResize();
     }
 
-    ws.onopen = () => {
-      statusEl.textContent = "live";
-      fitAndResize();
-      requestAnimationFrame(fitAndResize);
-      setTimeout(fitAndResize, 100);
-      setTimeout(fitAndResize, 350);
-      term.focus();
-    };
-    ws.onclose = () => {
-      // Flush any pending partial UTF-8 sequence buffered by the decoder.
-      const tail = utf8Decoder.decode();
-      if (tail) {
-        term.write(tail);
-      }
-      statusEl.textContent = "disconnected";
-    };
-    ws.onerror = () => {
-      statusEl.textContent = "error";
-    };
-    ws.onmessage = (event) => {
-      if (typeof event.data === "string") {
-        term.write(event.data);
+    function startAuthFlow() {
+      const prior = window.sessionStorage.getItem(inviteCodeKey) || "";
+      const entered = window.prompt("Enter invite code", prior);
+      if (entered === null) {
+        statusEl.textContent = "invite code required";
         return;
       }
-      if (event.data instanceof ArrayBuffer) {
-        const text = utf8Decoder.decode(event.data, { stream: true });
-        if (text) {
-          term.write(text);
+      inviteCode = entered.trim();
+      if (!inviteCode) {
+        statusEl.textContent = "invite code required";
+        return;
+      }
+      connect();
+    }
+
+    function connect() {
+      const wsProto = window.location.protocol === "https:" ? "wss" : "ws";
+      ws = new WebSocket(wsProto + "://" + window.location.host + "/ws");
+      ws.binaryType = "arraybuffer";
+      authed = false;
+      statusEl.textContent = "authenticating...";
+
+      ws.onopen = () => {
+        ws.send(JSON.stringify({ type: "auth", code: inviteCode }));
+      };
+
+      ws.onclose = () => {
+        const tail = utf8Decoder.decode();
+        if (tail) {
+          term.write(tail);
         }
-        return;
-      }
-      if (event.data && event.data.arrayBuffer) {
-        event.data.arrayBuffer().then((buf) => {
-          const text = utf8Decoder.decode(buf, { stream: true });
+        if (!authed) {
+          window.sessionStorage.removeItem(inviteCodeKey);
+          statusEl.textContent = "invalid invite code";
+          setTimeout(startAuthFlow, 150);
+          return;
+        }
+        statusEl.textContent = "disconnected";
+      };
+
+      ws.onerror = () => {
+        statusEl.textContent = authed ? "error" : "auth failed";
+      };
+
+      ws.onmessage = (event) => {
+        if (typeof event.data === "string") {
+          let control = null;
+          try {
+            control = JSON.parse(event.data);
+          } catch (_) {
+            control = null;
+          }
+          if (control && control.type === "auth") {
+            if (!control.ok) {
+              statusEl.textContent = control.error || "invalid invite code";
+              return;
+            }
+            authed = true;
+            window.sessionStorage.setItem(inviteCodeKey, inviteCode);
+            statusEl.textContent = "live";
+            fitAndResize();
+            requestAnimationFrame(fitAndResize);
+            setTimeout(fitAndResize, 100);
+            setTimeout(fitAndResize, 350);
+            term.focus();
+            return;
+          }
+          if (authed) {
+            term.write(event.data);
+          }
+          return;
+        }
+        if (!authed) return;
+        if (event.data instanceof ArrayBuffer) {
+          const text = utf8Decoder.decode(event.data, { stream: true });
           if (text) {
             term.write(text);
           }
-        });
-      }
-    };
+          return;
+        }
+        if (event.data && event.data.arrayBuffer) {
+          event.data.arrayBuffer().then((buf) => {
+            const text = utf8Decoder.decode(buf, { stream: true });
+            if (text) {
+              term.write(text);
+            }
+          });
+        }
+      };
+    }
 
     term.onData((data) => {
-      if (ws.readyState === WebSocket.OPEN) {
+      if (authed && ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: "input", data }));
       }
     });
@@ -466,7 +643,10 @@ const hostedPageHTML = `<!doctype html>
     }
 
     window.addEventListener("resize", scheduleFitAndResize);
-    window.addEventListener("load", scheduleFitAndResize);
+    window.addEventListener("load", () => {
+      scheduleFitAndResize();
+      startAuthFlow();
+    });
     if (typeof ResizeObserver !== "undefined") {
       const observer = new ResizeObserver(scheduleFitAndResize);
       observer.observe(termEl);
@@ -477,6 +657,8 @@ const hostedPageHTML = `<!doctype html>
 
 func init() {
 	hostCmd.Flags().StringVar(&hostAddrFlag, "addr", "127.0.0.1:8787", "listen address for hosted TUI")
-	hostCmd.Flags().StringVar(&hostTokenFlag, "token", "", "access token for web host (or set BIRDY_HOST_TOKEN)")
+	hostCmd.Flags().StringVar(&hostInviteCodeFlag, "invite-code", "", "invite code for web host (or set BIRDY_HOST_INVITE_CODE)")
+	hostCmd.Flags().StringVar(&hostInviteCodeFlag, "token", "", "deprecated alias for --invite-code")
+	_ = hostCmd.Flags().MarkHidden("token")
 	rootCmd.AddCommand(hostCmd)
 }
