@@ -64,6 +64,8 @@ var hostCmd = &cobra.Command{
 			}
 			serveHostedTTY(w, r, inviteCode)
 		})
+		mux.HandleFunc("/api/command", handleAPICommand(inviteCode))
+		mux.HandleFunc("/api/chat", handleAPIChat(inviteCode))
 
 		mux.Handle("/", makeHostedWebHandler(webDir))
 

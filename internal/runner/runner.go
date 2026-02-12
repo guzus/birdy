@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,26 +14,55 @@ import (
 // Run executes the bird CLI with the given account's credentials and args.
 // It passes auth_token and ct0 as environment variables.
 func Run(account *store.Account, args []string) (int, error) {
+	exitCode, _, _, err := runWithIO(account, args, os.Stdin, os.Stdout, os.Stderr)
+	return exitCode, err
+}
+
+// RunCapture executes the bird CLI and captures stdout/stderr.
+func RunCapture(account *store.Account, args []string) (exitCode int, stdout, stderr string, err error) {
+	var outBuf bytes.Buffer
+	var errBuf bytes.Buffer
+	exitCode, _, _, err = runWithIO(account, args, nil, &outBuf, &errBuf)
+	return exitCode, outBuf.String(), errBuf.String(), err
+}
+
+func runWithIO(account *store.Account, args []string, stdin any, stdout any, stderr any) (exitCode int, out string, errOut string, err error) {
 	birdBin, err := findBird()
 	if err != nil {
-		return 1, err
+		return 1, "", "", err
 	}
 
 	cmd := exec.Command(birdBin, args...)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	if stdin != nil {
+		if r, ok := stdin.(*os.File); ok {
+			cmd.Stdin = r
+		}
+		// For capture mode, stdin is nil.
+	}
+	if w, ok := stdout.(*os.File); ok {
+		cmd.Stdout = w
+	} else if w, ok := stdout.(*bytes.Buffer); ok {
+		cmd.Stdout = w
+	} else if w, ok := stdout.(interface{ Write([]byte) (int, error) }); ok {
+		cmd.Stdout = w
+	}
+	if w, ok := stderr.(*os.File); ok {
+		cmd.Stderr = w
+	} else if w, ok := stderr.(*bytes.Buffer); ok {
+		cmd.Stderr = w
+	} else if w, ok := stderr.(interface{ Write([]byte) (int, error) }); ok {
+		cmd.Stderr = w
+	}
 
-	// Inherit current environment and override auth tokens.
 	cmd.Env = buildEnv(account)
 
 	if err := cmd.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
-			return exitErr.ExitCode(), nil
+			return exitErr.ExitCode(), "", "", nil
 		}
-		return 1, fmt.Errorf("running bird: %w", err)
+		return 1, "", "", fmt.Errorf("running bird: %w", err)
 	}
-	return 0, nil
+	return 0, "", "", nil
 }
 
 // findBird locates the bird binary.
@@ -71,7 +101,6 @@ func findBird() (string, error) {
 			filepath.Join(dir, "birdy-bird_"+suffix),
 		}
 		if runtime.GOOS == "windows" {
-			// exec.Command on Windows generally needs the .exe suffix if provided as a path.
 			for _, c := range []string{
 				filepath.Join(dir, "bird.exe"),
 				filepath.Join(dir, "birdy-bird.exe"),
@@ -89,8 +118,6 @@ func findBird() (string, error) {
 		}
 	}
 
-	// If running from the repo with `go run`, the executable lives in a temp dir,
-	// but cwd often points at the repo root.
 	if wd, err := os.Getwd(); err == nil {
 		c := filepath.Join(wd, "third_party", "@steipete", "bird", "dist", "cli.js")
 		if err := assertUsableBinary(c); err == nil {
@@ -117,7 +144,6 @@ func assertUsableBinary(path string) error {
 		return fmt.Errorf("is a directory")
 	}
 	if runtime.GOOS == "windows" {
-		// Best-effort: on Windows, existence is usually sufficient.
 		return nil
 	}
 	if st.Mode()&0o111 == 0 {
@@ -130,7 +156,6 @@ func assertUsableBinary(path string) error {
 func buildEnv(account *store.Account) []string {
 	env := os.Environ()
 
-	// Remove any existing auth-related env vars to avoid conflicts.
 	filtered := make([]string, 0, len(env))
 	for _, e := range env {
 		skip := false
@@ -150,7 +175,6 @@ func buildEnv(account *store.Account) []string {
 		}
 	}
 
-	// Inject the account credentials.
 	filtered = append(filtered,
 		"AUTH_TOKEN="+account.AuthToken,
 		"CT0="+account.CT0,
