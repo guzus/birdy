@@ -16,6 +16,8 @@ HERE="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 FORMAT="env"
 BROWSERS=""
+CHROME_PROFILE=""
+INTERACTIVE=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -23,8 +25,11 @@ while [[ $# -gt 0 ]]; do
     --format=*) FORMAT="${1#*=}"; shift 1 ;;
     --browsers) BROWSERS="${2:-}"; shift 2 ;;
     --browsers=*) BROWSERS="${1#*=}"; shift 1 ;;
+    --chrome-profile) CHROME_PROFILE="${2:-}"; shift 2 ;;
+    --chrome-profile=*) CHROME_PROFILE="${1#*=}"; shift 1 ;;
+    --interactive) INTERACTIVE=1; shift 1 ;;
     -h|--help)
-      echo "Usage: extract_x_tokens.sh [--format env|json] [--browsers chrome,safari,firefox,edge]" >&2
+      echo "Usage: extract_x_tokens.sh [--format env|json] [--browsers chrome,safari,firefox,edge] [--chrome-profile <name-or-path>] [--interactive]" >&2
       exit 0
       ;;
     *)
@@ -75,6 +80,22 @@ ARGS=( "--format=$FORMAT" )
 if [[ -n "$BROWSERS" ]]; then
   ARGS+=( "--browsers=$BROWSERS" )
 fi
+if [[ -n "$CHROME_PROFILE" ]]; then
+  ARGS+=( "--chrome-profile=$CHROME_PROFILE" )
+fi
+
+if [[ "$INTERACTIVE" -eq 1 ]]; then
+  # If the caller wants interactivity, assume Chrome (unless explicitly set),
+  # and prompt for a profile if none was provided.
+  if [[ -z "$BROWSERS" ]]; then
+    ARGS+=( "--browsers=chrome" )
+  fi
+  if [[ -z "$CHROME_PROFILE" ]]; then
+    CHOSEN="$("$HERE/select_chrome_profile.sh")"
+    if [[ -n "$CHOSEN" ]]; then
+      ARGS+=( "--chrome-profile=$CHOSEN" )
+    fi
+  fi
+fi
 
 node "$HERE/extract_x_tokens.mjs" "${ARGS[@]}"
-

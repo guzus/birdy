@@ -4,11 +4,12 @@ import { pathToFileURL } from 'node:url';
 function usage() {
   // Keep this short; tokens are sensitive and should not be echoed in help output.
   console.error('Usage: extract_x_tokens.mjs [--format env|json] [--browsers chrome,safari,firefox,edge]');
+  console.error('       extract_x_tokens.mjs [--chrome-profile <name-or-path>]');
   console.error('Env: SWEET_COOKIE_MODULE=/path/to/@steipete/sweet-cookie/dist/index.js');
 }
 
 function parseArgs(argv) {
-  const out = { format: 'env', browsers: undefined };
+  const out = { format: 'env', browsers: undefined, chromeProfile: undefined };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '-h' || a === '--help') {
@@ -21,6 +22,10 @@ function parseArgs(argv) {
       out.browsers = argv[++i] ?? '';
     } else if (a.startsWith('--browsers=')) {
       out.browsers = a.slice('--browsers='.length);
+    } else if (a === '--chrome-profile') {
+      out.chromeProfile = argv[++i] ?? '';
+    } else if (a.startsWith('--chrome-profile=')) {
+      out.chromeProfile = a.slice('--chrome-profile='.length);
     } else {
       console.error(`Unknown arg: ${a}`);
       out.help = true;
@@ -73,6 +78,7 @@ async function main() {
     // Only fetch the two required cookies.
     names: ['auth_token', 'ct0'],
     ...(browsers ? { browsers } : {}),
+    ...(args.chromeProfile ? { chromeProfile: args.chromeProfile } : {}),
   });
 
   // Print warnings to stderr (no values).
@@ -113,4 +119,3 @@ async function main() {
 }
 
 await main();
-

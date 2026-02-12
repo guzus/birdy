@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -114,6 +115,93 @@ func TestChatEnterBlockedDuringStreaming(t *testing.T) {
 
 	if len(m.messages) != prevMsgCount {
 		t.Error("enter during streaming should not add messages")
+	}
+}
+
+func TestChatCtrlVPastesClipboardText(t *testing.T) {
+	m := NewChatModel()
+	m.readClipboardFn = func() (string, error) {
+		return "world\nfrom\tclip", nil
+	}
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.input.SetValue("hello ")
+
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlV})
+	if cmd == nil {
+		t.Fatal("expected clipboard read command from ctrl+v")
+	}
+	m, _ = m.Update(cmd())
+
+	if got := m.input.Value(); got != "hello world from clip" {
+		t.Fatalf("expected pasted content in input, got %q", got)
+	}
+}
+
+func TestChatCtrlVPasteFailureShowsNotice(t *testing.T) {
+	m := NewChatModel()
+	m.readClipboardFn = func() (string, error) {
+		return "", errors.New("clipboard unavailable")
+	}
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlV})
+	if cmd == nil {
+		t.Fatal("expected clipboard read command from ctrl+v")
+	}
+	m, _ = m.Update(cmd())
+
+	if m.queueNotice != "paste failed" {
+		t.Fatalf("expected paste failure notice, got %q", m.queueNotice)
+	}
+}
+
+func TestChatCtrlYCopiesAssistantContent(t *testing.T) {
+	m := NewChatModel()
+	var copied string
+	m.writeClipboardFn = func(s string) error {
+		copied = s
+		return nil
+	}
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.messages = []chatMessage{
+		{role: "assistant", content: "copy me"},
+	}
+
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
+	if cmd == nil {
+		t.Fatal("expected clipboard write command from ctrl+y")
+	}
+	m, _ = m.Update(cmd())
+
+	if copied != "copy me" {
+		t.Fatalf("expected assistant response copied, got %q", copied)
+	}
+	if !m.copied {
+		t.Fatal("expected copied indicator to be enabled")
+	}
+}
+
+func TestChatCtrlYCopyFailureShowsNotice(t *testing.T) {
+	m := NewChatModel()
+	m.writeClipboardFn = func(string) error {
+		return errors.New("clipboard unavailable")
+	}
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.messages = []chatMessage{
+		{role: "assistant", content: "copy me"},
+	}
+
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
+	if cmd == nil {
+		t.Fatal("expected clipboard write command from ctrl+y")
+	}
+	m, _ = m.Update(cmd())
+
+	if m.queueNotice != "copy failed" {
+		t.Fatalf("expected copy failure notice, got %q", m.queueNotice)
+	}
+	if m.copied {
+		t.Fatal("expected copied indicator to stay disabled on failure")
 	}
 }
 
@@ -1236,6 +1324,22 @@ func TestSanitizeStreamOutputKeepsReadableWhitespace(t *testing.T) {
 	got := sanitizeStreamOutput(in)
 	if got != in {
 		t.Fatalf("expected whitespace preserved, got %q", got)
+	}
+}
+
+func TestLinkifyURLsAddsTerminalHyperlink(t *testing.T) {
+	out := linkifyURLs("visit https://example.com now")
+	want := "\x1b]8;;https://example.com\x1b\\https://example.com\x1b]8;;\x1b\\"
+	if !strings.Contains(out, want) {
+		t.Fatalf("expected clickable hyperlink sequence, got %q", out)
+	}
+}
+
+func TestLinkifyURLsHandlesWWWAndTrailingPunctuation(t *testing.T) {
+	out := linkifyURLs("see www.example.com).")
+	want := "\x1b]8;;https://www.example.com\x1b\\www.example.com\x1b]8;;\x1b\\)."
+	if !strings.Contains(out, want) {
+		t.Fatalf("expected clickable www link with trailing punctuation preserved, got %q", out)
 	}
 }
 

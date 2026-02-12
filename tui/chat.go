@@ -4,13 +4,13 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strings"
 	"time"
+	"unicode/utf8"
 
+	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -28,44 +28,53 @@ type chatMessage struct {
 
 // ChatModel is the main chat screen with viewport, input, and streaming state.
 type ChatModel struct {
-	viewport         viewport.Model
-	input            textinput.Model
-	spinner          spinner.Model
-	messages         []chatMessage
-	queuedPrompts    []string
-	queueNotice      string
-	queueNoticeID    int
-	streaming        bool
-	streamCh         <-chan tea.Msg
-	cancelStream     context.CancelFunc
-	width            int
-	height           int
-	ready            bool
-	accountCount     int
-	autoQueried      bool
-	copied           bool
-	model            string
-	mouseSeqMode     bool
-	followOutput     bool
-	historyMode      bool
-	historyFiles     []string
-	historyIndex     int
-	historyPreview   string
-	historyError     string
-	lastWheelAt      time.Time
+	viewport             viewport.Model
+	input                textinput.Model
+	spinner              spinner.Model
+	messages             []chatMessage
+	queuedPrompts        []string
+	queueNotice          string
+	queueNoticeID        int
+	streaming            bool
+	streamCh             <-chan tea.Msg
+	cancelStream         context.CancelFunc
+	width                int
+	height               int
+	ready                bool
+	accountCount         int
+	autoQueried          bool
+	copied               bool
+	model                string
+	mouseSeqMode         bool
+	followOutput         bool
+	historyMode          bool
+	historyFiles         []string
+	historyIndex         int
+	historyPreview       string
+	historyError         string
+	lastWheelAt          time.Time
 	streamTailContent    string
 	streamTailRendered   string
 	streamTailWidth      int
 	streamTailRenderedAt time.Time
-	markdownCache    map[string]string
-	mdRenderers      map[int]*glamour.TermRenderer
-	lastStreamRender time.Time
-	nowFn            func() time.Time
+	markdownCache        map[string]string
+	mdRenderers          map[int]*glamour.TermRenderer
+	lastStreamRender     time.Time
+	nowFn                func() time.Time
+	readClipboardFn      func() (string, error)
+	writeClipboardFn     func(string) error
 }
 
 type clearCopiedMsg struct{}
 type clearQueueNoticeMsg struct {
 	ID int
+}
+type clipboardReadMsg struct {
+	Text string
+	Err  error
+}
+type clipboardWriteMsg struct {
+	Err error
 }
 
 var (
@@ -80,6 +89,7 @@ var (
 	oscPrefixPattern       = regexp.MustCompile(`(?:\]|\x1b\])(?:10|11);`)
 	colorTripletPattern    = regexp.MustCompile(`[0-9A-Fa-f]{4}/[0-9A-Fa-f]{4}/[0-9A-Fa-f]{4}`)
 	oscResiduePattern      = regexp.MustCompile(`\\+;\\*|;\\+|\\+$`)
+	urlPattern             = regexp.MustCompile(`(?i)\b(?:https?://|www\.)[^\s<>"'` + "`" + `]+`)
 	ansiCsiPattern         = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
 	ansiOscPattern         = regexp.MustCompile(`\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)`)
 )
@@ -113,13 +123,15 @@ func NewChatModel() ChatModel {
 	}
 
 	m := ChatModel{
-		input:         ti,
-		spinner:       sp,
-		model:         model,
-		followOutput:  true,
-		markdownCache: make(map[string]string, 128),
-		mdRenderers:   make(map[int]*glamour.TermRenderer, 8),
-		nowFn:         time.Now,
+		input:            ti,
+		spinner:          sp,
+		model:            model,
+		followOutput:     true,
+		markdownCache:    make(map[string]string, 128),
+		mdRenderers:      make(map[int]*glamour.TermRenderer, 8),
+		nowFn:            time.Now,
+		readClipboardFn:  clipboard.ReadAll,
+		writeClipboardFn: clipboard.WriteAll,
 	}
 	m.refreshAccountCount()
 	return m
@@ -138,11 +150,11 @@ func (m ChatModel) Init() tea.Cmd {
 
 const (
 	topGutterHeight = 1
-	headerHeight = 3
-	feedChrome   = 3 // panel border + section title row
-	commandHeight = 5 // panel border + title row + simple input block
-	footerHeight  = 4 // panel border + key hints row + save-path row
-	chatOverhead  = topGutterHeight + headerHeight + feedChrome + commandHeight + footerHeight
+	headerHeight    = 3
+	feedChrome      = 3 // panel border + section title row
+	commandHeight   = 5 // panel border + title row + simple input block
+	footerHeight    = 4 // panel border + key hints row + save-path row
+	chatOverhead    = topGutterHeight + headerHeight + feedChrome + commandHeight + footerHeight
 )
 
 func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
@@ -313,11 +325,10 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 
 		case "ctrl+y":
 			if text := m.lastAssistantContent(); text != "" {
-				if copyToClipboard(text) == nil {
-					m.copied = true
-					return m, tea.Tick(2*time.Second, func(time.Time) tea.Msg { return clearCopiedMsg{} })
-				}
+				return m, m.writeClipboardCmd(text)
 			}
+		case "ctrl+v":
+			return m, m.readClipboardCmd()
 
 		case "enter":
 			text := strings.TrimSpace(sanitizePromptInput(m.input.Value()))
@@ -337,6 +348,36 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			m.queueNotice = ""
 		}
 		return m, nil
+
+	case clipboardReadMsg:
+		if msg.Err != nil {
+			m.queueNoticeID++
+			id := m.queueNoticeID
+			m.queueNotice = "paste failed"
+			return m, tea.Tick(1500*time.Millisecond, func(time.Time) tea.Msg {
+				return clearQueueNoticeMsg{ID: id}
+			})
+		}
+		if msg.Text != "" {
+			next := sanitizePromptInput(m.input.Value() + msg.Text)
+			if next != m.input.Value() {
+				m.input.SetValue(next)
+				m.input.CursorEnd()
+			}
+		}
+		return m, nil
+
+	case clipboardWriteMsg:
+		if msg.Err != nil {
+			m.queueNoticeID++
+			id := m.queueNoticeID
+			m.queueNotice = "copy failed"
+			return m, tea.Tick(1500*time.Millisecond, func(time.Time) tea.Msg {
+				return clearQueueNoticeMsg{ID: id}
+			})
+		}
+		m.copied = true
+		return m, tea.Tick(2*time.Second, func(time.Time) tea.Msg { return clearCopiedMsg{} })
 
 	case autoQueryMsg:
 		if m.autoQueried || m.accountCount == 0 {
@@ -597,7 +638,7 @@ func (m *ChatModel) renderMessages() string {
 	for i, msg := range m.messages {
 		switch msg.role {
 		case "user":
-			b.WriteString(userMsgStyle.Copy().PaddingLeft(2).Width(w).Render("You: " + msg.content))
+			b.WriteString(userMsgStyle.Copy().PaddingLeft(2).Width(w).Render("You: " + linkifyURLs(msg.content)))
 			b.WriteString("\n\n")
 		case "assistant":
 			if msg.content != "" {
@@ -611,10 +652,10 @@ func (m *ChatModel) renderMessages() string {
 				b.WriteString("\n\n")
 			}
 		case "tool":
-			b.WriteString(toolMsgStyle.Width(w).Render("  > " + msg.content))
+			b.WriteString(toolMsgStyle.Width(w).Render("  > " + linkifyURLs(msg.content)))
 			b.WriteString("\n\n")
 		case "error":
-			b.WriteString(errorMsgStyle.Width(w).Render("Error: " + msg.content))
+			b.WriteString(errorMsgStyle.Width(w).Render("Error: " + linkifyURLs(msg.content)))
 			b.WriteString("\n\n")
 		}
 	}
@@ -1106,7 +1147,9 @@ func (m ChatModel) footerHintText(available int) string {
 		}
 	} else if m.streaming {
 		candidates = []string{
+			"^/v: scroll | tab: queue | ctrl+v: paste | esc: cancel | home/end: pause/live | ctrl+c: quit | hist: /",
 			"^/v: scroll | tab: queue | esc: cancel | home/end: pause/live | ctrl+c: quit | hist: /",
+			"^/v: scroll | tab: queue | ctrl+v: paste | esc: cancel | ctrl+c: quit | hist: /",
 			"^/v: scroll | tab: queue | esc: cancel | ctrl+c: quit | hist: /",
 			"^/v: scroll | tab: queue | esc: cancel | ctrl+c: quit",
 			"^/v: scroll | esc: cancel | ctrl+c: quit",
@@ -1114,7 +1157,9 @@ func (m ChatModel) footerHintText(available int) string {
 		}
 	} else {
 		candidates = []string{
+			"^/v: scroll | enter: send | ctrl+t: model | ctrl+y: copy | ctrl+v: paste | tab: accounts | ctrl+c: quit | hist: /",
 			"^/v: scroll | enter: send | ctrl+t: model | ctrl+y: copy | tab: accounts | ctrl+c: quit | hist: /",
+			"^/v: scroll | enter: send | ctrl+v: paste | tab: accounts | ctrl+c: quit | hist: /",
 			"^/v: scroll | enter: send | ctrl+t: model | tab: accounts | ctrl+c: quit | hist: /",
 			"^/v: scroll | enter: send | tab: accounts | ctrl+c: quit | hist: /",
 			"^/v: scroll | enter: send | tab: accounts | ctrl+c: quit",
@@ -1311,13 +1356,13 @@ func (m *ChatModel) renderMarkdown(content string, width int) string {
 	}
 	r, err := m.markdownRenderer(width)
 	if err != nil {
-		return assistantMsgStyle.Width(width).Render(content)
+		return linkifyURLs(assistantMsgStyle.Width(width).Render(content))
 	}
 	out, err := r.Render(content)
 	if err != nil {
-		return assistantMsgStyle.Width(width).Render(content)
+		return linkifyURLs(assistantMsgStyle.Width(width).Render(content))
 	}
-	return strings.TrimRight(out, "\n")
+	return linkifyURLs(strings.TrimRight(out, "\n"))
 }
 
 func (m *ChatModel) markdownRenderer(width int) (*glamour.TermRenderer, error) {
@@ -1349,18 +1394,25 @@ func (m ChatModel) lastAssistantContent() string {
 	return ""
 }
 
-func copyToClipboard(text string) error {
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "darwin":
-		cmd = exec.Command("pbcopy")
-	case "linux":
-		cmd = exec.Command("xclip", "-selection", "clipboard")
-	default:
-		return fmt.Errorf("unsupported OS")
+func (m ChatModel) readClipboardCmd() tea.Cmd {
+	readFn := m.readClipboardFn
+	if readFn == nil {
+		return nil
 	}
-	cmd.Stdin = strings.NewReader(text)
-	return cmd.Run()
+	return func() tea.Msg {
+		text, err := readFn()
+		return clipboardReadMsg{Text: text, Err: err}
+	}
+}
+
+func (m ChatModel) writeClipboardCmd(text string) tea.Cmd {
+	writeFn := m.writeClipboardFn
+	if writeFn == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		return clipboardWriteMsg{Err: writeFn(text)}
+	}
 }
 
 func (m *ChatModel) isMouseEscapeKey(msg tea.KeyMsg) bool {
@@ -1445,6 +1497,61 @@ func isMouseSeqBodyFragment(s string) bool {
 	return true
 }
 
+func linkifyURLs(s string) string {
+	if s == "" {
+		return ""
+	}
+
+	return urlPattern.ReplaceAllStringFunc(s, func(raw string) string {
+		url, tail := splitURLAndTrailingPunctuation(raw)
+		if url == "" {
+			return raw
+		}
+		href := url
+		if strings.HasPrefix(strings.ToLower(href), "www.") {
+			href = "https://" + href
+		}
+		return terminalHyperlink(href, url) + tail
+	})
+}
+
+func splitURLAndTrailingPunctuation(raw string) (url, tail string) {
+	url = raw
+	for len(url) > 0 {
+		r, sz := utf8.DecodeLastRuneInString(url)
+		if sz == 0 {
+			break
+		}
+
+		trim := false
+		switch r {
+		case '.', ',', ';', ':', '!', '?':
+			trim = true
+		case ')':
+			trim = strings.Count(url, "(") < strings.Count(url, ")")
+		case ']':
+			trim = strings.Count(url, "[") < strings.Count(url, "]")
+		case '}':
+			trim = strings.Count(url, "{") < strings.Count(url, "}")
+		}
+		if !trim {
+			break
+		}
+
+		tail = string(r) + tail
+		url = url[:len(url)-sz]
+	}
+	return url, tail
+}
+
+func terminalHyperlink(target, label string) string {
+	if target == "" || label == "" {
+		return label
+	}
+	// OSC 8 hyperlink sequence.
+	return "\x1b]8;;" + target + "\x1b\\" + label + "\x1b]8;;\x1b\\"
+}
+
 func sanitizePromptInput(s string) string {
 	if s == "" {
 		return s
@@ -1469,6 +1576,10 @@ func sanitizePromptInput(s string) string {
 	// Keep prompt input printable and single-line.
 	var b strings.Builder
 	for _, r := range cleaned {
+		if r == '\n' || r == '\r' || r == '\t' {
+			b.WriteRune(' ')
+			continue
+		}
 		if r < 0x20 || r == 0x7f {
 			continue
 		}

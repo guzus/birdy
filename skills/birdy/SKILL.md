@@ -50,6 +50,9 @@ bash skills/birdy/scripts/extract_x_tokens.sh
 
 # Force a specific browser backend
 bash skills/birdy/scripts/extract_x_tokens.sh --browsers chrome
+
+# Pick a Chrome profile interactively (arrow keys)
+bash skills/birdy/scripts/extract_x_tokens.sh --interactive
 ```
 
 ```bash

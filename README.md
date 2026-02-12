@@ -26,6 +26,25 @@ The TUI features:
 - **Account management** — Add, remove, and view accounts with `tab`
 - **Chat history** — Conversations are saved as markdown in `~/.config/birdy/chats/`
 
+## Hosted Web TUI
+
+Run birdy as a browser-accessible terminal session:
+
+```bash
+birdy host --addr 0.0.0.0:8787
+```
+
+birdy will print a token-protected URL like:
+
+```text
+http://127.0.0.1:8787/?token=...
+```
+
+Notes:
+- The host runs the same `birdy tui` session in a web terminal.
+- Share only the full URL with token.
+- You can set a fixed token with `--token` or `BIRDY_HOST_TOKEN`.
+
 ## How it works
 
 birdy sits in front of the `bird` CLI. When you run a bird command through birdy, it:
