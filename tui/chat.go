@@ -123,6 +123,7 @@ func NewChatModel() ChatModel {
 	ti.Cursor.Style = lipgloss.NewStyle().
 		Foreground(colorDarkBg).
 		Background(colorBlue)
+	_ = ti.SetCursorMode(textinput.CursorStatic)
 
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
