@@ -18,40 +18,21 @@ body {
 }
 
 #root {
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
   height: 100%;
   min-height: 100%;
 }
 
-#top {
-  box-sizing: border-box;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--border);
-  background: var(--top-bg);
-  color: var(--accent);
-  font-weight: 700;
-  letter-spacing: 0.03em;
-}
-
-#status {
-  color: var(--muted);
-  font-weight: 500;
-}
-
-#term {
-  width: 100%;
+#root-layout .xterm,
+#root-layout .xterm-viewport {
   height: 100%;
-  min-height: 0;
-  box-sizing: border-box;
-  overflow: hidden;
-  touch-action: none;
 }
 
-#term .xterm,
-#term .xterm-viewport {
-  height: 100%;
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
 }

@@ -24,6 +24,11 @@ const (
 	hostWSReadLimitBytes   int64 = 32 * 1024
 	hostWSMaxInputBytes          = 8 * 1024
 	hostWSMaxMsgsPerSecond       = 300
+
+	// OSC escape sequence markers for json-render UI specs.
+	// Format: ESC ] 9999 ; json-render ; <json-payload> BEL
+	hostOSCPrefix = "\x1b]9999;json-render;"
+	hostOSCBEL    = "\x07"
 )
 
 var (
@@ -89,6 +94,73 @@ type hostedWSAuthMessage struct {
 	Type  string `json:"type"`
 	OK    bool   `json:"ok"`
 	Error string `json:"error,omitempty"`
+}
+
+type hostedWSUISpecMessage struct {
+	Type      string          `json:"type"`
+	Spec      json.RawMessage `json:"spec,omitempty"`
+	Streaming bool            `json:"streaming,omitempty"`
+}
+
+type hostedWSUISpecChunkMessage struct {
+	Type string `json:"type"`
+	Data string `json:"data"`
+}
+
+type hostedWSUISpecClearMessage struct {
+	Type string `json:"type"`
+}
+
+// hostOSCParser extracts json-render OSC escape sequences from PTY output,
+// returning the cleaned terminal data and any extracted UI spec payloads.
+type hostOSCParser struct {
+	partial []byte
+}
+
+func (p *hostOSCParser) process(data []byte) (terminal []byte, specs []json.RawMessage) {
+	combined := data
+	if len(p.partial) > 0 {
+		combined = append(p.partial, data...)
+		p.partial = nil
+	}
+
+	for len(combined) > 0 {
+		idx := strings.Index(string(combined), hostOSCPrefix)
+		if idx < 0 {
+			// Check if we might have a partial OSC prefix at the end.
+			for tail := len(hostOSCPrefix) - 1; tail > 0; tail-- {
+				if len(combined) >= tail && string(combined[len(combined)-tail:]) == hostOSCPrefix[:tail] {
+					terminal = append(terminal, combined[:len(combined)-tail]...)
+					p.partial = append([]byte(nil), combined[len(combined)-tail:]...)
+					return terminal, specs
+				}
+			}
+			terminal = append(terminal, combined...)
+			return terminal, specs
+		}
+
+		// Emit bytes before the OSC sequence as terminal output.
+		if idx > 0 {
+			terminal = append(terminal, combined[:idx]...)
+		}
+
+		// Find the BEL terminator.
+		rest := combined[idx+len(hostOSCPrefix):]
+		belIdx := strings.Index(string(rest), hostOSCBEL)
+		if belIdx < 0 {
+			// Incomplete OSC sequence — buffer it.
+			p.partial = append([]byte(nil), combined[idx:]...)
+			return terminal, specs
+		}
+
+		payload := rest[:belIdx]
+		if json.Valid(payload) {
+			specs = append(specs, json.RawMessage(append([]byte(nil), payload...)))
+		}
+
+		combined = rest[belIdx+len(hostOSCBEL):]
+	}
+	return terminal, specs
 }
 
 var hostUpgrader = websocket.Upgrader{
@@ -227,6 +299,8 @@ func serveHostedTTY(w http.ResponseWriter, r *http.Request, inviteCode string) {
 		ticker := time.NewTicker(flushInterval)
 		defer ticker.Stop()
 
+		oscParser := hostOSCParser{}
+
 		pending := make([]byte, 0, maxBatchBytes)
 		lastFlushAt := time.Time{}
 		flush := func() bool {
@@ -239,6 +313,11 @@ func serveHostedTTY(w http.ResponseWriter, r *http.Request, inviteCode string) {
 			pending = pending[:0]
 			lastFlushAt = time.Now()
 			return true
+		}
+
+		sendUISpec := func(spec json.RawMessage) bool {
+			msg := hostedWSUISpecMessage{Type: "ui-spec", Spec: spec}
+			return conn.WriteJSON(msg) == nil
 		}
 
 		hasRecentInput := func(now time.Time) bool {
@@ -257,7 +336,26 @@ func serveHostedTTY(w http.ResponseWriter, r *http.Request, inviteCode string) {
 					_ = flush()
 					return
 				}
-				pending = append(pending, chunk...)
+
+				// Parse OSC sequences for json-render UI specs.
+				termData, specs := oscParser.process(chunk)
+
+				// Send any extracted UI specs as structured messages.
+				for _, spec := range specs {
+					// Flush pending terminal data first so UI updates
+					// arrive in order relative to terminal output.
+					if !flush() {
+						return
+					}
+					if !sendUISpec(spec) {
+						return
+					}
+				}
+
+				if len(termData) > 0 {
+					pending = append(pending, termData...)
+				}
+
 				if len(pending) >= maxBatchBytes && !flush() {
 					return
 				}
@@ -472,7 +570,7 @@ func setHostedSecurityHeaders(w http.ResponseWriter) {
 		"default-src 'self'; "+
 			"base-uri 'none'; frame-ancestors 'none'; form-action 'none'; "+
 			"connect-src 'self' ws: wss:; "+
-			"script-src 'self'; style-src 'self'; "+
+			"script-src 'self'; style-src 'self' 'unsafe-inline'; "+
 			"img-src 'self' data:; font-src 'self'")
 }
 
