@@ -172,7 +172,11 @@ func serveHostedTTY(w http.ResponseWriter, r *http.Request, inviteCode string) {
 	}
 
 	child := exec.Command(exePath, "tui")
-	child.Env = append(os.Environ(), "BIRDY_TUI_MOUSE=1")
+	childEnv := os.Environ()
+	if strings.TrimSpace(os.Getenv("BIRDY_TUI_HIDE_HISTORY")) == "" {
+		childEnv = append(childEnv, "BIRDY_TUI_HIDE_HISTORY=1")
+	}
+	child.Env = append(childEnv, "BIRDY_TUI_MOUSE=1")
 
 	ptmx, err := pty.StartWithSize(child, &initSize)
 	if err != nil {
