@@ -1,3 +1,4 @@
+import tailwindcss from '@tailwindcss/vite';
 import { defineConfig, loadEnv } from 'vite';
 
 export default defineConfig(({ mode }) => {
@@ -5,6 +6,7 @@ export default defineConfig(({ mode }) => {
   const backend = env.VITE_BIRDY_BACKEND || 'http://127.0.0.1:8787';
 
   return {
+    plugins: [tailwindcss()],
     build: {
       outDir: 'dist',
       emptyOutDir: true,

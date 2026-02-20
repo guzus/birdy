@@ -18,12 +18,12 @@ type FeedItem =
   | { kind: 'card'; card: AlphaCard }
   | { kind: 'chat'; id: string; role: 'user' | 'assistant'; text: string; loading: boolean };
 
-const categoryMeta: Record<CardCategory, { icon: string; label: string }> = {
-  CRYPTO: { icon: '\u{1F525}', label: 'CRYPTO' },
-  AI: { icon: '\u{1F916}', label: 'AI' },
-  TRENDING: { icon: '\u{1F4C8}', label: 'TRENDING' },
-  SIGNAL: { icon: '\u{1F4E1}', label: 'SIGNAL' },
-  RESEARCH: { icon: '\u{1F50D}', label: 'RESEARCH' },
+const categoryMeta: Record<CardCategory, { icon: string; label: string; color: string; bg: string; border: string; leftBorder: string }> = {
+  CRYPTO: { icon: '\u{1F525}', label: 'CRYPTO', color: 'text-cat-crypto', bg: 'bg-cat-crypto/8', border: 'border-cat-crypto/20', leftBorder: 'border-l-cat-crypto' },
+  AI: { icon: '\u{1F916}', label: 'AI', color: 'text-cat-ai', bg: 'bg-cat-ai/8', border: 'border-cat-ai/20', leftBorder: 'border-l-cat-ai' },
+  TRENDING: { icon: '\u{1F4C8}', label: 'TRENDING', color: 'text-cat-trending', bg: 'bg-cat-trending/8', border: 'border-cat-trending/20', leftBorder: 'border-l-cat-trending' },
+  SIGNAL: { icon: '\u{1F4E1}', label: 'SIGNAL', color: 'text-cat-signal', bg: 'bg-cat-signal/8', border: 'border-cat-signal/20', leftBorder: 'border-l-cat-signal' },
+  RESEARCH: { icon: '\u{1F50D}', label: 'RESEARCH', color: 'text-cat-research', bg: 'bg-cat-research/8', border: 'border-cat-research/20', leftBorder: 'border-l-cat-research' },
 };
 
 const SCAN_PROMPT = `You are birdy's alpha radar. Scan Twitter for the latest signals across crypto/DeFi, AI/tech, and general trends.
@@ -148,10 +148,10 @@ function InvitePanel({
   onSubmit: () => void;
 }) {
   return (
-    <div className="invite-panel">
-      <div className="invite-card">
-        <h2>Unlock birdy alpha</h2>
-        <p className="invite-hint">Enter your invite code to start scanning.</p>
+    <div className="flex items-center justify-center min-h-0 flex-1">
+      <div className="w-full max-w-[380px] bg-surface border border-border rounded-xl p-6 flex flex-col gap-3">
+        <h2 className="m-0 text-lg font-bold text-accent">Unlock birdy alpha</h2>
+        <p className="m-0 text-[13px] text-text-muted">Enter your invite code to start scanning.</p>
         <input
           type="text"
           autoComplete="off"
@@ -159,6 +159,7 @@ function InvitePanel({
           value={inviteCode}
           placeholder="invite code"
           disabled={busy}
+          className="w-full bg-bg border border-border rounded-[10px] text-text font-[inherit] text-sm py-2.5 px-3 outline-none focus:border-accent placeholder:text-text-dim"
           onChange={(e) => onChange(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter') {
@@ -167,10 +168,17 @@ function InvitePanel({
             }
           }}
         />
-        <button type="button" disabled={busy || !inviteCode.trim()} onClick={onSubmit}>
+        <button
+          type="button"
+          disabled={busy || !inviteCode.trim()}
+          className="self-start bg-accent border-none rounded-[10px] text-bg font-[inherit] text-xs font-bold uppercase tracking-wide py-2.5 px-5 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+          onClick={onSubmit}
+        >
           {busy ? 'checking...' : 'unlock'}
         </button>
-        <p className={`invite-status ${status.toLowerCase().includes('invalid') ? 'error' : ''}`}>{status}</p>
+        <p className={`m-0 text-xs ${status.toLowerCase().includes('invalid') ? 'text-danger' : 'text-text-muted'}`}>
+          {status}
+        </p>
       </div>
     </div>
   );
@@ -185,29 +193,34 @@ function AlphaCardView({
 }) {
   const meta = categoryMeta[card.category];
   return (
-    <article className={`alpha-card cat-${card.category.toLowerCase()}`}>
-      <div className="card-header">
-        <span className={`card-tag cat-${card.category.toLowerCase()}`}>
+    <article className={`bg-surface border border-border rounded-xl p-4 flex flex-col gap-2.5 transition-[border-color] duration-150 hover:border-border-hover border-l-3 ${meta.leftBorder}`}>
+      <div className="flex items-center justify-between">
+        <span className={`text-[10px] font-bold uppercase tracking-wide py-0.5 px-2 rounded-md ${meta.color} ${meta.bg} border ${meta.border}`}>
           {meta.icon} {meta.label}
         </span>
-        <span className="card-time">{timeAgo(card.timestamp)}</span>
+        <span className="text-[11px] text-text-dim font-mono">{timeAgo(card.timestamp)}</span>
       </div>
-      <h3 className="card-title">{card.title}</h3>
+      <h3 className="m-0 text-[15px] font-semibold leading-snug text-text">{card.title}</h3>
       {card.bullets.length > 0 && (
-        <ul className="card-bullets">
+        <ul className="m-0 pl-[18px] flex flex-col gap-1">
           {card.bullets.map((b, i) => (
-            <li key={i}>{b}</li>
+            <li key={i} className="text-[13px] leading-normal text-text-muted">{b}</li>
           ))}
         </ul>
       )}
       {card.sources.length > 0 && (
-        <div className="card-sources">
+        <div className="flex flex-wrap gap-1.5">
           {card.sources.map((s) => (
-            <span key={s} className="source-tag">{s}</span>
+            <span key={s} className="font-mono text-[11px] text-accent bg-accent/8 border border-accent/15 py-0.5 px-1.5 rounded">
+              {s}
+            </span>
           ))}
         </div>
       )}
-      <button className="card-dive" onClick={() => onDeepDive(card)}>
+      <button
+        className="self-start bg-transparent border border-border text-text-muted text-xs font-semibold py-1.5 px-3.5 rounded-lg cursor-pointer font-[inherit] transition-all duration-150 hover:border-accent hover:text-accent"
+        onClick={() => onDeepDive(card)}
+      >
         Deep Dive
       </button>
     </article>
@@ -216,13 +229,15 @@ function AlphaCardView({
 
 function ScanIndicator({ tools }: { tools: string[] }) {
   return (
-    <div className="scan-indicator">
-      <div className="scan-pulse" />
-      <span className="scan-text">Scanning Twitter...</span>
+    <div className="bg-surface border border-border rounded-xl p-5 flex flex-col items-center gap-3">
+      <div className="w-3 h-3 rounded-full bg-accent animate-pulse-dot" />
+      <span className="text-[13px] text-text-muted font-medium">Scanning Twitter...</span>
       {tools.length > 0 && (
-        <div className="scan-tools">
+        <div className="flex flex-wrap gap-1.5 justify-center">
           {tools.map((t) => (
-            <code key={t} className="tool-chip">{t}</code>
+            <code key={t} className="font-mono text-[11px] py-0.5 px-2 rounded-md bg-surface-2 border border-border text-accent">
+              {t}
+            </code>
           ))}
         </div>
       )}
@@ -242,11 +257,12 @@ function Composer({
   onSend: () => void;
 }) {
   return (
-    <footer className="composer">
+    <footer className="grid grid-cols-[minmax(0,1fr)_auto] gap-2.5 items-end bg-surface border border-border rounded-xl p-2.5">
       <textarea
         value={prompt}
         disabled={busy}
         placeholder="Ask birdy anything..."
+        className="bg-bg border border-border rounded-[10px] text-text font-[inherit] text-sm py-2.5 px-3 min-h-[44px] max-h-[150px] resize-y outline-none leading-snug w-full focus:border-accent placeholder:text-text-dim"
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === 'Enter' && !e.shiftKey) {
@@ -255,7 +271,12 @@ function Composer({
           }
         }}
       />
-      <button type="button" disabled={busy || !prompt.trim()} onClick={onSend}>
+      <button
+        type="button"
+        disabled={busy || !prompt.trim()}
+        className="w-10 h-10 rounded-[10px] border border-accent bg-accent text-bg text-lg font-bold cursor-pointer flex items-center justify-center transition-opacity duration-150 disabled:opacity-30 disabled:cursor-not-allowed"
+        onClick={onSend}
+      >
         &rarr;
       </button>
     </footer>
@@ -264,9 +285,11 @@ function Composer({
 
 function ChatBubble({ item }: { item: FeedItem & { kind: 'chat' } }) {
   return (
-    <div className={`chat-bubble ${item.role}`}>
-      <div className="bubble-label">{item.role === 'user' ? 'You' : 'birdy'}</div>
-      <div className="bubble-text">
+    <div className={`bg-surface border border-border rounded-xl py-3.5 px-4 flex flex-col gap-1.5 ${item.role === 'user' ? 'bg-surface-2' : ''}`}>
+      <div className={`text-[11px] font-bold uppercase tracking-wide ${item.role === 'user' ? 'text-accent' : 'text-text-dim'}`}>
+        {item.role === 'user' ? 'You' : 'birdy'}
+      </div>
+      <div className="text-sm leading-relaxed whitespace-pre-wrap break-words">
         {item.loading && !item.text ? 'Thinking...' : item.text || 'No response.'}
       </div>
     </div>
@@ -428,15 +451,12 @@ export function App() {
         onDone: (fullText) => {
           if (streamRunRef.current !== runID) return;
           const parsed = parseCardsFromMarkdown(fullText);
-          if (parsed.length > 0) {
-            setCards(parsed);
-          }
+          if (parsed.length > 0) setCards(parsed);
           setScanning(false);
           setScanTools([]);
         },
         onError: () => {
           if (streamRunRef.current !== runID) return;
-          // still try to parse what we got
           if (accumulated) {
             const parsed = parseCardsFromMarkdown(accumulated);
             if (parsed.length > 0) setCards(parsed);
@@ -448,7 +468,6 @@ export function App() {
     } catch (err) {
       if (controller.signal.aborted) return;
       if (streamRunRef.current !== runID) return;
-      // try to parse partial
       if (accumulated) {
         const parsed = parseCardsFromMarkdown(accumulated);
         if (parsed.length > 0) setCards(parsed);
@@ -456,9 +475,7 @@ export function App() {
       setScanning(false);
       setScanTools([]);
     } finally {
-      if (streamRunRef.current === runID) {
-        setScanning(false);
-      }
+      if (streamRunRef.current === runID) setScanning(false);
       if (streamAbortRef.current === controller) streamAbortRef.current = null;
     }
   }, [scanning, genBusy, streamChat]);
@@ -505,7 +522,6 @@ export function App() {
     [persistInviteCode],
   );
 
-  // Auto-auth on mount
   useEffect(() => {
     if (didAutoAuthRef.current) return;
     didAutoAuthRef.current = true;
@@ -513,7 +529,6 @@ export function App() {
     void verifyInviteCode(inviteCodeRef.current);
   }, [verifyInviteCode]);
 
-  // Auto-scan after auth
   const didAutoScanRef = useRef(false);
   useEffect(() => {
     if (!authed || didAutoScanRef.current) return;
@@ -521,7 +536,6 @@ export function App() {
     void runScan();
   }, [authed, runScan]);
 
-  // Cleanup
   useEffect(() => {
     return () => {
       streamAbortRef.current?.abort();
@@ -705,7 +719,6 @@ Be concise but thorough.`;
     }
   }, [prompt, genBusy, scanning, streamChat]);
 
-  // Auto-scroll feed
   useEffect(() => {
     if (feedRef.current) {
       feedRef.current.scrollTop = feedRef.current.scrollHeight;
@@ -714,12 +727,14 @@ Be concise but thorough.`;
 
   if (!authed) {
     return (
-      <div className="shell">
-        <header className="header">
-          <div className="brand">
-            <h1>birdy alpha</h1>
+      <div className="h-full max-w-[720px] mx-auto grid grid-rows-[auto_minmax(0,1fr)] p-3 gap-3">
+        <header className="flex items-center justify-between py-3.5 px-4 bg-surface border border-border rounded-xl">
+          <div>
+            <h1 className="m-0 text-xl font-bold tracking-tight text-accent">birdy alpha</h1>
           </div>
-          <span className="badge idle">{authBusy ? 'checking' : 'locked'}</span>
+          <span className="text-[10px] font-bold uppercase tracking-widest py-1 px-2.5 rounded-full text-text-muted bg-surface-2 border border-border">
+            {authBusy ? 'checking' : 'locked'}
+          </span>
         </header>
         <InvitePanel
           inviteCode={inviteCode}
@@ -733,15 +748,17 @@ Be concise but thorough.`;
   }
 
   return (
-    <div className="shell">
-      <header className="header">
-        <div className="brand">
-          <h1>birdy alpha</h1>
+    <div className="h-full max-w-[720px] mx-auto grid grid-rows-[auto_minmax(0,1fr)_auto] p-3 gap-3">
+      <header className="flex items-center justify-between py-3.5 px-4 bg-surface border border-border rounded-xl">
+        <div>
+          <h1 className="m-0 text-xl font-bold tracking-tight text-accent">birdy alpha</h1>
         </div>
-        <div className="header-actions">
-          <span className="badge live">live</span>
+        <div className="flex items-center gap-2.5">
+          <span className="text-[10px] font-bold uppercase tracking-widest py-1 px-2.5 rounded-full text-cat-crypto bg-cat-crypto/10 border border-cat-crypto/20">
+            live
+          </span>
           <button
-            className="scan-btn"
+            className="bg-surface-2 border border-border text-text-muted w-8 h-8 rounded-lg text-base cursor-pointer flex items-center justify-center transition-all duration-150 hover:border-accent hover:text-accent disabled:opacity-40 disabled:cursor-not-allowed"
             disabled={scanning || genBusy}
             onClick={() => void runScan()}
             title="Refresh scan"
@@ -751,12 +768,12 @@ Be concise but thorough.`;
         </div>
       </header>
 
-      <main className="feed" ref={feedRef}>
+      <main className="min-h-0 overflow-y-auto flex flex-col gap-3 py-1 scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent" ref={feedRef}>
         {scanning && <ScanIndicator tools={scanTools} />}
 
         {!scanning && cards.length === 0 && chatItems.length === 0 && (
-          <div className="empty-state">
-            <p>No signals yet. Scan starting...</p>
+          <div className="flex items-center justify-center h-[200px] text-text-dim text-sm">
+            <p className="m-0">No signals yet. Scan starting...</p>
           </div>
         )}
 
