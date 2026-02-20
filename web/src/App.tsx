@@ -1,349 +1,276 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-
-import { defineCatalog, type Spec } from '@json-render/core';
-import { JSONUIProvider, Renderer, defineRegistry, schema } from '@json-render/react';
-import { z } from 'zod';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 const inviteCodeKey = 'birdy_host_invite_code';
 
-type ParsedResultBlock =
-  | { kind: 'heading'; text: string; level: 2 | 3 | 4 }
-  | { kind: 'list'; ordered: boolean; items: string[] }
-  | { kind: 'paragraph'; text: string };
+type CardCategory = 'CRYPTO' | 'AI' | 'TRENDING' | 'SIGNAL' | 'RESEARCH';
 
-type ChatMessage = {
+type AlphaCard = {
   id: string;
-  role: 'user' | 'assistant';
-  text: string;
-  tools: string[];
-  error: string;
-  loading: boolean;
+  category: CardCategory;
+  title: string;
+  bullets: string[];
+  sources: string[];
+  timestamp: Date;
+  rawMarkdown: string;
 };
+
+type FeedItem =
+  | { kind: 'card'; card: AlphaCard }
+  | { kind: 'chat'; id: string; role: 'user' | 'assistant'; text: string; loading: boolean };
+
+const categoryMeta: Record<CardCategory, { icon: string; label: string }> = {
+  CRYPTO: { icon: '\u{1F525}', label: 'CRYPTO' },
+  AI: { icon: '\u{1F916}', label: 'AI' },
+  TRENDING: { icon: '\u{1F4C8}', label: 'TRENDING' },
+  SIGNAL: { icon: '\u{1F4E1}', label: 'SIGNAL' },
+  RESEARCH: { icon: '\u{1F50D}', label: 'RESEARCH' },
+};
+
+const SCAN_PROMPT = `You are birdy's alpha radar. Scan Twitter for the latest signals across crypto/DeFi, AI/tech, and general trends.
+
+Instructions:
+1. Run \`birdy home\` to read the home timeline
+2. Run \`birdy search "crypto defi"\` for crypto signals
+3. Run \`birdy search "AI LLM artificial intelligence"\` for AI signals
+4. Run \`birdy news\` for trending topics
+
+Then synthesize your findings into structured sections. Use EXACTLY this format — each section starts with a markdown heading like ## CRYPTO: Title, ## AI: Title, ## TRENDING: Title, ## SIGNAL: Title. Under each heading, write a 1-2 sentence summary paragraph, then a bullet list of key points/accounts. Example:
+
+## CRYPTO: DeFi yields rotating to new L2s
+Summary of what's happening in 1-2 sentences with context.
+- @account1 noted that...
+- Key development: ...
+- Signal strength: high
+
+## AI: New model capabilities shipping
+Summary paragraph here.
+- @account2 announced...
+- Notable thread about...
+
+Include 3-6 sections total. Focus on actionable alpha, not noise. If a topic has no meaningful signal, skip it.`;
 
 function readInviteCodeCookie() {
   const cookies = document.cookie ? document.cookie.split('; ') : [];
   const key = `${inviteCodeKey}=`;
   for (const entry of cookies) {
-    if (entry.startsWith(key)) {
-      return decodeURIComponent(entry.slice(key.length));
-    }
+    if (entry.startsWith(key)) return decodeURIComponent(entry.slice(key.length));
   }
   return '';
 }
 
 function writeInviteCodeCookie(code: string) {
   const secure = window.location.protocol === 'https:' ? '; Secure' : '';
-  document.cookie = `${inviteCodeKey}=${encodeURIComponent(
-    code,
-  )}; Path=/; Max-Age=31536000; SameSite=Lax${secure}`;
+  document.cookie = `${inviteCodeKey}=${encodeURIComponent(code)}; Path=/; Max-Age=31536000; SameSite=Lax${secure}`;
 }
 
-function normalizeError(err: unknown) {
-  if (err instanceof Error && err.message.trim()) return err.message;
-  if (typeof err === 'string' && err.trim()) return err;
-  return 'request failed';
+function detectCategory(heading: string): CardCategory {
+  const h = heading.toUpperCase();
+  if (h.includes('CRYPTO') || h.includes('DEFI') || h.includes('TOKEN') || h.includes('CHAIN')) return 'CRYPTO';
+  if (h.includes('AI') || h.includes('LLM') || h.includes('MODEL') || h.includes('TECH')) return 'AI';
+  if (h.includes('SIGNAL') || h.includes('ALPHA')) return 'SIGNAL';
+  if (h.includes('TRENDING') || h.includes('TREND') || h.includes('NEWS') || h.includes('VIRAL')) return 'TRENDING';
+  return 'RESEARCH';
 }
 
-function parseResultBlocks(input: string): ParsedResultBlock[] {
-  const lines = input.replace(/\r\n/g, '\n').split('\n');
-  const blocks: ParsedResultBlock[] = [];
-  let i = 0;
+function extractSources(text: string): string[] {
+  const matches = text.match(/@\w+/g);
+  if (!matches) return [];
+  return [...new Set(matches)].slice(0, 5);
+}
 
-  while (i < lines.length) {
-    const raw = lines[i].trim();
-    if (!raw) {
-      i++;
-      continue;
-    }
+function parseCardsFromMarkdown(markdown: string): AlphaCard[] {
+  const cards: AlphaCard[] = [];
+  const sections = markdown.split(/^## /m).filter(Boolean);
 
-    const headingMatch = raw.match(/^(#{1,4})\s+(.+)$/);
-    if (headingMatch) {
-      const level = Math.min(4, Math.max(2, headingMatch[1].length + 1)) as 2 | 3 | 4;
-      blocks.push({ kind: 'heading', level, text: headingMatch[2].trim() });
-      i++;
-      continue;
-    }
+  for (const section of sections) {
+    const lines = section.trim().split('\n');
+    if (lines.length === 0) continue;
 
-    const boldHeading = raw.match(/^\*\*(.+?)\*\*:?\s*$/);
-    if (boldHeading) {
-      blocks.push({ kind: 'heading', level: 3, text: boldHeading[1].trim() });
-      i++;
-      continue;
-    }
+    const headingLine = lines[0].trim();
+    const colonIdx = headingLine.indexOf(':');
+    const title = colonIdx >= 0 ? headingLine.slice(colonIdx + 1).trim() : headingLine;
+    const category = detectCategory(headingLine);
 
-    if (/^[-*•]\s+/.test(raw)) {
-      const items: string[] = [];
-      while (i < lines.length) {
-        const m = lines[i].trim().match(/^[-*•]\s+(.+)$/);
-        if (!m) break;
-        items.push(m[1].trim());
-        i++;
+    const bullets: string[] = [];
+    const paragraphs: string[] = [];
+
+    for (let i = 1; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (!line) continue;
+      const bulletMatch = line.match(/^[-*•]\s+(.+)$/);
+      if (bulletMatch) {
+        bullets.push(bulletMatch[1]);
+      } else if (!/^#{1,4}\s/.test(line)) {
+        paragraphs.push(line);
       }
-      if (items.length > 0) blocks.push({ kind: 'list', ordered: false, items });
-      continue;
     }
 
-    if (/^\d+\.\s+/.test(raw)) {
-      const items: string[] = [];
-      while (i < lines.length) {
-        const m = lines[i].trim().match(/^\d+\.\s+(.+)$/);
-        if (!m) break;
-        items.push(m[1].trim());
-        i++;
-      }
-      if (items.length > 0) blocks.push({ kind: 'list', ordered: true, items });
-      continue;
-    }
+    if (!title && bullets.length === 0 && paragraphs.length === 0) continue;
 
-    const paragraph: string[] = [];
-    while (i < lines.length) {
-      const current = lines[i].trim();
-      if (!current) {
-        i++;
-        if (paragraph.length > 0) break;
-        continue;
-      }
-      if (
-        /^(#{1,4})\s+/.test(current) ||
-        /^\*\*(.+?)\*\*:?\s*$/.test(current) ||
-        /^[-*•]\s+/.test(current) ||
-        /^\d+\.\s+/.test(current)
-      ) {
-        break;
-      }
-      paragraph.push(current);
-      i++;
-    }
-    if (paragraph.length > 0) blocks.push({ kind: 'paragraph', text: paragraph.join('\n') });
+    const rawMarkdown = `## ${section}`;
+    const sources = extractSources(rawMarkdown);
+
+    cards.push({
+      id: `card-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      category,
+      title: title || 'Signal detected',
+      bullets: bullets.length > 0 ? bullets : paragraphs.slice(0, 3),
+      sources,
+      timestamp: new Date(),
+      rawMarkdown,
+    });
   }
 
-  return blocks;
+  return cards;
 }
 
-const catalog = defineCatalog(schema, {
-  components: {
-    Shell: {
-      props: z.object({}),
-      description: 'App shell',
-    },
-    Header: {
-      props: z.object({}),
-      description: 'Top bar',
-    },
-    Brand: {
-      props: z.object({
-        title: z.string(),
-        subtitle: z.string(),
-      }),
-      description: 'Brand block',
-    },
-    Badge: {
-      props: z.object({
-        text: z.string(),
-        tone: z.enum(['live', 'idle']),
-      }),
-      description: 'Connection badge',
-    },
-    Main: {
-      props: z.object({}),
-      description: 'Main layout',
-    },
-    InvitePanel: {
-      props: z.object({
-        inviteCode: z.string(),
-        status: z.string(),
-        busy: z.boolean(),
-        onChange: z.any(),
-        onSubmit: z.any(),
-      }),
-      description: 'Invite form',
-    },
-    ChatFeed: {
-      props: z.object({}),
-      description: 'Message list container',
-    },
-    Composer: {
-      props: z.object({
-        prompt: z.string(),
-        busy: z.boolean(),
-        onChange: z.any(),
-        onSend: z.any(),
-      }),
-      description: 'Prompt composer',
-    },
-    UserBubble: {
-      props: z.object({
-        text: z.string(),
-      }),
-      description: 'User message bubble',
-    },
-    AssistantBubble: {
-      props: z.object({}),
-      description: 'Assistant message bubble',
-    },
-    ResultStatus: {
-      props: z.object({
-        text: z.string(),
-        tone: z.enum(['info', 'error']),
-      }),
-      description: 'Status line',
-    },
-    ToolsRow: {
-      props: z.object({}),
-      description: 'Tool command row',
-    },
-    ToolChip: {
-      props: z.object({
-        command: z.string(),
-      }),
-      description: 'Tool command badge',
-    },
-    ResultHeading: {
-      props: z.object({
-        text: z.string(),
-        level: z.number().int().min(2).max(4),
-      }),
-      description: 'Assistant heading',
-    },
-    ResultList: {
-      props: z.object({
-        ordered: z.boolean(),
-      }),
-      description: 'Assistant list',
-    },
-    ResultListItem: {
-      props: z.object({
-        text: z.string(),
-      }),
-      description: 'Assistant list item',
-    },
-    ResultText: {
-      props: z.object({
-        text: z.string(),
-      }),
-      description: 'Assistant paragraph',
-    },
-    EmptyHint: {
-      props: z.object({
-        text: z.string(),
-      }),
-      description: 'Empty state hint',
-    },
-  },
-  actions: {},
-});
+function timeAgo(date: Date): string {
+  const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
+  if (seconds < 60) return 'just now';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
 
-const { registry } = defineRegistry(catalog, {
-  components: {
-    Shell: ({ children }) => <div className="gpt-shell">{children}</div>,
-    Header: ({ children }) => <header className="gpt-header">{children}</header>,
-    Brand: ({ props }) => (
-      <div className="gpt-brand">
-        <h1>{props.title}</h1>
-        <p>{props.subtitle}</p>
+function InvitePanel({
+  inviteCode,
+  status,
+  busy,
+  onChange,
+  onSubmit,
+}: {
+  inviteCode: string;
+  status: string;
+  busy: boolean;
+  onChange: (v: string) => void;
+  onSubmit: () => void;
+}) {
+  return (
+    <div className="invite-panel">
+      <div className="invite-card">
+        <h2>Unlock birdy alpha</h2>
+        <p className="invite-hint">Enter your invite code to start scanning.</p>
+        <input
+          type="text"
+          autoComplete="off"
+          spellCheck={false}
+          value={inviteCode}
+          placeholder="invite code"
+          disabled={busy}
+          onChange={(e) => onChange(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              onSubmit();
+            }
+          }}
+        />
+        <button type="button" disabled={busy || !inviteCode.trim()} onClick={onSubmit}>
+          {busy ? 'checking...' : 'unlock'}
+        </button>
+        <p className={`invite-status ${status.toLowerCase().includes('invalid') ? 'error' : ''}`}>{status}</p>
       </div>
-    ),
-    Badge: ({ props }) => <span className={`gpt-badge tone-${props.tone}`}>{props.text}</span>,
-    Main: ({ children }) => <main className="gpt-main">{children}</main>,
-    InvitePanel: ({ props }) => {
-      const onChange = props.onChange as (value: string) => void;
-      const onSubmit = props.onSubmit as () => void;
-      return (
-        <section className="gpt-invite">
-          <h2>Unlock</h2>
-          <p>Enter invite code.</p>
-          <label htmlFor="invite-code" className="sr-only">
-            Invite code
-          </label>
-          <input
-            id="invite-code"
-            type="text"
-            autoComplete="off"
-            spellCheck={false}
-            value={props.inviteCode}
-            placeholder="invite code"
-            disabled={props.busy}
-            onChange={(event) => onChange(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') {
-                event.preventDefault();
-                onSubmit();
-              }
-            }}
-          />
-          <button
-            type="button"
-            disabled={props.busy || props.inviteCode.trim().length === 0}
-            onClick={onSubmit}
-          >
-            {props.busy ? 'checking...' : 'unlock'}
-          </button>
-          <p className={`gpt-invite-status ${props.status.toLowerCase().includes('invalid') ? 'tone-error' : ''}`}>
-            {props.status}
-          </p>
-        </section>
-      );
-    },
-    ChatFeed: ({ children }) => <section className="gpt-feed">{children}</section>,
-    Composer: ({ props }) => {
-      const onChange = props.onChange as (value: string) => void;
-      const onSend = props.onSend as () => void;
-      return (
-        <footer className="gpt-composer">
-          <label htmlFor="prompt-input" className="sr-only">
-            Prompt
-          </label>
-          <textarea
-            id="prompt-input"
-            value={props.prompt}
-            disabled={props.busy}
-            placeholder="Message birdy..."
-            onChange={(event) => onChange(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' && !event.shiftKey) {
-                event.preventDefault();
-                onSend();
-              }
-            }}
-          />
-          <button
-            type="button"
-            disabled={props.busy || props.prompt.trim().length === 0}
-            onClick={onSend}
-          >
-            {props.busy ? '...' : 'send'}
-          </button>
-        </footer>
-      );
-    },
-    UserBubble: ({ props }) => (
-      <article className="gpt-row user">
-        <div className="gpt-bubble user">{props.text}</div>
-      </article>
-    ),
-    AssistantBubble: ({ children }) => (
-      <article className="gpt-row assistant">
-        <div className="gpt-bubble assistant">{children}</div>
-      </article>
-    ),
-    ResultStatus: ({ props }) => <p className={`gpt-status tone-${props.tone}`}>{props.text}</p>,
-    ToolsRow: ({ children }) => <div className="gpt-tools">{children}</div>,
-    ToolChip: ({ props }) => <code className="gpt-tool">{props.command}</code>,
-    ResultHeading: ({ props }) => {
-      const headingLevel = props.level <= 2 ? 2 : props.level === 3 ? 3 : 4;
-      const Tag = `h${headingLevel}` as 'h2' | 'h3' | 'h4';
-      return <Tag className={`gpt-heading level-${headingLevel}`}>{props.text}</Tag>;
-    },
-    ResultList: ({ props, children }) =>
-      props.ordered ? <ol className="gpt-list ordered">{children}</ol> : <ul className="gpt-list">{children}</ul>,
-    ResultListItem: ({ props }) => <li>{props.text}</li>,
-    ResultText: ({ props }) => <p className="gpt-text">{props.text}</p>,
-    EmptyHint: ({ props }) => <p className="gpt-empty">{props.text}</p>,
-  },
-});
+    </div>
+  );
+}
 
-function newID(prefix: string) {
-  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+function AlphaCardView({
+  card,
+  onDeepDive,
+}: {
+  card: AlphaCard;
+  onDeepDive: (card: AlphaCard) => void;
+}) {
+  const meta = categoryMeta[card.category];
+  return (
+    <article className={`alpha-card cat-${card.category.toLowerCase()}`}>
+      <div className="card-header">
+        <span className={`card-tag cat-${card.category.toLowerCase()}`}>
+          {meta.icon} {meta.label}
+        </span>
+        <span className="card-time">{timeAgo(card.timestamp)}</span>
+      </div>
+      <h3 className="card-title">{card.title}</h3>
+      {card.bullets.length > 0 && (
+        <ul className="card-bullets">
+          {card.bullets.map((b, i) => (
+            <li key={i}>{b}</li>
+          ))}
+        </ul>
+      )}
+      {card.sources.length > 0 && (
+        <div className="card-sources">
+          {card.sources.map((s) => (
+            <span key={s} className="source-tag">{s}</span>
+          ))}
+        </div>
+      )}
+      <button className="card-dive" onClick={() => onDeepDive(card)}>
+        Deep Dive
+      </button>
+    </article>
+  );
+}
+
+function ScanIndicator({ tools }: { tools: string[] }) {
+  return (
+    <div className="scan-indicator">
+      <div className="scan-pulse" />
+      <span className="scan-text">Scanning Twitter...</span>
+      {tools.length > 0 && (
+        <div className="scan-tools">
+          {tools.map((t) => (
+            <code key={t} className="tool-chip">{t}</code>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Composer({
+  prompt,
+  busy,
+  onChange,
+  onSend,
+}: {
+  prompt: string;
+  busy: boolean;
+  onChange: (v: string) => void;
+  onSend: () => void;
+}) {
+  return (
+    <footer className="composer">
+      <textarea
+        value={prompt}
+        disabled={busy}
+        placeholder="Ask birdy anything..."
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            onSend();
+          }
+        }}
+      />
+      <button type="button" disabled={busy || !prompt.trim()} onClick={onSend}>
+        &rarr;
+      </button>
+    </footer>
+  );
+}
+
+function ChatBubble({ item }: { item: FeedItem & { kind: 'chat' } }) {
+  return (
+    <div className={`chat-bubble ${item.role}`}>
+      <div className="bubble-label">{item.role === 'user' ? 'You' : 'birdy'}</div>
+      <div className="bubble-text">
+        {item.loading && !item.text ? 'Thinking...' : item.text || 'No response.'}
+      </div>
+    </div>
+  );
 }
 
 export function App() {
@@ -357,13 +284,17 @@ export function App() {
   const [authStatus, setAuthStatus] = useState('Enter invite code.');
   const [authed, setAuthed] = useState(false);
 
+  const [cards, setCards] = useState<AlphaCard[]>([]);
+  const [chatItems, setChatItems] = useState<(FeedItem & { kind: 'chat' })[]>([]);
+  const [scanning, setScanning] = useState(false);
+  const [scanTools, setScanTools] = useState<string[]>([]);
   const [prompt, setPrompt] = useState('');
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [genBusy, setGenBusy] = useState(false);
 
   const streamAbortRef = useRef<AbortController | null>(null);
   const streamRunRef = useRef(0);
   const didAutoAuthRef = useRef(false);
+  const feedRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     inviteCodeRef.current = inviteCode;
@@ -373,6 +304,164 @@ export function App() {
     window.localStorage.setItem(inviteCodeKey, code);
     writeInviteCodeCookie(code);
   }, []);
+
+  const streamChat = useCallback(
+    async (
+      askPrompt: string,
+      opts: {
+        onToken: (text: string) => void;
+        onSnapshot: (text: string) => void;
+        onTool: (command: string) => void;
+        onDone: (fullText: string) => void;
+        onError: (err: string) => void;
+        signal: AbortSignal;
+      },
+    ) => {
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Invite-Code': inviteCodeRef.current.trim(),
+        },
+        body: JSON.stringify({ prompt: askPrompt, model: 'sonnet' }),
+        signal: opts.signal,
+      });
+
+      if (response.status === 401) {
+        setAuthed(false);
+        setAuthStatus('Code expired.');
+        throw new Error('unauthorized');
+      }
+      if (!response.ok) {
+        const body = await response.text();
+        throw new Error(body || `chat failed (${response.status})`);
+      }
+      if (!response.body) throw new Error('chat stream unavailable');
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let fullText = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        let split = buffer.indexOf('\n\n');
+        while (split >= 0) {
+          const block = buffer.slice(0, split);
+          buffer = buffer.slice(split + 2);
+
+          let eventName = '';
+          let data = '';
+          block.split('\n').forEach((line) => {
+            if (line.startsWith('event:')) eventName = line.slice(6).trim();
+            else if (line.startsWith('data:')) data += line.slice(5).trim();
+          });
+
+          if (data) {
+            try {
+              const payload = JSON.parse(data) as Record<string, unknown>;
+              const kind = (typeof payload.type === 'string' && payload.type) || eventName || 'message';
+
+              if (kind === 'snapshot') {
+                const text = typeof payload.text === 'string' ? payload.text : '';
+                fullText = text;
+                opts.onSnapshot(text);
+              } else if (kind === 'token') {
+                const text = typeof payload.text === 'string' ? payload.text : '';
+                if (text) {
+                  fullText += text;
+                  opts.onToken(text);
+                }
+              } else if (kind === 'tool_use') {
+                const command = typeof payload.command === 'string' ? payload.command.trim() : '';
+                if (command) opts.onTool(command);
+              } else if (kind === 'error') {
+                const text = typeof payload.error === 'string' ? payload.error : 'generation failed';
+                opts.onError(text);
+              } else if (kind === 'done') {
+                opts.onDone(fullText);
+              }
+            } catch {
+              // ignore malformed chunks
+            }
+          }
+
+          split = buffer.indexOf('\n\n');
+        }
+      }
+
+      return fullText;
+    },
+    [],
+  );
+
+  const runScan = useCallback(async () => {
+    if (scanning || genBusy) return;
+    setScanning(true);
+    setScanTools([]);
+
+    const controller = new AbortController();
+    streamAbortRef.current?.abort();
+    streamAbortRef.current = controller;
+    const runID = ++streamRunRef.current;
+
+    let accumulated = '';
+
+    try {
+      await streamChat(SCAN_PROMPT, {
+        signal: controller.signal,
+        onToken: (text) => {
+          if (streamRunRef.current !== runID) return;
+          accumulated += text;
+        },
+        onSnapshot: (text) => {
+          if (streamRunRef.current !== runID) return;
+          accumulated = text;
+        },
+        onTool: (command) => {
+          if (streamRunRef.current !== runID) return;
+          setScanTools((prev) => (prev.includes(command) ? prev : [...prev, command]));
+        },
+        onDone: (fullText) => {
+          if (streamRunRef.current !== runID) return;
+          const parsed = parseCardsFromMarkdown(fullText);
+          if (parsed.length > 0) {
+            setCards(parsed);
+          }
+          setScanning(false);
+          setScanTools([]);
+        },
+        onError: () => {
+          if (streamRunRef.current !== runID) return;
+          // still try to parse what we got
+          if (accumulated) {
+            const parsed = parseCardsFromMarkdown(accumulated);
+            if (parsed.length > 0) setCards(parsed);
+          }
+          setScanning(false);
+          setScanTools([]);
+        },
+      });
+    } catch (err) {
+      if (controller.signal.aborted) return;
+      if (streamRunRef.current !== runID) return;
+      // try to parse partial
+      if (accumulated) {
+        const parsed = parseCardsFromMarkdown(accumulated);
+        if (parsed.length > 0) setCards(parsed);
+      }
+      setScanning(false);
+      setScanTools([]);
+    } finally {
+      if (streamRunRef.current === runID) {
+        setScanning(false);
+      }
+      if (streamAbortRef.current === controller) streamAbortRef.current = null;
+    }
+  }, [scanning, genBusy, streamChat]);
 
   const verifyInviteCode = useCallback(
     async (rawCode?: string) => {
@@ -416,6 +505,7 @@ export function App() {
     [persistInviteCode],
   );
 
+  // Auto-auth on mount
   useEffect(() => {
     if (didAutoAuthRef.current) return;
     didAutoAuthRef.current = true;
@@ -423,6 +513,15 @@ export function App() {
     void verifyInviteCode(inviteCodeRef.current);
   }, [verifyInviteCode]);
 
+  // Auto-scan after auth
+  const didAutoScanRef = useRef(false);
+  useEffect(() => {
+    if (!authed || didAutoScanRef.current) return;
+    didAutoScanRef.current = true;
+    void runScan();
+  }, [authed, runScan]);
+
+  // Cleanup
   useEffect(() => {
     return () => {
       streamAbortRef.current?.abort();
@@ -430,298 +529,252 @@ export function App() {
     };
   }, []);
 
-  const updateAssistant = useCallback((id: string, updater: (msg: ChatMessage) => ChatMessage) => {
-    setMessages((prev) => prev.map((msg) => (msg.id === id ? updater(msg) : msg)));
-  }, []);
+  const handleDeepDive = useCallback(
+    async (card: AlphaCard) => {
+      if (genBusy || scanning) return;
+      setGenBusy(true);
+
+      const userItem: FeedItem & { kind: 'chat' } = {
+        kind: 'chat',
+        id: `u-${Date.now()}`,
+        role: 'user',
+        text: `Deep dive: ${card.title}`,
+        loading: false,
+      };
+      const assistantId = `a-${Date.now()}`;
+      const assistantItem: FeedItem & { kind: 'chat' } = {
+        kind: 'chat',
+        id: assistantId,
+        role: 'assistant',
+        text: '',
+        loading: true,
+      };
+      setChatItems((prev) => [...prev, userItem, assistantItem]);
+
+      const controller = new AbortController();
+      streamAbortRef.current?.abort();
+      streamAbortRef.current = controller;
+      const runID = ++streamRunRef.current;
+
+      const deepDivePrompt = `Deep dive into this topic from Twitter: "${card.title}"
+
+Context from initial scan:
+${card.rawMarkdown}
+
+Instructions:
+1. Search for more details using \`birdy search "${card.title}"\`
+2. Look for related threads and discussions
+3. Provide a thorough analysis with:
+   - What's actually happening
+   - Key players and their positions
+   - Potential implications
+   - Links to relevant tweets/threads if found
+
+Be concise but thorough.`;
+
+      try {
+        await streamChat(deepDivePrompt, {
+          signal: controller.signal,
+          onToken: (text) => {
+            if (streamRunRef.current !== runID) return;
+            setChatItems((prev) =>
+              prev.map((item) =>
+                item.id === assistantId ? { ...item, text: item.text + text } : item,
+              ),
+            );
+          },
+          onSnapshot: (text) => {
+            if (streamRunRef.current !== runID) return;
+            setChatItems((prev) =>
+              prev.map((item) => (item.id === assistantId ? { ...item, text } : item)),
+            );
+          },
+          onTool: () => {},
+          onDone: () => {
+            if (streamRunRef.current !== runID) return;
+            setChatItems((prev) =>
+              prev.map((item) =>
+                item.id === assistantId ? { ...item, loading: false } : item,
+              ),
+            );
+          },
+          onError: (err) => {
+            if (streamRunRef.current !== runID) return;
+            setChatItems((prev) =>
+              prev.map((item) =>
+                item.id === assistantId ? { ...item, text: err || 'Error', loading: false } : item,
+              ),
+            );
+          },
+        });
+      } catch (err) {
+        if (controller.signal.aborted) return;
+        if (streamRunRef.current !== runID) return;
+        setChatItems((prev) =>
+          prev.map((item) =>
+            item.id === assistantId
+              ? { ...item, text: err instanceof Error ? err.message : 'Request failed', loading: false }
+              : item,
+          ),
+        );
+      } finally {
+        if (streamRunRef.current === runID) setGenBusy(false);
+        if (streamAbortRef.current === controller) streamAbortRef.current = null;
+      }
+    },
+    [genBusy, scanning, streamChat],
+  );
 
   const sendMessage = useCallback(async () => {
     const ask = prompt.trim();
-    if (!ask || genBusy) return;
+    if (!ask || genBusy || scanning) return;
 
-    if (!authed) {
-      const ok = await verifyInviteCode();
-      if (!ok) return;
-    }
-
-    const userID = newID('u');
-    const assistantID = newID('a');
-    setMessages((prev) => [
-      ...prev,
-      { id: userID, role: 'user', text: ask, tools: [], error: '', loading: false },
-      { id: assistantID, role: 'assistant', text: '', tools: [], error: '', loading: true },
-    ]);
-    setPrompt('');
     setGenBusy(true);
+    setPrompt('');
 
-    streamAbortRef.current?.abort();
+    const userItem: FeedItem & { kind: 'chat' } = {
+      kind: 'chat',
+      id: `u-${Date.now()}`,
+      role: 'user',
+      text: ask,
+      loading: false,
+    };
+    const assistantId = `a-${Date.now()}`;
+    const assistantItem: FeedItem & { kind: 'chat' } = {
+      kind: 'chat',
+      id: assistantId,
+      role: 'assistant',
+      text: '',
+      loading: true,
+    };
+    setChatItems((prev) => [...prev, userItem, assistantItem]);
+
     const controller = new AbortController();
+    streamAbortRef.current?.abort();
     streamAbortRef.current = controller;
     const runID = ++streamRunRef.current;
 
     try {
-      const response = await fetch('/api/chat', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Invite-Code': inviteCodeRef.current.trim(),
-        },
-        body: JSON.stringify({ prompt: ask, model: 'sonnet' }),
+      await streamChat(ask, {
         signal: controller.signal,
+        onToken: (text) => {
+          if (streamRunRef.current !== runID) return;
+          setChatItems((prev) =>
+            prev.map((item) =>
+              item.id === assistantId ? { ...item, text: item.text + text } : item,
+            ),
+          );
+        },
+        onSnapshot: (text) => {
+          if (streamRunRef.current !== runID) return;
+          setChatItems((prev) =>
+            prev.map((item) => (item.id === assistantId ? { ...item, text } : item)),
+          );
+        },
+        onTool: () => {},
+        onDone: () => {
+          if (streamRunRef.current !== runID) return;
+          setChatItems((prev) =>
+            prev.map((item) =>
+              item.id === assistantId ? { ...item, loading: false } : item,
+            ),
+          );
+        },
+        onError: (err) => {
+          if (streamRunRef.current !== runID) return;
+          setChatItems((prev) =>
+            prev.map((item) =>
+              item.id === assistantId ? { ...item, text: err || 'Error', loading: false } : item,
+            ),
+          );
+        },
       });
-
-      if (response.status === 401) {
-        setAuthed(false);
-        setAuthStatus('Code expired.');
-        throw new Error('unauthorized');
-      }
-      if (!response.ok) {
-        const body = await response.text();
-        throw new Error(body || `chat failed (${response.status})`);
-      }
-      if (!response.body) {
-        throw new Error('chat stream unavailable');
-      }
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      const handleEvent = (kind: string, payload: Record<string, unknown>) => {
-        if (streamRunRef.current !== runID) return;
-        if (kind === 'snapshot') {
-          const text = typeof payload.text === 'string' ? payload.text : '';
-          updateAssistant(assistantID, (msg) => ({ ...msg, text }));
-          return;
-        }
-        if (kind === 'token') {
-          const text = typeof payload.text === 'string' ? payload.text : '';
-          if (text) {
-            updateAssistant(assistantID, (msg) => ({ ...msg, text: msg.text + text }));
-          }
-          return;
-        }
-        if (kind === 'tool_use') {
-          const command = typeof payload.command === 'string' ? payload.command.trim() : '';
-          if (command) {
-            updateAssistant(assistantID, (msg) => ({
-              ...msg,
-              tools: msg.tools.includes(command) ? msg.tools : [...msg.tools, command],
-            }));
-          }
-          return;
-        }
-        if (kind === 'error') {
-          const text = typeof payload.error === 'string' ? payload.error : '';
-          updateAssistant(assistantID, (msg) => ({ ...msg, error: text || 'generation failed', loading: false }));
-          return;
-        }
-        if (kind === 'done') {
-          updateAssistant(assistantID, (msg) => ({ ...msg, loading: false }));
-        }
-      };
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        let split = buffer.indexOf('\n\n');
-        while (split >= 0) {
-          const block = buffer.slice(0, split);
-          buffer = buffer.slice(split + 2);
-
-          let eventName = '';
-          let data = '';
-          block.split('\n').forEach((line) => {
-            if (line.startsWith('event:')) eventName = line.slice(6).trim();
-            else if (line.startsWith('data:')) data += line.slice(5).trim();
-          });
-
-          if (data) {
-            try {
-              const payload = JSON.parse(data) as Record<string, unknown>;
-              const kind =
-                (typeof payload.type === 'string' && payload.type) || eventName || 'message';
-              handleEvent(kind, payload);
-            } catch {
-              // Ignore malformed chunks.
-            }
-          }
-
-          split = buffer.indexOf('\n\n');
-        }
-      }
     } catch (err) {
       if (controller.signal.aborted) return;
       if (streamRunRef.current !== runID) return;
-      if (normalizeError(err) !== 'unauthorized') {
-        updateAssistant(assistantID, (msg) => ({
-          ...msg,
-          loading: false,
-          error: normalizeError(err),
-        }));
-      }
+      setChatItems((prev) =>
+        prev.map((item) =>
+          item.id === assistantId
+            ? { ...item, text: err instanceof Error ? err.message : 'Request failed', loading: false }
+            : item,
+        ),
+      );
     } finally {
       if (streamRunRef.current === runID) setGenBusy(false);
       if (streamAbortRef.current === controller) streamAbortRef.current = null;
     }
-  }, [authed, genBusy, prompt, updateAssistant, verifyInviteCode]);
+  }, [prompt, genBusy, scanning, streamChat]);
 
-  const uiSpec = useMemo<Spec>(() => {
-    const elements: Spec['elements'] = {
-      shell: { type: 'Shell', props: {}, children: ['header', 'main'] },
-      header: { type: 'Header', props: {}, children: ['brand', 'badge'] },
-      brand: {
-        type: 'Brand',
-        props: {
-          title: 'birdy',
-          subtitle: 'AI assistant for X/Twitter actions and analysis',
-        },
-        children: [],
-      },
-      badge: {
-        type: 'Badge',
-        props: {
-          text: authed ? 'live' : authBusy ? 'checking' : 'locked',
-          tone: authed ? 'live' : 'idle',
-        },
-        children: [],
-      },
-      main: { type: 'Main', props: {}, children: [] },
-    };
-
-    if (!authed) {
-      elements.main.children = ['invite'];
-      elements.invite = {
-        type: 'InvitePanel',
-        props: {
-          inviteCode,
-          status: authStatus,
-          busy: authBusy,
-          onChange: setInviteCode,
-          onSubmit: () => {
-            void verifyInviteCode(inviteCodeRef.current);
-          },
-        },
-        children: [],
-      };
-      return { root: 'shell', elements };
+  // Auto-scroll feed
+  useEffect(() => {
+    if (feedRef.current) {
+      feedRef.current.scrollTop = feedRef.current.scrollHeight;
     }
+  }, [cards, chatItems, scanning]);
 
-    elements.main.children = ['feed', 'composer'];
-    elements.feed = { type: 'ChatFeed', props: {}, children: [] };
-    elements.composer = {
-      type: 'Composer',
-      props: {
-        prompt,
-        busy: genBusy,
-        onChange: setPrompt,
-        onSend: () => {
-          void sendMessage();
-        },
-      },
-      children: [],
-    };
-
-    const feedChildren: string[] = [];
-
-    if (messages.length === 0) {
-      const emptyKey = 'empty';
-      feedChildren.push(emptyKey);
-      elements[emptyKey] = {
-        type: 'EmptyHint',
-        props: { text: 'Start chatting with birdy.' },
-        children: [],
-      };
-    } else {
-      messages.forEach((msg, msgIndex) => {
-        if (msg.role === 'user') {
-          const key = `msg-user-${msg.id}`;
-          feedChildren.push(key);
-          elements[key] = { type: 'UserBubble', props: { text: msg.text }, children: [] };
-          return;
-        }
-
-        const assistantKey = `msg-assistant-${msg.id}`;
-        const assistantChildren: string[] = [];
-        elements[assistantKey] = { type: 'AssistantBubble', props: {}, children: assistantChildren };
-        feedChildren.push(assistantKey);
-
-        if (msg.error) {
-          const k = `${assistantKey}-error`;
-          assistantChildren.push(k);
-          elements[k] = { type: 'ResultStatus', props: { text: msg.error, tone: 'error' }, children: [] };
-        } else if (msg.loading && !msg.text) {
-          const k = `${assistantKey}-loading`;
-          assistantChildren.push(k);
-          elements[k] = { type: 'ResultStatus', props: { text: 'Thinking...', tone: 'info' }, children: [] };
-        }
-
-        if (msg.tools.length > 0) {
-          const row = `${assistantKey}-tools`;
-          const toolChildren = msg.tools.map((_, i) => `${row}-${i}`);
-          assistantChildren.push(row);
-          elements[row] = { type: 'ToolsRow', props: {}, children: toolChildren };
-          msg.tools.forEach((command, i) => {
-            elements[`${row}-${i}`] = { type: 'ToolChip', props: { command }, children: [] };
-          });
-        }
-
-        const text = msg.text.trim();
-        if (text) {
-          parseResultBlocks(text).forEach((block, blockIndex) => {
-            if (block.kind === 'paragraph') {
-              const key = `${assistantKey}-text-${blockIndex}`;
-              assistantChildren.push(key);
-              elements[key] = { type: 'ResultText', props: { text: block.text }, children: [] };
-              return;
-            }
-            if (block.kind === 'heading') {
-              const key = `${assistantKey}-heading-${blockIndex}`;
-              assistantChildren.push(key);
-              elements[key] = {
-                type: 'ResultHeading',
-                props: { text: block.text, level: block.level },
-                children: [],
-              };
-              return;
-            }
-            const listKey = `${assistantKey}-list-${blockIndex}`;
-            const listChildren = block.items.map((_, i) => `${listKey}-item-${i}`);
-            assistantChildren.push(listKey);
-            elements[listKey] = {
-              type: 'ResultList',
-              props: { ordered: block.ordered },
-              children: listChildren,
-            };
-            block.items.forEach((item, itemIndex) => {
-              elements[`${listKey}-item-${itemIndex}`] = {
-                type: 'ResultListItem',
-                props: { text: item },
-                children: [],
-              };
-            });
-          });
-        } else if (!msg.loading && !msg.error) {
-          const key = `${assistantKey}-empty`;
-          assistantChildren.push(key);
-          elements[key] = { type: 'EmptyHint', props: { text: 'No response.' }, children: [] };
-        }
-
-        // Preserve stable ordering by ensuring bubble keys are deterministic.
-        if (msgIndex > 999999) {
-          // no-op to keep lints calm about msgIndex usage if needed by future changes
-        }
-      });
-    }
-
-    elements.feed.children = feedChildren;
-    return { root: 'shell', elements };
-  }, [authBusy, authStatus, authed, genBusy, inviteCode, messages, prompt, sendMessage, verifyInviteCode]);
+  if (!authed) {
+    return (
+      <div className="shell">
+        <header className="header">
+          <div className="brand">
+            <h1>birdy alpha</h1>
+          </div>
+          <span className="badge idle">{authBusy ? 'checking' : 'locked'}</span>
+        </header>
+        <InvitePanel
+          inviteCode={inviteCode}
+          status={authStatus}
+          busy={authBusy}
+          onChange={setInviteCode}
+          onSubmit={() => void verifyInviteCode(inviteCodeRef.current)}
+        />
+      </div>
+    );
+  }
 
   return (
-    <JSONUIProvider registry={registry}>
-      <Renderer spec={uiSpec} registry={registry} />
-    </JSONUIProvider>
+    <div className="shell">
+      <header className="header">
+        <div className="brand">
+          <h1>birdy alpha</h1>
+        </div>
+        <div className="header-actions">
+          <span className="badge live">live</span>
+          <button
+            className="scan-btn"
+            disabled={scanning || genBusy}
+            onClick={() => void runScan()}
+            title="Refresh scan"
+          >
+            {scanning ? '\u23F3' : '\u21BB'}
+          </button>
+        </div>
+      </header>
+
+      <main className="feed" ref={feedRef}>
+        {scanning && <ScanIndicator tools={scanTools} />}
+
+        {!scanning && cards.length === 0 && chatItems.length === 0 && (
+          <div className="empty-state">
+            <p>No signals yet. Scan starting...</p>
+          </div>
+        )}
+
+        {cards.map((card) => (
+          <AlphaCardView key={card.id} card={card} onDeepDive={handleDeepDive} />
+        ))}
+
+        {chatItems.map((item) => (
+          <ChatBubble key={item.id} item={item} />
+        ))}
+      </main>
+
+      <Composer
+        prompt={prompt}
+        busy={genBusy || scanning}
+        onChange={setPrompt}
+        onSend={() => void sendMessage()}
+      />
+    </div>
   );
 }
