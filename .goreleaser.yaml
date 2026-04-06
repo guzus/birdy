@@ -20,7 +20,14 @@ archives:
   - format: tar.gz
     name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
     files:
-      - src: "third_party/@steipete/bird/**/*"
+      # `*` matches top-level files (package.json, README.md, LICENSE,
+      # CHANGELOG.md) directly, and goreleaser/fileglob recursively expands
+      # any matching directories (dist/, node_modules/) via fs.WalkDir, so a
+      # single pattern covers everything. The previous `**/*` skipped
+      # top-level files, leaving package.json out and breaking the bird CLI
+      # with "Cannot use import statement outside a module" because Node
+      # could not see `"type": "module"`.
+      - src: "third_party/@steipete/bird/*"
         dst: "bird"
     format_overrides:
       - goos: windows
