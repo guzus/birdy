@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/guzus/birdy/internal/claude"
+	"github.com/guzus/birdy/internal/codex"
 	"github.com/guzus/birdy/internal/rotation"
 	"github.com/guzus/birdy/internal/runner"
 	"github.com/guzus/birdy/internal/state"
@@ -41,6 +42,14 @@ type apiCommandResponse struct {
 type apiChatRequest struct {
 	Prompt string `json:"prompt"`
 	Model  string `json:"model,omitempty"`
+}
+
+func streamAPIChatModel(ctx context.Context, prompt, model, exePath string, emit func(claude.Event)) {
+	if codex.IsSelected(model) {
+		codex.Stream(ctx, prompt, model, exePath, emit)
+		return
+	}
+	claude.Stream(ctx, prompt, model, exePath, emit)
 }
 
 var apiAllowedBirdCommands = map[string]struct{}{
@@ -274,6 +283,6 @@ func handleAPIChat(inviteCode string) http.HandlerFunc {
 			flusher.Flush()
 		}
 
-		claude.Stream(ctx, prompt, model, exePath, emit)
+		streamAPIChatModel(ctx, prompt, model, exePath, emit)
 	}
 }
