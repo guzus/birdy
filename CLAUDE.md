@@ -12,7 +12,7 @@ Multi-account X/Twitter CLI proxy built in Go with a Bubble Tea TUI.
 ## Architecture
 
 - `cmd/` — Cobra CLI commands; `tui.go` is the TUI entry point
-- `tui/` — Bubble Tea TUI: splash, chat (Claude streaming), account management
+- `tui/` — Bubble Tea TUI: splash, chat (Claude/Codex), account management
 - `internal/store/` — Account persistence to `~/.config/birdy/accounts.json`
 - `internal/rotation/` — Account rotation strategies (round-robin, LRU, least-used, random)
 - `internal/runner/` — Bird subprocess execution with injected credentials
@@ -22,10 +22,10 @@ Multi-account X/Twitter CLI proxy built in Go with a Bubble Tea TUI.
 ## TUI Patterns
 
 - Sub-models use value receivers returning `(Model, tea.Cmd)`, not `tea.Model`
-- Claude streaming uses channel-based pattern: `startClaude` → `claudeNextMsg` → `waitForNext` loop
-- `MainModel` routes claude messages to chat even during splash (background loading)
+- Agent streaming uses channel-based pattern: `startClaude`/`startCodex` → `claudeNextMsg` → `waitForNext` loop
+- `MainModel` routes chat backend messages to chat even during splash (background loading)
 - Chat history saved as markdown to `~/.config/birdy/chats/`
-- `context.Context` used to cancel Claude subprocess on esc/ctrl+c
+- `context.Context` used to cancel chat backend subprocesses on esc/ctrl+c
 - Injectable function fields (e.g., `readClipboardFn`, `writeClipboardFn`) for testing external deps
 - Clipboard via `atotto/clipboard`; URL detection via compiled regex (`urlPattern`)
 

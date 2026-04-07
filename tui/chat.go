@@ -131,7 +131,7 @@ func NewChatModel() ChatModel {
 
 	model := "sonnet"
 	if s, err := state.Load(); err == nil && s.Model != "" {
-		model = s.Model
+		model = normalizeModelSelection(s.Model)
 	}
 
 	m := ChatModel{
@@ -325,14 +325,7 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 
 		case "ctrl+t":
 			if !m.streaming {
-				switch m.model {
-				case "sonnet":
-					m.model = "opus"
-				case "opus":
-					m.model = "haiku"
-				default:
-					m.model = "sonnet"
-				}
+				m.model = nextModelSelection(m.model)
 				if s, err := state.Load(); err == nil {
 					s.Model = m.model
 					_ = s.Save()
@@ -630,7 +623,7 @@ func (m *ChatModel) beginPrompt(prompt string) tea.Cmd {
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancelStream = cancel
 	m.refreshViewport()
-	return tea.Batch(startClaude(ctx, buildTurnPrompt(m.messages), m.model), m.spinner.Tick)
+	return tea.Batch(startAgent(ctx, buildTurnPrompt(m.messages), m.model), m.spinner.Tick)
 }
 
 func (m *ChatModel) shouldRefreshStream(delta string) bool {
@@ -973,7 +966,7 @@ func (m ChatModel) headerRightInfo(accountInfo string, available int) string {
 		}
 	}
 
-	model := strings.ToUpper(m.model)
+	model := modelDisplayLabel(m.model)
 	thinkingLabel := ""
 	if m.streaming && !m.historyMode {
 		thinkingLabel = " thinking..."

@@ -21,8 +21,9 @@ birdy tui
 ![birdy TUI](assets/tui.png)
 
 The TUI features:
-- **Chat** — Ask birdy to read your timeline, search tweets, post, and more via Claude
+- **Chat** — Ask birdy to read your timeline, search tweets, post, and more via Claude or Codex
 - **Deep browsing** — Say "dive deeper" and birdy will autonomously explore threads, replies, and user profiles
+- **Model switching** — Press `Ctrl+T` to cycle `sonnet`, `opus`, `haiku`, and `codex`
 - **Account management** — Add, remove, and view accounts with `tab`
 - **Chat history** — Conversations are saved as markdown in `~/.config/birdy/chats/` (set `BIRDY_TUI_HIDE_HISTORY=1` to disable)
 
@@ -148,7 +149,10 @@ If you build from a git clone, bird is vendored under `third_party/@steipete/bir
 ## Prerequisites
 
 - The installer bundles the upstream [bird](https://github.com/steipete/bird) CLI and installs it as `birdy-bird` (birdy will auto-detect it). The bundled bird requires Node `>= 22`.
-- [Claude Code](https://claude.ai/claude-code) (`claude` CLI) — required for the interactive TUI (`birdy tui`)
+- [Claude Code](https://claude.ai/claude-code) (`claude` CLI) or [Codex CLI](https://github.com/openai/codex) (`codex` CLI) — required for the interactive TUI (`birdy tui`)
+
+Optional:
+- `BIRDY_TUI_CODEX_MODEL` — override the Codex model used by the `codex` TUI slot (default: `gpt-5.4-mini`)
 
 To force a specific bird binary, set `BIRDY_BIRD_PATH=/path/to/bird`.
 
