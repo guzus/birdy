@@ -179,12 +179,31 @@ func TestBuildHostedMuxServesHealthzAndStatic(t *testing.T) {
 	if healthRR.Code != http.StatusOK || strings.TrimSpace(healthRR.Body.String()) != "ok" {
 		t.Fatalf("expected healthz ok, got code=%d body=%q", healthRR.Code, healthRR.Body.String())
 	}
+	if got := healthRR.Header().Get("X-Frame-Options"); got != "DENY" {
+		t.Fatalf("expected healthz security headers, got X-Frame-Options=%q", got)
+	}
 
 	indexRR := httptest.NewRecorder()
 	indexReq := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
 	mux.ServeHTTP(indexRR, indexReq)
 	if indexRR.Code != http.StatusOK || !strings.Contains(indexRR.Body.String(), "<html>mux</html>") {
 		t.Fatalf("expected static index, got code=%d body=%q", indexRR.Code, indexRR.Body.String())
+	}
+}
+
+func TestHostedAPICommandIncludesSecurityHeaders(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/api/command", strings.NewReader(`{"command":"home"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Invite-Code", "birdy")
+
+	rr := httptest.NewRecorder()
+	buildHostedMux("birdy", nil, t.TempDir()).ServeHTTP(rr, req)
+
+	if got := rr.Header().Get("X-Frame-Options"); got != "DENY" {
+		t.Fatalf("expected security headers on api response, got X-Frame-Options=%q", got)
+	}
+	if got := rr.Header().Get("Content-Security-Policy"); got == "" {
+		t.Fatal("expected CSP header on api response")
 	}
 }
 

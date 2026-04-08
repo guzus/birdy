@@ -93,10 +93,10 @@ type hostWSRateLimiter struct {
 
 func buildHostedMux(inviteCode string, allowedOrigins map[string]struct{}, webDir string) *http.ServeMux {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+	mux.Handle("/healthz", withHostedSecurityHeaders(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = io.WriteString(w, "ok")
-	})
+	})))
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		if !isHostOriginAllowed(r, allowedOrigins) {
 			http.Error(w, "forbidden origin", http.StatusForbidden)
@@ -104,8 +104,8 @@ func buildHostedMux(inviteCode string, allowedOrigins map[string]struct{}, webDi
 		}
 		serveHostedTTY(w, r, inviteCode)
 	})
-	mux.HandleFunc("/api/command", handleAPICommand(inviteCode))
-	mux.HandleFunc("/api/chat", handleAPIChat(inviteCode))
+	mux.Handle("/api/command", withHostedSecurityHeaders(handleAPICommand(inviteCode)))
+	mux.Handle("/api/chat", withHostedSecurityHeaders(handleAPIChat(inviteCode)))
 	mux.Handle("/", makeHostedWebHandler(webDir))
 	return mux
 }
@@ -515,6 +515,13 @@ func setHostedSecurityHeaders(w http.ResponseWriter) {
 			"connect-src 'self' ws: wss:; "+
 			"script-src 'self'; style-src 'self'; "+
 			"img-src 'self' data:; font-src 'self'")
+}
+
+func withHostedSecurityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		setHostedSecurityHeaders(w)
+		next.ServeHTTP(w, r)
+	})
 }
 
 func resolveHostWebDir() (string, error) {
