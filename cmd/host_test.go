@@ -1,12 +1,15 @@
 package cmd
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/gorilla/websocket"
 )
 
 func TestEnsureHostInviteCodeUsesFlag(t *testing.T) {
@@ -158,5 +161,111 @@ func TestMakeHostedWebHandlerRejectsNonGetMethods(t *testing.T) {
 
 	if rr.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("expected 405, got %d", rr.Code)
+	}
+}
+
+func TestAuthenticateHostedWSSucceeds(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := hostUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade failed: %v", err)
+			return
+		}
+		defer conn.Close()
+		if !authenticateHostedWS(conn, "birdy") {
+			t.Error("expected auth to succeed")
+			return
+		}
+	}))
+	defer server.Close()
+
+	conn := dialTestWebsocket(t, server.URL, nil)
+	defer conn.Close()
+	if err := conn.WriteJSON(hostedWSMessage{Type: "auth", Code: "birdy"}); err != nil {
+		t.Fatalf("write auth: %v", err)
+	}
+
+	var msg hostedWSAuthMessage
+	if err := conn.ReadJSON(&msg); err != nil {
+		t.Fatalf("read auth response: %v", err)
+	}
+	if !msg.OK || msg.Error != "" {
+		t.Fatalf("expected successful auth message, got %#v", msg)
+	}
+}
+
+func TestAuthenticateHostedWSRejectsInvalidCode(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := hostUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade failed: %v", err)
+			return
+		}
+		defer conn.Close()
+		_ = authenticateHostedWS(conn, "birdy")
+	}))
+	defer server.Close()
+
+	conn := dialTestWebsocket(t, server.URL, nil)
+	defer conn.Close()
+	if err := conn.WriteJSON(hostedWSMessage{Type: "auth", Code: "wrong"}); err != nil {
+		t.Fatalf("write auth: %v", err)
+	}
+
+	var msg hostedWSAuthMessage
+	if err := conn.ReadJSON(&msg); err != nil {
+		t.Fatalf("read auth response: %v", err)
+	}
+	if msg.OK || msg.Error != "invalid invite code" {
+		t.Fatalf("expected invalid invite code response, got %#v", msg)
+	}
+}
+
+func TestHostedWSOriginGateRejectsDisallowedOrigin(t *testing.T) {
+	allowedOrigins := parseAllowedOrigins("")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !isHostOriginAllowed(r, allowedOrigins) {
+			http.Error(w, "forbidden origin", http.StatusForbidden)
+			return
+		}
+		serveHostedTTY(w, r, "birdy")
+	}))
+	defer server.Close()
+
+	header := http.Header{}
+	header.Set("Origin", "https://evil.example")
+	_, resp, err := websocket.DefaultDialer.Dial(wsURL(server.URL), header)
+	if err == nil {
+		t.Fatal("expected websocket dial to fail")
+	}
+	if resp == nil || resp.StatusCode != http.StatusForbidden {
+		got := 0
+		if resp != nil {
+			got = resp.StatusCode
+		}
+		t.Fatalf("expected 403 response, got %d err=%v", got, err)
+	}
+}
+
+func dialTestWebsocket(t *testing.T, serverURL string, header http.Header) *websocket.Conn {
+	t.Helper()
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL(serverURL), header)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	return conn
+}
+
+func wsURL(serverURL string) string {
+	return "ws" + strings.TrimPrefix(serverURL, "http")
+}
+
+func TestHostedWSAuthMessageJSONShape(t *testing.T) {
+	data, err := json.Marshal(hostedWSAuthMessage{Type: "auth", OK: true})
+	if err != nil {
+		t.Fatalf("marshal auth msg: %v", err)
+	}
+	if !strings.Contains(string(data), `"type":"auth"`) || !strings.Contains(string(data), `"ok":true`) {
+		t.Fatalf("unexpected auth json: %s", data)
 	}
 }

@@ -73,7 +73,10 @@ func OpenPath(path string) (*Store, error) {
 
 	if fileExists {
 		if err := json.Unmarshal(data, &s.Accounts); err != nil {
-			return nil, fmt.Errorf("parsing store: %w", err)
+			if quarantineErr := quarantineCorruptStoreFile(path); quarantineErr != nil {
+				return nil, fmt.Errorf("parsing store: %w", err)
+			}
+			s.Accounts = []Account{}
 		}
 	} else {
 		s.Accounts = []Account{}
@@ -129,10 +132,49 @@ func (s *Store) Save() error {
 		return fmt.Errorf("marshaling store: %w", err)
 	}
 
-	if err := os.WriteFile(s.path, data, 0600); err != nil {
-		return fmt.Errorf("writing store: %w", err)
+	tmp, err := os.CreateTemp(dir, filepath.Base(s.path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("creating temp store file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+
+	if err := tmp.Chmod(0600); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("setting temp store permissions: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("writing temp store file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("closing temp store file: %w", err)
+	}
+	if err := os.Rename(tmpPath, s.path); err != nil {
+		return fmt.Errorf("replacing store file: %w", err)
 	}
 	return nil
+}
+
+func quarantineCorruptStoreFile(path string) error {
+	dir := filepath.Dir(path)
+	base := filepath.Base(path)
+	stamp := time.Now().UTC().Format("20060102T150405Z")
+	dst := filepath.Join(dir, fmt.Sprintf("%s.corrupt-%s", base, stamp))
+	for i := 0; i < 1000; i++ {
+		target := dst
+		if i > 0 {
+			target = fmt.Sprintf("%s-%02d", dst, i)
+		}
+		if err := os.Rename(path, target); err == nil {
+			return nil
+		} else if os.IsExist(err) {
+			continue
+		} else {
+			return err
+		}
+	}
+	return fmt.Errorf("exhausted corrupt store quarantine attempts for %s", path)
 }
 
 // Add creates a new account entry. Returns error if name already exists.

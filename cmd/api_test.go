@@ -69,3 +69,47 @@ func TestAPIChatRoutesCodexModelToCodexCLI(t *testing.T) {
 		t.Fatalf("expected claude path not to run, got %q", body)
 	}
 }
+
+func TestAPIChatDefaultRoutesToClaudeCLI(t *testing.T) {
+	binDir := t.TempDir()
+
+	claudeScript := filepath.Join(binDir, "claude")
+	claudeContent := strings.Join([]string{
+		"#!/bin/sh",
+		"cat <<'EOF'",
+		"data: {\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"from claude\"}]}}",
+		"data: {\"type\":\"result\",\"result\":\"ok\"}",
+		"EOF",
+	}, "\n")
+	if err := os.WriteFile(claudeScript, []byte(claudeContent), 0755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
+	}
+
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/api/chat", bytes.NewBufferString(`{"prompt":"hello"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Invite-Code", "birdy")
+
+	rr := httptest.NewRecorder()
+	handleAPIChat("birdy").ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%q", rr.Code, rr.Body.String())
+	}
+	if body := rr.Body.String(); !strings.Contains(body, `"text":"from claude"`) {
+		t.Fatalf("expected claude response in SSE body, got %q", body)
+	}
+}
+
+func TestAPIChatUnauthorized(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/api/chat", bytes.NewBufferString(`{"prompt":"hello"}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	rr := httptest.NewRecorder()
+	handleAPIChat("birdy").ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d body=%q", rr.Code, rr.Body.String())
+	}
+}

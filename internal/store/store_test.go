@@ -3,6 +3,7 @@ package store
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -298,5 +299,38 @@ func TestFilePermissions(t *testing.T) {
 	perm := info.Mode().Perm()
 	if perm != 0600 {
 		t.Errorf("expected 0600 permissions, got %o", perm)
+	}
+}
+
+func TestOpenPathQuarantinesCorruptStore(t *testing.T) {
+	path := tempStorePath(t)
+	if err := os.WriteFile(path, []byte("{not-json"), 0600); err != nil {
+		t.Fatalf("write corrupt store: %v", err)
+	}
+
+	st, err := OpenPath(path)
+	if err != nil {
+		t.Fatalf("OpenPath returned error: %v", err)
+	}
+	if st.Len() != 0 {
+		t.Fatalf("expected empty recovered store, got %d accounts", st.Len())
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("expected corrupt original moved away, stat err=%v", err)
+	}
+
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	found := false
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "accounts.json.corrupt-") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected quarantined corrupt store file in %s", filepath.Dir(path))
 	}
 }
