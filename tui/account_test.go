@@ -4,8 +4,10 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/guzus/birdy/internal/store"
 )
 
@@ -310,4 +312,14 @@ func TestAccountHeaderShowsCorrectTitle(t *testing.T) {
 		t.Fatal("expected non-empty view")
 	}
 	// Should contain "Accounts" for list view
+}
+
+func TestFitAccountTextUsesDisplayWidth(t *testing.T) {
+	got := fitAccountText("안녕하세요 세상", 8)
+	if !utf8.ValidString(got) {
+		t.Fatalf("expected valid utf-8, got %q", got)
+	}
+	if lipgloss.Width(got) > 8 {
+		t.Fatalf("expected rendered width <= 8, got %d for %q", lipgloss.Width(got), got)
+	}
 }

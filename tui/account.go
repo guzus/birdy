@@ -378,14 +378,5 @@ func (m AccountModel) accountBodyWidth() int {
 }
 
 func fitAccountText(s string, max int) string {
-	if max <= 0 {
-		return ""
-	}
-	if len(s) <= max {
-		return s
-	}
-	if max <= 3 {
-		return strings.Repeat(".", max)
-	}
-	return s[:max-3] + "..."
+	return summarizeQueueNotice(s, max)
 }
