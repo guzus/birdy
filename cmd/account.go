@@ -26,6 +26,13 @@ func ensureAccountStoreWritable(st *store.Store) error {
 	return fmt.Errorf("account store is env-backed only; unset BIRDY_ACCOUNTS or create ~/.config/birdy/accounts.json to add, update, or remove accounts")
 }
 
+func ensureAccountMutationAllowed(st *store.Store) error {
+	if readOnlyModeEnabled() {
+		return fmt.Errorf("account mutations are disabled in read-only mode (BIRDY_READ_ONLY)")
+	}
+	return ensureAccountStoreWritable(st)
+}
+
 func clearRemovedAccountFromState(name string) {
 	rs, err := state.Load()
 	if err != nil {
@@ -74,7 +81,7 @@ var accountAddCmd = &cobra.Command{
 			return err
 		}
 		printStoreWarning(st)
-		if err := ensureAccountStoreWritable(st); err != nil {
+		if err := ensureAccountMutationAllowed(st); err != nil {
 			return err
 		}
 
@@ -137,7 +144,7 @@ var accountRemoveCmd = &cobra.Command{
 			return err
 		}
 		printStoreWarning(st)
-		if err := ensureAccountStoreWritable(st); err != nil {
+		if err := ensureAccountMutationAllowed(st); err != nil {
 			return err
 		}
 
@@ -186,7 +193,7 @@ var accountUpdateCmd = &cobra.Command{
 			return err
 		}
 		printStoreWarning(st)
-		if err := ensureAccountStoreWritable(st); err != nil {
+		if err := ensureAccountMutationAllowed(st); err != nil {
 			return err
 		}
 

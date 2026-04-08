@@ -57,6 +57,19 @@ func TestEnsureAccountStoreWritableAllowsPersistedStore(t *testing.T) {
 	}
 }
 
+func TestEnsureAccountMutationAllowedRejectsReadOnlyMode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "accounts.json")
+	st, err := store.OpenPath(path)
+	if err != nil {
+		t.Fatalf("OpenPath returned error: %v", err)
+	}
+
+	t.Setenv("BIRDY_READ_ONLY", "1")
+	if err := ensureAccountMutationAllowed(st); err == nil {
+		t.Fatal("expected read-only mode to reject account mutation")
+	}
+}
+
 func TestAccountAddRejectsEnvOnlyStore(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -197,5 +210,75 @@ func TestAccountRemoveClearsLastUsedState(t *testing.T) {
 	}
 	if loaded.LastUsedName != "" {
 		t.Fatalf("expected last-used state to be cleared, got %q", loaded.LastUsedName)
+	}
+}
+
+func TestAccountAddRejectsReadOnlyMode(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("BIRDY_READ_ONLY", "1")
+
+	if err := accountAddCmd.Flags().Set("auth-token", "token"); err != nil {
+		t.Fatalf("set auth-token: %v", err)
+	}
+	if err := accountAddCmd.Flags().Set("ct0", "ct0"); err != nil {
+		t.Fatalf("set ct0: %v", err)
+	}
+	defer func() {
+		_ = accountAddCmd.Flags().Set("auth-token", "")
+		_ = accountAddCmd.Flags().Set("ct0", "")
+	}()
+
+	err := accountAddCmd.RunE(accountAddCmd, []string{"new-user"})
+	if err == nil {
+		t.Fatal("expected add in read-only mode to fail")
+	}
+	if !strings.Contains(err.Error(), "read-only mode") {
+		t.Fatalf("expected read-only error, got %v", err)
+	}
+}
+
+func TestAccountRemoveRejectsReadOnlyMode(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("BIRDY_READ_ONLY", "1")
+	writeAccountFixtureFile(t, home, []map[string]string{
+		{"name": "alpha", "auth_token": "token-a", "ct0": "ct0-a"},
+	})
+
+	err := accountRemoveCmd.RunE(accountRemoveCmd, []string{"alpha"})
+	if err == nil {
+		t.Fatal("expected remove in read-only mode to fail")
+	}
+	if !strings.Contains(err.Error(), "read-only mode") {
+		t.Fatalf("expected read-only error, got %v", err)
+	}
+}
+
+func TestAccountUpdateRejectsReadOnlyMode(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("BIRDY_READ_ONLY", "1")
+	writeAccountFixtureFile(t, home, []map[string]string{
+		{"name": "alpha", "auth_token": "token-a", "ct0": "ct0-a"},
+	})
+
+	if err := accountUpdateCmd.Flags().Set("auth-token", "token"); err != nil {
+		t.Fatalf("set auth-token: %v", err)
+	}
+	if err := accountUpdateCmd.Flags().Set("ct0", "ct0"); err != nil {
+		t.Fatalf("set ct0: %v", err)
+	}
+	defer func() {
+		_ = accountUpdateCmd.Flags().Set("auth-token", "")
+		_ = accountUpdateCmd.Flags().Set("ct0", "")
+	}()
+
+	err := accountUpdateCmd.RunE(accountUpdateCmd, []string{"alpha"})
+	if err == nil {
+		t.Fatal("expected update in read-only mode to fail")
+	}
+	if !strings.Contains(err.Error(), "read-only mode") {
+		t.Fatalf("expected read-only error, got %v", err)
 	}
 }
