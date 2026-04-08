@@ -64,6 +64,15 @@ func TestNormalizeOrigin(t *testing.T) {
 	}
 }
 
+func TestNormalizeOriginStripsDefaultPorts(t *testing.T) {
+	if got := normalizeOrigin("http://Example.COM:80/"); got != "http://example.com" {
+		t.Fatalf("expected normalized http default port origin, got %q", got)
+	}
+	if got := normalizeOrigin("https://Example.COM:443/"); got != "https://example.com" {
+		t.Fatalf("expected normalized https default port origin, got %q", got)
+	}
+}
+
 func TestIsHostOriginAllowedSameOrigin(t *testing.T) {
 	r := httptest.NewRequest("GET", "http://example.com/ws", nil)
 	r.Host = "birdy-host-web-production.up.railway.app"
@@ -71,6 +80,16 @@ func TestIsHostOriginAllowedSameOrigin(t *testing.T) {
 	r.Header.Set("X-Forwarded-Proto", "https")
 	if !isHostOriginAllowed(r, nil) {
 		t.Fatal("expected same-origin websocket request to be allowed")
+	}
+}
+
+func TestIsHostOriginAllowedSameOriginWithDefaultPort(t *testing.T) {
+	r := httptest.NewRequest("GET", "http://example.com/ws", nil)
+	r.Host = "birdy-host-web-production.up.railway.app:443"
+	r.Header.Set("Origin", "https://birdy-host-web-production.up.railway.app")
+	r.Header.Set("X-Forwarded-Proto", "https")
+	if !isHostOriginAllowed(r, nil) {
+		t.Fatal("expected same-origin websocket request with default port to be allowed")
 	}
 }
 
@@ -83,6 +102,18 @@ func TestIsHostOriginAllowedAllowlist(t *testing.T) {
 	allowed := parseAllowedOrigins("https://birdy.guzus.xyz, https://admin.guzus.xyz")
 	if !isHostOriginAllowed(r, allowed) {
 		t.Fatal("expected explicit allowlist origin to be allowed")
+	}
+}
+
+func TestIsHostOriginAllowedAllowlistNormalizesDefaultPort(t *testing.T) {
+	r := httptest.NewRequest("GET", "http://example.com/ws", nil)
+	r.Host = "internal.railway"
+	r.Header.Set("Origin", "https://birdy.guzus.xyz")
+	r.Header.Set("X-Forwarded-Proto", "http")
+
+	allowed := parseAllowedOrigins("https://birdy.guzus.xyz:443")
+	if !isHostOriginAllowed(r, allowed) {
+		t.Fatal("expected allowlist origin with default port to be allowed")
 	}
 }
 

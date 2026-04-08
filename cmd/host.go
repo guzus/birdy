@@ -445,7 +445,41 @@ func normalizeOrigin(v string) string {
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return ""
 	}
-	return u.Scheme + "://" + u.Host
+	host := normalizeOriginHost(u.Scheme, u.Host)
+	if host == "" {
+		return ""
+	}
+	return u.Scheme + "://" + host
+}
+
+func normalizeOriginHost(scheme, host string) string {
+	scheme = strings.TrimSpace(strings.ToLower(scheme))
+	host = strings.TrimSpace(strings.ToLower(host))
+	if host == "" {
+		return ""
+	}
+
+	var hostname, port string
+	if parsed, err := url.Parse(scheme + "://" + host); err == nil && parsed.Host != "" {
+		hostname = strings.ToLower(parsed.Hostname())
+		port = parsed.Port()
+	} else {
+		hostname = strings.Trim(host, "[]")
+	}
+
+	if hostname == "" {
+		return ""
+	}
+	if (scheme == "http" && port == "80") || (scheme == "https" && port == "443") {
+		port = ""
+	}
+	if port == "" {
+		if strings.Contains(hostname, ":") {
+			return "[" + hostname + "]"
+		}
+		return hostname
+	}
+	return net.JoinHostPort(hostname, port)
 }
 
 func requestScheme(r *http.Request) string {
@@ -470,7 +504,11 @@ func isHostOriginAllowed(r *http.Request, allowed map[string]struct{}) bool {
 		return false
 	}
 
-	expected := requestScheme(r) + "://" + r.Host
+	expectedHost := normalizeOriginHost(requestScheme(r), r.Host)
+	if expectedHost == "" {
+		return false
+	}
+	expected := requestScheme(r) + "://" + expectedHost
 	if subtle.ConstantTimeCompare([]byte(origin), []byte(expected)) == 1 {
 		return true
 	}
