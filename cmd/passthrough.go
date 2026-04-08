@@ -40,6 +40,7 @@ func runPassthrough(cmd *cobra.Command, args []string) error {
 	}
 
 	var account *store.Account
+	var rs *state.State
 
 	if accountFlag != "" {
 		account, err = st.Get(accountFlag)
@@ -52,7 +53,7 @@ func runPassthrough(cmd *cobra.Command, args []string) error {
 			return err
 		}
 
-		rs, err := state.Load()
+		rs, err = state.Load()
 		if err != nil {
 			return fmt.Errorf("loading rotation state: %w", err)
 		}
@@ -63,14 +64,15 @@ func runPassthrough(cmd *cobra.Command, args []string) error {
 			return err
 		}
 
-		rs.LastUsedName = account.Name
-		if err := rs.Save(); err != nil {
-			return fmt.Errorf("saving rotation state: %w", err)
-		}
 	}
 
 	if verboseFlag {
 		fmt.Fprintf(os.Stderr, "[birdy] using account: %s\n", account.Name)
+	}
+
+	exitCode, err := runner.Run(account, args)
+	if err != nil {
+		return err
 	}
 
 	if err := st.RecordUsage(account.Name); err != nil {
@@ -79,11 +81,13 @@ func runPassthrough(cmd *cobra.Command, args []string) error {
 	if err := st.Save(); err != nil {
 		return fmt.Errorf("saving account store: %w", err)
 	}
-
-	exitCode, err := runner.Run(account, args)
-	if err != nil {
-		return err
+	if rs != nil {
+		rs.LastUsedName = account.Name
+		if err := rs.Save(); err != nil {
+			return fmt.Errorf("saving rotation state: %w", err)
+		}
 	}
+
 	if exitCode != 0 {
 		os.Exit(exitCode)
 	}
