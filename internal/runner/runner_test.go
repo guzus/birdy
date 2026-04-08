@@ -87,3 +87,32 @@ func TestRunCaptureReturnsExitCodeAndOutput(t *testing.T) {
 		t.Fatalf("expected stderr to include credentials, got %q", stderr)
 	}
 }
+
+func TestRunCaptureRejectsNilAccount(t *testing.T) {
+	exitCode, stdout, stderr, err := RunCapture(nil, []string{"home"})
+	if err == nil {
+		t.Fatal("expected nil account to return error")
+	}
+	if exitCode != 1 {
+		t.Fatalf("expected exit code 1, got %d", exitCode)
+	}
+	if stdout != "" || stderr != "" {
+		t.Fatalf("expected no output on nil account error, got stdout=%q stderr=%q", stdout, stderr)
+	}
+	if !strings.Contains(err.Error(), "missing account") {
+		t.Fatalf("expected missing account error, got %v", err)
+	}
+}
+
+func TestRunRejectsNilAccount(t *testing.T) {
+	exitCode, err := Run(nil, []string{"home"})
+	if err == nil {
+		t.Fatal("expected nil account to return error")
+	}
+	if exitCode != 1 {
+		t.Fatalf("expected exit code 1, got %d", exitCode)
+	}
+	if !strings.Contains(err.Error(), "missing account") {
+		t.Fatalf("expected missing account error, got %v", err)
+	}
+}

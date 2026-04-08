@@ -28,6 +28,10 @@ func RunCapture(account *store.Account, args []string) (exitCode int, stdout, st
 }
 
 func runWithIO(account *store.Account, args []string, stdin any, stdout any, stderr any) (exitCode int, out string, errOut string, err error) {
+	if account == nil {
+		return 1, "", "", fmt.Errorf("running bird: missing account")
+	}
+
 	birdBin, err := findBird()
 	if err != nil {
 		return 1, "", "", err
