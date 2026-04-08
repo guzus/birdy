@@ -25,6 +25,7 @@ type Store struct {
 	path      string
 	ephemeral bool      // true when accounts come purely from env (no file existed)
 	Accounts  []Account `json:"accounts"`
+	Warning   string    `json:"-"`
 }
 
 func defaultPath() (string, error) {
@@ -73,10 +74,12 @@ func OpenPath(path string) (*Store, error) {
 
 	if fileExists {
 		if err := json.Unmarshal(data, &s.Accounts); err != nil {
-			if quarantineErr := quarantineCorruptStoreFile(path); quarantineErr != nil {
+			quarantinedPath, quarantineErr := quarantineCorruptStoreFile(path)
+			if quarantineErr != nil {
 				return nil, fmt.Errorf("parsing store: %w", err)
 			}
 			s.Accounts = []Account{}
+			s.Warning = fmt.Sprintf("recovered from corrupt account store; moved old file to %s", quarantinedPath)
 		}
 	} else {
 		s.Accounts = []Account{}
@@ -156,7 +159,7 @@ func (s *Store) Save() error {
 	return nil
 }
 
-func quarantineCorruptStoreFile(path string) error {
+func quarantineCorruptStoreFile(path string) (string, error) {
 	dir := filepath.Dir(path)
 	base := filepath.Base(path)
 	stamp := time.Now().UTC().Format("20060102T150405Z")
@@ -167,14 +170,14 @@ func quarantineCorruptStoreFile(path string) error {
 			target = fmt.Sprintf("%s-%02d", dst, i)
 		}
 		if err := os.Rename(path, target); err == nil {
-			return nil
+			return target, nil
 		} else if os.IsExist(err) {
 			continue
 		} else {
-			return err
+			return "", err
 		}
 	}
-	return fmt.Errorf("exhausted corrupt store quarantine attempts for %s", path)
+	return "", fmt.Errorf("exhausted corrupt store quarantine attempts for %s", path)
 }
 
 // Add creates a new account entry. Returns error if name already exists.

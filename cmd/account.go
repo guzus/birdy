@@ -49,6 +49,7 @@ var accountAddCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		printStoreWarning(st)
 
 		if err := st.Add(name, authToken, ct0); err != nil {
 			return err
@@ -71,6 +72,7 @@ var accountListCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		printStoreWarning(st)
 
 		accounts := st.List()
 		if len(accounts) == 0 {
@@ -106,6 +108,7 @@ var accountRemoveCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		printStoreWarning(st)
 
 		if err := st.Remove(args[0]); err != nil {
 			return err
@@ -150,6 +153,7 @@ var accountUpdateCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		printStoreWarning(st)
 
 		if err := st.Update(name, authToken, ct0); err != nil {
 			return err

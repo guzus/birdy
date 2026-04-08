@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/guzus/birdy/internal/state"
 	"github.com/guzus/birdy/internal/store"
@@ -17,10 +18,16 @@ var statusCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		if st.Warning != "" {
+			_, _ = fmt.Fprintf(os.Stderr, "[birdy] warning: %s\n", st.Warning)
+		}
 
 		rs, err := state.Load()
 		if err != nil {
 			return err
+		}
+		if rs.Warning != "" {
+			_, _ = fmt.Fprintf(os.Stderr, "[birdy] warning: %s\n", rs.Warning)
 		}
 
 		accounts := st.List()

@@ -315,6 +315,9 @@ func TestOpenPathQuarantinesCorruptStore(t *testing.T) {
 	if st.Len() != 0 {
 		t.Fatalf("expected empty recovered store, got %d accounts", st.Len())
 	}
+	if st.Warning == "" {
+		t.Fatal("expected recovery warning")
+	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("expected corrupt original moved away, stat err=%v", err)
 	}

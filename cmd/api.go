@@ -171,6 +171,8 @@ func handleAPICommand(inviteCode string) http.HandlerFunc {
 
 		var account *store.Account
 		accountName := strings.TrimSpace(req.Account)
+		storeWarning := st.Warning
+		stateWarning := ""
 		if accountName != "" {
 			account, err = st.Get(accountName)
 			if err != nil {
@@ -193,6 +195,7 @@ func handleAPICommand(inviteCode string) http.HandlerFunc {
 				writeJSON(w, http.StatusInternalServerError, apiError{OK: false, Error: "loading rotation state"})
 				return
 			}
+			stateWarning = rs.Warning
 			account, err = rotation.Pick(st.List(), parsed, rs.LastUsedName)
 			if err != nil {
 				writeJSON(w, http.StatusInternalServerError, apiError{OK: false, Error: err.Error()})
@@ -212,6 +215,7 @@ func handleAPICommand(inviteCode string) http.HandlerFunc {
 			writeJSON(w, http.StatusInternalServerError, apiError{OK: false, Error: runErr.Error()})
 			return
 		}
+		stderr = mergeWarnings(stderr, storeWarning, stateWarning)
 
 		writeJSON(w, http.StatusOK, apiCommandResponse{
 			OK:        true,

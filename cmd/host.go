@@ -180,7 +180,6 @@ func serveHostedTTY(w http.ResponseWriter, r *http.Request, inviteCode string) {
 		if child.Process != nil {
 			_ = child.Process.Kill()
 		}
-		_ = child.Wait()
 	}()
 
 	var debugFile *os.File

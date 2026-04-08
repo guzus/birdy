@@ -13,6 +13,7 @@ type State struct {
 	path         string
 	LastUsedName string `json:"last_used_name"`
 	Model        string `json:"model,omitempty"`
+	Warning      string `json:"-"`
 }
 
 func defaultPath() (string, error) {
@@ -45,9 +46,11 @@ func LoadPath(path string) (*State, error) {
 	}
 
 	if err := json.Unmarshal(data, s); err != nil {
-		if quarantineErr := quarantineCorruptStateFile(path); quarantineErr != nil {
+		quarantinedPath, quarantineErr := quarantineCorruptStateFile(path)
+		if quarantineErr != nil {
 			return nil, fmt.Errorf("parsing state: %w", err)
 		}
+		s.Warning = fmt.Sprintf("recovered from corrupt state file; moved old file to %s", quarantinedPath)
 		return s, nil
 	}
 	return s, nil
@@ -89,7 +92,7 @@ func (s *State) Save() error {
 	return nil
 }
 
-func quarantineCorruptStateFile(path string) error {
+func quarantineCorruptStateFile(path string) (string, error) {
 	dir := filepath.Dir(path)
 	base := filepath.Base(path)
 	stamp := time.Now().UTC().Format("20060102T150405Z")
@@ -100,12 +103,12 @@ func quarantineCorruptStateFile(path string) error {
 			target = fmt.Sprintf("%s-%02d", dst, i)
 		}
 		if err := os.Rename(path, target); err == nil {
-			return nil
+			return target, nil
 		} else if os.IsExist(err) {
 			continue
 		} else {
-			return err
+			return "", err
 		}
 	}
-	return fmt.Errorf("exhausted corrupt state quarantine attempts for %s", path)
+	return "", fmt.Errorf("exhausted corrupt state quarantine attempts for %s", path)
 }

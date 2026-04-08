@@ -33,6 +33,7 @@ func runPassthrough(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("opening account store: %w", err)
 	}
+	printStoreWarning(st)
 
 	if st.Len() == 0 {
 		return fmt.Errorf("no accounts configured\nRun: birdy account add <name>")
@@ -55,6 +56,7 @@ func runPassthrough(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("loading rotation state: %w", err)
 		}
+		printStateWarning(rs)
 
 		account, err = rotation.Pick(st.List(), strat, rs.LastUsedName)
 		if err != nil {

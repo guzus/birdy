@@ -35,6 +35,9 @@ func TestLoadPathQuarantinesCorruptState(t *testing.T) {
 	if s == nil {
 		t.Fatal("expected state")
 	}
+	if s.Warning == "" {
+		t.Fatal("expected recovery warning")
+	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("expected corrupt original to be moved away, stat err=%v", err)
 	}

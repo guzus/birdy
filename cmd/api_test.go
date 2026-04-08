@@ -174,6 +174,49 @@ func TestAPICommandRejectsUnsupportedCommand(t *testing.T) {
 	}
 }
 
+func TestAPICommandIncludesRecoveryWarningsInStderr(t *testing.T) {
+	birdPath := writeFakeBirdScript(t, strings.Join([]string{
+		"#!/bin/sh",
+		"echo ok",
+	}, "\n"))
+
+	home := t.TempDir()
+	configDir := filepath.Join(home, ".config", "birdy")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "accounts.json"), []byte("{bad-json"), 0600); err != nil {
+		t.Fatalf("write corrupt accounts: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "state.json"), []byte("{bad-json"), 0600); err != nil {
+		t.Fatalf("write corrupt state: %v", err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("BIRDY_BIRD_PATH", birdPath)
+	t.Setenv("BIRDY_ACCOUNTS", `[{"name":"env_user","auth_token":"t","ct0":"c"}]`)
+
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/api/command", bytes.NewBufferString(`{"command":"home"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Invite-Code", "birdy")
+
+	rr := httptest.NewRecorder()
+	handleAPICommand("birdy").ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%q", rr.Code, rr.Body.String())
+	}
+	var resp apiCommandResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v body=%q", err, rr.Body.String())
+	}
+	if !strings.Contains(resp.Stderr, "recovered from corrupt account store") {
+		t.Fatalf("expected account-store recovery warning, got %q", resp.Stderr)
+	}
+	if !strings.Contains(resp.Stderr, "recovered from corrupt state file") {
+		t.Fatalf("expected state recovery warning, got %q", resp.Stderr)
+	}
+}
+
 func writeFakeBirdScript(t *testing.T, contents string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "bird")
