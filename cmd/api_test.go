@@ -139,6 +139,38 @@ func TestAPIChatUnauthorized(t *testing.T) {
 	}
 }
 
+func TestAPIChatRejectsUnknownJSONFields(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/api/chat", bytes.NewBufferString(`{"prompt":"hello","bogus":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Invite-Code", "birdy")
+
+	rr := httptest.NewRecorder()
+	handleAPIChat("birdy").ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%q", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "invalid json") {
+		t.Fatalf("expected invalid json error, got %q", rr.Body.String())
+	}
+}
+
+func TestAPIChatRejectsTrailingJSONValues(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/api/chat", bytes.NewBufferString(`{"prompt":"hello"}{"prompt":"again"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Invite-Code", "birdy")
+
+	rr := httptest.NewRecorder()
+	handleAPIChat("birdy").ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%q", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "invalid json") {
+		t.Fatalf("expected invalid json error, got %q", rr.Body.String())
+	}
+}
+
 func TestAPIChatStreamingUnsupportedReturnsJSONError(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/api/chat", bytes.NewBufferString(`{"prompt":"hello"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -214,6 +246,38 @@ func TestAPICommandRejectsUnsupportedCommand(t *testing.T) {
 	}
 	if !strings.Contains(rr.Body.String(), "unsupported command") {
 		t.Fatalf("expected unsupported command error, got %q", rr.Body.String())
+	}
+}
+
+func TestAPICommandRejectsUnknownJSONFields(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/api/command", bytes.NewBufferString(`{"command":"home","bogus":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Invite-Code", "birdy")
+
+	rr := httptest.NewRecorder()
+	handleAPICommand("birdy").ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%q", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "invalid json") {
+		t.Fatalf("expected invalid json error, got %q", rr.Body.String())
+	}
+}
+
+func TestAPICommandRejectsTrailingJSONValues(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/api/command", bytes.NewBufferString(`{"command":"home"}{"command":"mentions"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Invite-Code", "birdy")
+
+	rr := httptest.NewRecorder()
+	handleAPICommand("birdy").ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%q", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "invalid json") {
+		t.Fatalf("expected invalid json error, got %q", rr.Body.String())
 	}
 }
 

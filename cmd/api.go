@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -107,6 +108,24 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+func decodeStrictJSON(r *http.Request, dst any) error {
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		return err
+	}
+	if dec.More() {
+		return fmt.Errorf("unexpected extra json value")
+	}
+	var trailing any
+	if err := dec.Decode(&trailing); err == nil {
+		return fmt.Errorf("unexpected trailing json content")
+	} else if err != io.EOF {
+		return err
+	}
+	return nil
+}
+
 func handleAPICommand(inviteCode string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !apiAuthorized(r, inviteCode) {
@@ -122,7 +141,7 @@ func handleAPICommand(inviteCode string) http.HandlerFunc {
 		defer r.Body.Close()
 
 		var req apiCommandRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeStrictJSON(r, &req); err != nil {
 			writeJSON(w, http.StatusBadRequest, apiError{OK: false, Error: "invalid json"})
 			return
 		}
@@ -243,7 +262,7 @@ func handleAPIChat(inviteCode string) http.HandlerFunc {
 		defer r.Body.Close()
 
 		var req apiChatRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeStrictJSON(r, &req); err != nil {
 			writeJSON(w, http.StatusBadRequest, apiError{OK: false, Error: "invalid json"})
 			return
 		}
