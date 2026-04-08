@@ -593,9 +593,17 @@ func makeHostedWebHandler(webDir string) http.Handler {
 	if webDir == "" {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			setHostedSecurityHeaders(w)
+			switch r.Method {
+			case http.MethodGet, http.MethodHead:
+			default:
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = io.WriteString(w, "birdy host web client not built. Run: cd web && bun install && bun run build\n")
+			if r.Method != http.MethodHead {
+				_, _ = io.WriteString(w, "birdy host web client not built. Run: cd web && bun install && bun run build\n")
+			}
 		})
 	}
 

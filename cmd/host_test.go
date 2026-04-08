@@ -221,6 +221,29 @@ func TestMakeHostedWebHandlerRejectsNonGetMethods(t *testing.T) {
 	}
 }
 
+func TestMakeHostedWebHandlerWithoutBuildRejectsNonGetMethods(t *testing.T) {
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/", nil)
+	makeHostedWebHandler("").ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405, got %d", rr.Code)
+	}
+}
+
+func TestMakeHostedWebHandlerWithoutBuildHeadHasNoBody(t *testing.T) {
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodHead, "http://example.com/", nil)
+	makeHostedWebHandler("").ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", rr.Code)
+	}
+	if rr.Body.Len() != 0 {
+		t.Fatalf("expected empty body for HEAD, got %q", rr.Body.String())
+	}
+}
+
 func TestBuildHostedMuxServesHealthzAndStatic(t *testing.T) {
 	webDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(webDir, "index.html"), []byte("<html>mux</html>"), 0600); err != nil {
