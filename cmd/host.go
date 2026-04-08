@@ -45,7 +45,10 @@ var hostCmd = &cobra.Command{
 		}
 
 		allowedOrigins := parseAllowedOrigins(os.Getenv("BIRDY_HOST_ALLOWED_ORIGINS"))
-		webDir, _ := resolveHostWebDir()
+		webDir, err := resolveHostWebDir()
+		if err != nil {
+			return err
+		}
 
 		fmt.Fprintf(cmd.OutOrStdout(), "birdy web host starting at %s\n", hostAddrFlag)
 		fmt.Fprintf(cmd.OutOrStdout(), "open: %s\n", hostedAccessURL(hostAddrFlag))

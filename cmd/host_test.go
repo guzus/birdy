@@ -61,6 +61,25 @@ func TestHostRejectsUnexpectedArgs(t *testing.T) {
 	}
 }
 
+func TestHostReturnsConfiguredWebDirError(t *testing.T) {
+	t.Setenv("BIRDY_HOST_INVITE_CODE", "birdy")
+	t.Setenv("BIRDY_HOST_WEB_DIR", filepath.Join(t.TempDir(), "missing-web"))
+
+	prevAddr, prevInvite := hostAddrFlag, hostInviteCodeFlag
+	hostAddrFlag, hostInviteCodeFlag = "127.0.0.1:8787", ""
+	defer func() {
+		hostAddrFlag, hostInviteCodeFlag = prevAddr, prevInvite
+	}()
+
+	err := hostCmd.RunE(hostCmd, nil)
+	if err == nil {
+		t.Fatal("expected invalid configured web dir to fail")
+	}
+	if !strings.Contains(err.Error(), "missing index.html") {
+		t.Fatalf("expected missing index.html error, got %v", err)
+	}
+}
+
 func TestNormalizeOrigin(t *testing.T) {
 	if got := normalizeOrigin(" https://Example.COM/ "); got != "https://example.com" {
 		t.Fatalf("expected normalized https origin, got %q", got)
