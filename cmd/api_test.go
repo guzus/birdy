@@ -284,6 +284,22 @@ func TestAPICommandRejectsUnsupportedCommand(t *testing.T) {
 	}
 }
 
+func TestAPICommandRejectsBareSeparatorWithoutCommand(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/api/command", bytes.NewBufferString(`{"args":["--format","json","--"]}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Invite-Code", "birdy")
+
+	rr := httptest.NewRecorder()
+	handleAPICommand("birdy").ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%q", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "missing command") {
+		t.Fatalf("expected missing command error, got %q", rr.Body.String())
+	}
+}
+
 func TestAPICommandRejectsUnknownJSONFields(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/api/command", bytes.NewBufferString(`{"command":"home","bogus":true}`))
 	req.Header.Set("Content-Type", "application/json")

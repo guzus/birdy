@@ -132,7 +132,7 @@ func firstBirdCommand(args []string) string {
 					return next
 				}
 			}
-			return firstNonFlag
+			return ""
 		}
 		if strings.HasPrefix(a, "--") {
 			if strings.Contains(a, "=") {

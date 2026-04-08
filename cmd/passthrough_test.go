@@ -15,6 +15,15 @@ func TestFirstBirdCommandSkipsFlags(t *testing.T) {
 	if got := firstBirdCommand([]string{"-u", "alice", "thread", "123"}); got != "thread" {
 		t.Fatalf("expected thread after short flag value, got %q", got)
 	}
+	if got := firstBirdCommand([]string{"tweet", "--"}); got != "tweet" {
+		t.Fatalf("expected tweet to remain command before bare separator, got %q", got)
+	}
+	if got := firstBirdCommand([]string{"--", "home"}); got != "home" {
+		t.Fatalf("expected home after separator, got %q", got)
+	}
+	if got := firstBirdCommand([]string{"--format", "json", "--"}); got != "" {
+		t.Fatalf("expected empty command when separator ends args, got %q", got)
+	}
 	if got := firstBirdCommand([]string{"custom"}); got != "custom" {
 		t.Fatalf("expected fallback custom command, got %q", got)
 	}
