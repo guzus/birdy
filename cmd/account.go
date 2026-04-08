@@ -23,7 +23,7 @@ var accountAddCmd = &cobra.Command{
 	Short: "Add a new account",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		name := args[0]
+		name := strings.TrimSpace(args[0])
 
 		authToken, _ := cmd.Flags().GetString("auth-token")
 		ct0, _ := cmd.Flags().GetString("ct0")
@@ -104,20 +104,21 @@ var accountRemoveCmd = &cobra.Command{
 	Short:   "Remove an account",
 	Args:    cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		name := strings.TrimSpace(args[0])
 		st, err := store.Open()
 		if err != nil {
 			return err
 		}
 		printStoreWarning(st)
 
-		if err := st.Remove(args[0]); err != nil {
+		if err := st.Remove(name); err != nil {
 			return err
 		}
 		if err := st.Save(); err != nil {
 			return err
 		}
 
-		fmt.Printf("Account %q removed.\n", args[0])
+		fmt.Printf("Account %q removed.\n", name)
 		return nil
 	},
 }
@@ -127,7 +128,7 @@ var accountUpdateCmd = &cobra.Command{
 	Short: "Update credentials for an existing account",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		name := args[0]
+		name := strings.TrimSpace(args[0])
 
 		authToken, _ := cmd.Flags().GetString("auth-token")
 		ct0, _ := cmd.Flags().GetString("ct0")

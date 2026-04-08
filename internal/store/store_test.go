@@ -64,6 +64,38 @@ func TestAddDuplicate(t *testing.T) {
 	}
 }
 
+func TestAddNormalizesWhitespace(t *testing.T) {
+	path := tempStorePath(t)
+	st, _ := OpenPath(path)
+
+	if err := st.Add("  alice  ", "  token_a  ", "  ct0_a  "); err != nil {
+		t.Fatalf("failed to add normalized account: %v", err)
+	}
+
+	a, err := st.Get("alice")
+	if err != nil {
+		t.Fatalf("failed to get normalized account: %v", err)
+	}
+	if a.Name != "alice" || a.AuthToken != "token_a" || a.CT0 != "ct0_a" {
+		t.Fatalf("expected trimmed account fields, got %#v", a)
+	}
+}
+
+func TestAddRejectsBlankFields(t *testing.T) {
+	path := tempStorePath(t)
+	st, _ := OpenPath(path)
+
+	if err := st.Add("   ", "token", "ct0"); err == nil {
+		t.Fatal("expected blank account name to be rejected")
+	}
+	if err := st.Add("alice", "   ", "ct0"); err == nil {
+		t.Fatal("expected blank auth token to be rejected")
+	}
+	if err := st.Add("alice", "token", "   "); err == nil {
+		t.Fatal("expected blank ct0 to be rejected")
+	}
+}
+
 func TestRemove(t *testing.T) {
 	path := tempStorePath(t)
 	st, _ := OpenPath(path)
@@ -81,6 +113,20 @@ func TestRemove(t *testing.T) {
 	accounts := st.List()
 	if accounts[0].Name != "bob" {
 		t.Errorf("expected bob, got %q", accounts[0].Name)
+	}
+}
+
+func TestRemoveTrimsName(t *testing.T) {
+	path := tempStorePath(t)
+	st, _ := OpenPath(path)
+
+	st.Add("alice", "token_a", "ct0_a")
+
+	if err := st.Remove("  alice  "); err != nil {
+		t.Fatalf("failed to remove with padded name: %v", err)
+	}
+	if st.Len() != 0 {
+		t.Fatalf("expected store to be empty after remove, got %d", st.Len())
 	}
 }
 
@@ -109,6 +155,21 @@ func TestGet(t *testing.T) {
 	}
 	if a.AuthToken != "token_a" {
 		t.Errorf("expected token_a, got %q", a.AuthToken)
+	}
+}
+
+func TestGetTrimsName(t *testing.T) {
+	path := tempStorePath(t)
+	st, _ := OpenPath(path)
+
+	st.Add("alice", "token_a", "ct0_a")
+
+	a, err := st.Get("  alice  ")
+	if err != nil {
+		t.Fatalf("failed to get with padded name: %v", err)
+	}
+	if a.Name != "alice" {
+		t.Fatalf("expected alice, got %q", a.Name)
 	}
 }
 
@@ -151,6 +212,22 @@ func TestRecordUsageNotFound(t *testing.T) {
 	}
 }
 
+func TestRecordUsageTrimsName(t *testing.T) {
+	path := tempStorePath(t)
+	st, _ := OpenPath(path)
+
+	st.Add("alice", "token_a", "ct0_a")
+
+	if err := st.RecordUsage("  alice  "); err != nil {
+		t.Fatalf("failed to record usage with padded name: %v", err)
+	}
+
+	a, _ := st.Get("alice")
+	if a.UseCount != 1 {
+		t.Fatalf("expected use_count=1, got %d", a.UseCount)
+	}
+}
+
 func TestUpdate(t *testing.T) {
 	path := tempStorePath(t)
 	st, _ := OpenPath(path)
@@ -167,6 +244,39 @@ func TestUpdate(t *testing.T) {
 	}
 	if a.CT0 != "new_ct0" {
 		t.Errorf("expected new_ct0, got %q", a.CT0)
+	}
+}
+
+func TestUpdateNormalizesWhitespace(t *testing.T) {
+	path := tempStorePath(t)
+	st, _ := OpenPath(path)
+
+	st.Add("alice", "token_a", "ct0_a")
+
+	if err := st.Update("  alice  ", "  new_token  ", "  new_ct0  "); err != nil {
+		t.Fatalf("failed to update with padded fields: %v", err)
+	}
+
+	a, _ := st.Get("alice")
+	if a.AuthToken != "new_token" || a.CT0 != "new_ct0" {
+		t.Fatalf("expected trimmed credentials, got %#v", a)
+	}
+}
+
+func TestUpdateRejectsBlankFields(t *testing.T) {
+	path := tempStorePath(t)
+	st, _ := OpenPath(path)
+
+	st.Add("alice", "token_a", "ct0_a")
+
+	if err := st.Update("   ", "new_token", "new_ct0"); err == nil {
+		t.Fatal("expected blank account name to be rejected")
+	}
+	if err := st.Update("alice", "   ", "new_ct0"); err == nil {
+		t.Fatal("expected blank auth token to be rejected")
+	}
+	if err := st.Update("alice", "new_token", "   "); err == nil {
+		t.Fatal("expected blank ct0 to be rejected")
 	}
 }
 
@@ -268,6 +378,33 @@ func TestEnvAccountsMerge(t *testing.T) {
 	a, _ := st2.Get("file_user")
 	if a.AuthToken != "env_token" {
 		t.Errorf("expected env_token (overridden), got %q", a.AuthToken)
+	}
+}
+
+func TestEnvAccountsNormalizeWhitespace(t *testing.T) {
+	path := tempStorePath(t)
+	t.Setenv("BIRDY_ACCOUNTS", `[{"name":"  env_user  ","auth_token":"  t  ","ct0":"  c  "}]`)
+
+	st, err := OpenPath(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	a, err := st.Get("env_user")
+	if err != nil {
+		t.Fatalf("failed to get normalized env account: %v", err)
+	}
+	if a.Name != "env_user" || a.AuthToken != "t" || a.CT0 != "c" {
+		t.Fatalf("expected trimmed env account, got %#v", a)
+	}
+}
+
+func TestEnvAccountsRejectBlankFields(t *testing.T) {
+	path := tempStorePath(t)
+	t.Setenv("BIRDY_ACCOUNTS", `[{"name":"   ","auth_token":"t","ct0":"c"}]`)
+
+	if _, err := OpenPath(path); err == nil {
+		t.Fatal("expected invalid env account payload to fail")
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -47,6 +48,15 @@ func loadFromEnv() ([]Account, error) {
 	var accounts []Account
 	if err := json.Unmarshal([]byte(raw), &accounts); err != nil {
 		return nil, fmt.Errorf("parsing BIRDY_ACCOUNTS: %w", err)
+	}
+	for i := range accounts {
+		name, authToken, ct0, err := normalizeAccountInput(accounts[i].Name, accounts[i].AuthToken, accounts[i].CT0)
+		if err != nil {
+			return nil, fmt.Errorf("parsing BIRDY_ACCOUNTS: %w", err)
+		}
+		accounts[i].Name = name
+		accounts[i].AuthToken = authToken
+		accounts[i].CT0 = ct0
 	}
 	return accounts, nil
 }
@@ -185,6 +195,11 @@ func (s *Store) Add(name, authToken, ct0 string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	name, authToken, ct0, err := normalizeAccountInput(name, authToken, ct0)
+	if err != nil {
+		return err
+	}
+
 	for _, a := range s.Accounts {
 		if a.Name == name {
 			return fmt.Errorf("account %q already exists", name)
@@ -205,6 +220,7 @@ func (s *Store) Remove(name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	name = normalizeAccountName(name)
 	for i, a := range s.Accounts {
 		if a.Name == name {
 			s.Accounts = append(s.Accounts[:i], s.Accounts[i+1:]...)
@@ -219,6 +235,7 @@ func (s *Store) Get(name string) (*Account, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	name = normalizeAccountName(name)
 	for i := range s.Accounts {
 		if s.Accounts[i].Name == name {
 			return &s.Accounts[i], nil
@@ -242,6 +259,7 @@ func (s *Store) RecordUsage(name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	name = normalizeAccountName(name)
 	for i := range s.Accounts {
 		if s.Accounts[i].Name == name {
 			s.Accounts[i].LastUsed = time.Now()
@@ -264,6 +282,11 @@ func (s *Store) Update(name, authToken, ct0 string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	name, authToken, ct0, err := normalizeAccountInput(name, authToken, ct0)
+	if err != nil {
+		return err
+	}
+
 	for i := range s.Accounts {
 		if s.Accounts[i].Name == name {
 			s.Accounts[i].AuthToken = authToken
@@ -272,4 +295,22 @@ func (s *Store) Update(name, authToken, ct0 string) error {
 		}
 	}
 	return fmt.Errorf("account %q not found", name)
+}
+
+func normalizeAccountName(name string) string {
+	return strings.TrimSpace(name)
+}
+
+func normalizeAccountInput(name, authToken, ct0 string) (string, string, string, error) {
+	name = normalizeAccountName(name)
+	authToken = strings.TrimSpace(authToken)
+	ct0 = strings.TrimSpace(ct0)
+
+	if name == "" {
+		return "", "", "", fmt.Errorf("account name is required")
+	}
+	if authToken == "" || ct0 == "" {
+		return "", "", "", fmt.Errorf("both auth_token and ct0 are required")
+	}
+	return name, authToken, ct0, nil
 }
