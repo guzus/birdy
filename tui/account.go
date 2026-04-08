@@ -33,6 +33,7 @@ type AccountModel struct {
 	accounts []store.Account
 	cursor   int
 	err      string
+	warning  string
 
 	// Add form fields
 	inputs     [3]textinput.Model
@@ -77,6 +78,7 @@ func (m *AccountModel) loadAccounts() {
 	}
 	m.accounts = st.List()
 	m.err = ""
+	m.warning = st.Warning
 }
 
 func (m AccountModel) Init() tea.Cmd {
@@ -150,6 +152,7 @@ func (m AccountModel) updateList(msg tea.KeyMsg) (AccountModel, tea.Cmd) {
 				m.err = err.Error()
 				return m, nil
 			}
+			m.warning = st.Warning
 			if err := st.Remove(name); err != nil {
 				m.err = err.Error()
 				return m, nil
@@ -208,6 +211,7 @@ func (m AccountModel) updateAddForm(msg tea.KeyMsg) (AccountModel, tea.Cmd) {
 			m.err = err.Error()
 			return m, nil
 		}
+		m.warning = st.Warning
 		if err := st.Add(name, authToken, ct0); err != nil {
 			m.err = err.Error()
 			return m, nil
@@ -298,11 +302,11 @@ func (m AccountModel) viewList() string {
 	}
 
 	if m.err != "" {
-		return errorMsgStyle.Width(w).Padding(1, 1).Render("Error: " + m.err)
+		return joinWarningBlock(w, m.warning) + errorMsgStyle.Width(w).Padding(1, 1).Render("Error: "+m.err)
 	}
 
 	if len(m.accounts) == 0 {
-		return lipgloss.NewStyle().
+		return joinWarningBlock(w, m.warning) + lipgloss.NewStyle().
 			Foreground(colorMuted).
 			Background(colorDarkBg).
 			Padding(1, 1).
@@ -311,6 +315,7 @@ func (m AccountModel) viewList() string {
 	}
 
 	var b strings.Builder
+	b.WriteString(joinWarningBlock(w, m.warning))
 	b.WriteString(accountListHeaderStyle.Width(w).Render(fmt.Sprintf("%-24s %-6s %-16s", "NAME", "USES", "LAST USED")))
 	b.WriteString("\n")
 	for i, a := range m.accounts {
@@ -344,6 +349,7 @@ func (m AccountModel) viewAddForm() string {
 	}
 
 	var b strings.Builder
+	b.WriteString(joinWarningBlock(w, m.warning))
 	b.WriteString(accountHintStyle.Width(w).Render("Add a new account. Fields are saved locally only."))
 	b.WriteString("\n\n")
 
@@ -379,4 +385,12 @@ func (m AccountModel) accountBodyWidth() int {
 
 func fitAccountText(s string, max int) string {
 	return summarizeQueueNotice(s, max)
+}
+
+func joinWarningBlock(width int, warning string) string {
+	warning = strings.TrimSpace(warning)
+	if warning == "" {
+		return ""
+	}
+	return warningMsgStyle.Width(width).Render("Warning: "+warning) + "\n\n"
 }

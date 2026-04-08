@@ -11,6 +11,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/guzus/birdy/internal/state"
 	"github.com/muesli/termenv"
 )
 
@@ -541,6 +542,68 @@ func TestRenderCommandBarContentHistoryModeShowsLoadHelp(t *testing.T) {
 	}
 	if !contains(content, "/tmp/chat.md") {
 		t.Fatalf("expected selected file path, got %q", content)
+	}
+}
+
+func TestNewChatModelSurfacesRecoveryWarnings(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	configDir := filepath.Join(home, ".config", "birdy")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		t.Fatalf("mkdir config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "state.json"), []byte("{"), 0600); err != nil {
+		t.Fatalf("write corrupt state: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "accounts.json"), []byte("{"), 0600); err != nil {
+		t.Fatalf("write corrupt accounts: %v", err)
+	}
+
+	m := NewChatModel()
+	if !contains(m.warning, "corrupt state file") {
+		t.Fatalf("expected state recovery warning, got %q", m.warning)
+	}
+	if !contains(m.warning, "corrupt account store") {
+		t.Fatalf("expected store recovery warning, got %q", m.warning)
+	}
+
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 90, Height: 24})
+	content := m.renderCommandBarContent()
+	if !contains(content, "warning:") {
+		t.Fatalf("expected warning prefix in command bar, got %q", content)
+	}
+}
+
+func TestChatQueueNoticeOverridesRecoveryWarning(t *testing.T) {
+	m := NewChatModel()
+	m.warning = "recovered from corrupt state file"
+	m.queueNotice = "copy failed"
+
+	if got := m.commandBarQueueNotice(80); got != "copy failed" {
+		t.Fatalf("expected queue notice to win, got %q", got)
+	}
+}
+
+func TestNewChatModelLoadsRecoveredModelSelection(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	configDir := filepath.Join(home, ".config", "birdy")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		t.Fatalf("mkdir config: %v", err)
+	}
+	stPath := filepath.Join(configDir, "state.json")
+	loaded, err := state.LoadPath(stPath)
+	if err != nil {
+		t.Fatalf("load path: %v", err)
+	}
+	loaded.Model = "codex"
+	if err := loaded.Save(); err != nil {
+		t.Fatalf("save state: %v", err)
+	}
+
+	m := NewChatModel()
+	if m.model != "codex" {
+		t.Fatalf("expected model codex from state, got %q", m.model)
 	}
 }
 

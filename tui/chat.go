@@ -42,6 +42,7 @@ type ChatModel struct {
 	height                 int
 	ready                  bool
 	accountCount           int
+	warning                string
 	autoQueried            bool
 	cacheHomeSummaryOnDone bool
 	copied                 bool
@@ -130,14 +131,19 @@ func NewChatModel() ChatModel {
 	sp.Style = lipgloss.NewStyle().Foreground(colorBlue)
 
 	model := "sonnet"
-	if s, err := state.Load(); err == nil && s.Model != "" {
-		model = normalizeModelSelection(s.Model)
+	warning := ""
+	if s, err := state.Load(); err == nil {
+		if s.Model != "" {
+			model = normalizeModelSelection(s.Model)
+		}
+		warning = joinWarnings(warning, s.Warning)
 	}
 
 	m := ChatModel{
 		input:            ti,
 		spinner:          sp,
 		model:            model,
+		warning:          warning,
 		followOutput:     true,
 		hideHistory:      hideHistoryEnabled(),
 		markdownCache:    make(map[string]string, 128),
@@ -154,6 +160,7 @@ func (m *ChatModel) refreshAccountCount() {
 	st, err := store.Open()
 	if err == nil {
 		m.accountCount = st.Len()
+		m.warning = joinWarnings(m.warning, st.Warning)
 	}
 }
 
@@ -1031,10 +1038,18 @@ func (m ChatModel) commandBarQueueLabel(available int) string {
 }
 
 func (m ChatModel) commandBarQueueNotice(available int) string {
-	if available <= 0 || m.queueNotice == "" {
+	if available <= 0 {
 		return ""
 	}
-	return m.queueNotice
+	notice := m.queueNotice
+	if notice == "" && m.warning != "" {
+		warningWidth := available - 9
+		if warningWidth < 1 {
+			warningWidth = 1
+		}
+		notice = "warning: " + summarizeQueueNotice(m.warning, warningWidth)
+	}
+	return notice
 }
 
 func (m ChatModel) commandQueueState() string {

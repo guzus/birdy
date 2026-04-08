@@ -140,6 +140,9 @@ go install github.com/guzus/birdy@latest
 
 # Build locally
 git clone https://github.com/guzus/birdy.git && cd birdy && make build
+
+# Maintainer verification
+make verify
 ```
 
 If you install via `go install`, only the `birdy` binary is installed, so you still need [bird](https://github.com/steipete/bird) available on your PATH (or set `BIRDY_BIRD_PATH`).

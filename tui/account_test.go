@@ -3,6 +3,7 @@ package tui
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"unicode/utf8"
 
@@ -300,6 +301,32 @@ func TestAccountViewAddForm(t *testing.T) {
 	content := m.viewAddForm()
 	if content == "" {
 		t.Error("expected non-empty add form content")
+	}
+}
+
+func TestNewAccountModelSurfacesRecoveryWarning(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	configDir := filepath.Join(home, ".config", "birdy")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		t.Fatalf("mkdir config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "accounts.json"), []byte("{"), 0600); err != nil {
+		t.Fatalf("write corrupt accounts: %v", err)
+	}
+
+	m := NewAccountModel()
+	if !strings.Contains(m.warning, "corrupt account store") {
+		t.Fatalf("expected recovery warning, got %q", m.warning)
+	}
+
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	content := m.viewList()
+	if !strings.Contains(content, "Warning:") {
+		t.Fatalf("expected warning in account list, got %q", content)
+	}
+	if !strings.Contains(content, "No accounts configured") {
+		t.Fatalf("expected empty state content after recovery, got %q", content)
 	}
 }
 

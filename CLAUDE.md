@@ -6,6 +6,7 @@ Multi-account X/Twitter CLI proxy built in Go with a Bubble Tea TUI.
 
 - `go build ./...` — build all packages
 - `go test ./... -count=1` — run all tests (no cache)
+- `make verify` — run vet, full tests, and focused race tests
 - `go vet ./...` — static analysis
 - `go run . tui` — launch TUI (requires interactive TTY)
 

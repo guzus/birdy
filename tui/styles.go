@@ -14,6 +14,7 @@ var (
 	colorMuted      = lipgloss.Color("#7F90A5")
 	colorRed        = lipgloss.Color("#FF5C5C")
 	colorGreen      = lipgloss.Color("#17BF63")
+	colorWarn       = lipgloss.Color("#F5C451")
 	colorWhite      = lipgloss.Color("#FFFFFF")
 )
 
@@ -86,13 +87,13 @@ var (
 				Bold(true)
 
 	inverseSubtleLineStyle = lipgloss.NewStyle().
-					Foreground(colorDarkBg).
-					Background(colorLightFg)
+				Foreground(colorDarkBg).
+				Background(colorLightFg)
 
 	footerPathStyle = lipgloss.NewStyle().
-				Foreground(colorBorderSoft).
-				Background(colorDarkBg).
-				Italic(true)
+			Foreground(colorBorderSoft).
+			Background(colorDarkBg).
+			Italic(true)
 
 	scrollbarTrackStyle = lipgloss.NewStyle().
 				Foreground(colorBorderSoft).
@@ -122,6 +123,11 @@ var (
 			Background(colorDarkBg).
 			Bold(true)
 
+	warningMsgStyle = lipgloss.NewStyle().
+			Foreground(colorWarn).
+			Background(colorDarkBg).
+			Bold(true)
+
 	statusBarStyle = lipgloss.NewStyle().
 			Background(colorPanelAlt).
 			Foreground(colorMuted).
@@ -141,9 +147,9 @@ var (
 				Padding(0, 1)
 
 	accountSelectedStyle = lipgloss.NewStyle().
-			Foreground(colorBlue).
-			Background(colorPanelAlt).
-			Bold(true)
+				Foreground(colorBlue).
+				Background(colorPanelAlt).
+				Bold(true)
 
 	accountNormalStyle = lipgloss.NewStyle().
 				Foreground(colorLightFg).
@@ -155,8 +161,8 @@ var (
 				Bold(true)
 
 	accountHintStyle = lipgloss.NewStyle().
-			Foreground(colorMuted).
-			Background(colorDarkBg)
+				Foreground(colorMuted).
+				Background(colorDarkBg)
 
 	accountHeaderStyle = lipgloss.NewStyle().
 				Background(colorPanel).
