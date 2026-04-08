@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"strconv"
 	"strings"
 	"time"
 
@@ -143,14 +142,6 @@ func buildTurnPrompt(messages []chatMessage) string {
 	}
 
 	return strings.TrimSpace(b.String())
-}
-
-func truncatePromptText(s string, maxChars int) string {
-	if maxChars <= 0 || len(s) <= maxChars {
-		return s
-	}
-	trimmed := strings.TrimSpace(s[:maxChars])
-	return trimmed + " ...[truncated " + strconv.Itoa(len(s)-maxChars) + " chars]"
 }
 
 // Message types for Bubble Tea streaming

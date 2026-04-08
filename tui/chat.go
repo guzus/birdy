@@ -1292,20 +1292,6 @@ func (m *ChatModel) loadSelectedHistory() tea.Cmd {
 	})
 }
 
-func summarizeQueueNotice(s string, max int) string {
-	s = strings.Join(strings.Fields(strings.TrimSpace(s)), " ")
-	if max <= 0 {
-		return ""
-	}
-	if len(s) <= max {
-		return s
-	}
-	if max <= 3 {
-		return strings.Repeat(".", max)
-	}
-	return s[:max-3] + "..."
-}
-
 func composeTopRow(width int, left, right string) string {
 	if width <= 0 {
 		return ""

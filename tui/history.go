@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -95,7 +96,7 @@ func loadChatHistoryPreview(path string, maxBytes int) (string, error) {
 		return "", err
 	}
 	if maxBytes > 0 && len(raw) > maxBytes {
-		return string(raw[:maxBytes]) + "\n\n... (truncated)", nil
+		return truncateUTF8Bytes(string(raw), maxBytes) + "\n\n... (truncated)", nil
 	}
 	return string(raw), nil
 }
@@ -167,7 +168,14 @@ func loadChatHistoryMessages(path string) ([]chatMessage, error) {
 
 func chatHistoryFileLabel(path string) string {
 	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-	if ts, err := time.Parse("2006-01-02_150405", base); err == nil {
+	timestamp := base
+	if idx := strings.LastIndex(base, "-"); idx != -1 {
+		suffix := base[idx+1:]
+		if suffix != "" && strings.Trim(suffix, "0123456789") == "" {
+			timestamp = base[:idx]
+		}
+	}
+	if ts, err := time.Parse("2006-01-02_150405", timestamp); err == nil {
 		return ts.Format("2006-01-02 15:04:05")
 	}
 	return filepath.Base(path)
@@ -189,8 +197,6 @@ func saveChatHistory(messages []chatMessage) (string, error) {
 	}
 
 	now := time.Now()
-	filename := now.Format("2006-01-02_150405") + ".md"
-	path := filepath.Join(dir, filename)
 
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("# birdy chat — %s\n\n", now.Format("2006-01-02 15:04:05")))
@@ -214,8 +220,33 @@ func saveChatHistory(messages []chatMessage) (string, error) {
 		}
 	}
 
-	if err := os.WriteFile(path, []byte(b.String()), 0600); err != nil {
+	path, file, err := createChatHistoryFile(dir, now)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	if _, err := io.WriteString(file, b.String()); err != nil {
 		return "", fmt.Errorf("writing chat history: %w", err)
 	}
 	return path, nil
+}
+
+func createChatHistoryFile(dir string, now time.Time) (string, *os.File, error) {
+	base := now.Format("2006-01-02_150405")
+	for i := 0; i < 1000; i++ {
+		name := base
+		if i > 0 {
+			name = fmt.Sprintf("%s-%02d", base, i)
+		}
+		path := filepath.Join(dir, name+".md")
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+		if err == nil {
+			return path, f, nil
+		}
+		if os.IsExist(err) {
+			continue
+		}
+		return "", nil, fmt.Errorf("creating chat history file: %w", err)
+	}
+	return "", nil, fmt.Errorf("creating chat history file: exhausted filename attempts for %s", base)
 }

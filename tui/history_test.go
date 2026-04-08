@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestSaveChatHistoryEmpty(t *testing.T) {
@@ -157,6 +158,23 @@ func TestLoadChatHistoryPreviewTruncates(t *testing.T) {
 	}
 }
 
+func TestLoadChatHistoryPreviewKeepsUTF8Valid(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "chat.md")
+	content := "hello 안녕🙂 world"
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	got, err := loadChatHistoryPreview(path, len("hello 안"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !utf8.ValidString(got) {
+		t.Fatalf("expected valid utf-8 preview, got %q", got)
+	}
+}
+
 func TestLoadChatHistoryMessages(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "chat.md")
@@ -205,5 +223,36 @@ func TestChatHistoryFileLabelFromTimestamp(t *testing.T) {
 	got := chatHistoryFileLabel("/tmp/2026-02-11_123000.md")
 	if got != "2026-02-11 12:30:00" {
 		t.Fatalf("unexpected label: %q", got)
+	}
+}
+
+func TestChatHistoryFileLabelFromTimestampWithSuffix(t *testing.T) {
+	got := chatHistoryFileLabel("/tmp/2026-02-11_123000-01.md")
+	if got != "2026-02-11 12:30:00" {
+		t.Fatalf("unexpected label: %q", got)
+	}
+}
+
+func TestSaveChatHistoryDoesNotOverwriteSameSecond(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+
+	messages := []chatMessage{{role: "user", content: "hello"}}
+	first, err := saveChatHistory(messages)
+	if err != nil {
+		t.Fatalf("first save: %v", err)
+	}
+	second, err := saveChatHistory(messages)
+	if err != nil {
+		t.Fatalf("second save: %v", err)
+	}
+	if first == second {
+		t.Fatalf("expected unique history paths, both were %q", first)
+	}
+	if _, err := os.Stat(first); err != nil {
+		t.Fatalf("stat first: %v", err)
+	}
+	if _, err := os.Stat(second); err != nil {
+		t.Fatalf("stat second: %v", err)
 	}
 }
