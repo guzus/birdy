@@ -265,17 +265,17 @@ func handleAPIChat(inviteCode string) http.HandlerFunc {
 			exePath = "birdy"
 		}
 
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "keep-alive")
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("X-Accel-Buffering", "no")
-
 		flusher, ok := w.(http.Flusher)
 		if !ok {
 			writeJSON(w, http.StatusInternalServerError, apiError{OK: false, Error: "streaming unsupported"})
 			return
 		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Accel-Buffering", "no")
 
 		enc := json.NewEncoder(w)
 		emit := func(ev claude.Event) {

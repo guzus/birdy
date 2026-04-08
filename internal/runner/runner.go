@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/guzus/birdy/internal/store"
 )
@@ -76,7 +77,7 @@ func runWithIO(account *store.Account, args []string, stdin any, stdout any, std
 //   - bird / birdy-bird
 //   - bird_<goos>_<goarch> / birdy-bird_<goos>_<goarch>
 func findBird() (string, error) {
-	if p := os.Getenv("BIRDY_BIRD_PATH"); p != "" {
+	if p := strings.TrimSpace(os.Getenv("BIRDY_BIRD_PATH")); p != "" {
 		if err := assertUsableBinary(p); err != nil {
 			return "", fmt.Errorf("BIRDY_BIRD_PATH=%q is not usable: %w", p, err)
 		}

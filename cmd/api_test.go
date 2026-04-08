@@ -11,6 +11,30 @@ import (
 	"testing"
 )
 
+type noFlushRecorder struct {
+	header http.Header
+	body   bytes.Buffer
+	status int
+}
+
+func (r *noFlushRecorder) Header() http.Header {
+	if r.header == nil {
+		r.header = make(http.Header)
+	}
+	return r.header
+}
+
+func (r *noFlushRecorder) Write(p []byte) (int, error) {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	return r.body.Write(p)
+}
+
+func (r *noFlushRecorder) WriteHeader(status int) {
+	r.status = status
+}
+
 func TestAPIAuthHeader(t *testing.T) {
 	r := httptest.NewRequest("POST", "http://example.com/api/command", bytes.NewBufferString(`{"command":"home"}`))
 	r.Header.Set("Authorization", "Bearer birdy")
@@ -115,6 +139,25 @@ func TestAPIChatUnauthorized(t *testing.T) {
 	}
 }
 
+func TestAPIChatStreamingUnsupportedReturnsJSONError(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/api/chat", bytes.NewBufferString(`{"prompt":"hello"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Invite-Code", "birdy")
+
+	rr := &noFlushRecorder{}
+	handleAPIChat("birdy").ServeHTTP(rr, req)
+
+	if rr.status != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d body=%q", rr.status, rr.body.String())
+	}
+	if got := rr.Header().Get("Content-Type"); got != "application/json; charset=utf-8" {
+		t.Fatalf("expected json content type, got %q", got)
+	}
+	if strings.Contains(rr.body.String(), "event:") {
+		t.Fatalf("expected JSON error response, got SSE body %q", rr.body.String())
+	}
+}
+
 func TestAPICommandRunsBirdThroughHostedMux(t *testing.T) {
 	birdPath := writeFakeBirdScript(t, strings.Join([]string{
 		"#!/bin/sh",
@@ -171,6 +214,24 @@ func TestAPICommandRejectsUnsupportedCommand(t *testing.T) {
 	}
 	if !strings.Contains(rr.Body.String(), "unsupported command") {
 		t.Fatalf("expected unsupported command error, got %q", rr.Body.String())
+	}
+}
+
+func TestAPICommandRejectsWriteCommandsInReadOnlyMode(t *testing.T) {
+	t.Setenv("BIRDY_READ_ONLY", "1")
+
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/api/command", bytes.NewBufferString(`{"command":"tweet","args":["hi"]}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Invite-Code", "birdy")
+
+	rr := httptest.NewRecorder()
+	handleAPICommand("birdy").ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d body=%q", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "disabled in read-only mode") {
+		t.Fatalf("expected read-only error, got %q", rr.Body.String())
 	}
 }
 
