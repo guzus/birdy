@@ -88,6 +88,8 @@ func BuildArgs(prompt, model, birdyCmd string) []string {
 		"exec",
 		"--json",
 		"--skip-git-repo-check",
+		"--sandbox",
+		"danger-full-access",
 	}
 	if resolved := ResolveModel(model); resolved != "" {
 		args = append(args, "--model", resolved)

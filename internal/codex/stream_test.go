@@ -40,6 +40,9 @@ func TestBuildArgsAddsWritableDirsAndPromptRules(t *testing.T) {
 	args := BuildArgs("continue", "codex", "birdy")
 	joined := strings.Join(args, "\n")
 
+	if !strings.Contains(joined, "--sandbox\ndanger-full-access") {
+		t.Fatalf("expected danger-full-access sandbox, got %q", joined)
+	}
 	if !strings.Contains(joined, "--add-dir") {
 		t.Fatalf("expected add-dir flags, got %q", joined)
 	}
