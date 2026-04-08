@@ -7,6 +7,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"github.com/guzus/birdy/internal/state"
 	"github.com/guzus/birdy/internal/store"
 	"github.com/spf13/cobra"
 )
@@ -23,6 +24,22 @@ func ensureAccountStoreWritable(st *store.Store) error {
 		return nil
 	}
 	return fmt.Errorf("account store is env-backed only; unset BIRDY_ACCOUNTS or create ~/.config/birdy/accounts.json to add, update, or remove accounts")
+}
+
+func clearRemovedAccountFromState(name string) {
+	rs, err := state.Load()
+	if err != nil {
+		printWarning(fmt.Sprintf("removed account %q but failed to load rotation state: %v", name, err))
+		return
+	}
+	printStateWarning(rs)
+	if rs.LastUsedName != name {
+		return
+	}
+	rs.LastUsedName = ""
+	if err := rs.Save(); err != nil {
+		printWarning(fmt.Sprintf("removed account %q but failed to clear last-used state: %v", name, err))
+	}
 }
 
 var accountAddCmd = &cobra.Command{
@@ -130,6 +147,7 @@ var accountRemoveCmd = &cobra.Command{
 		if err := st.Save(); err != nil {
 			return err
 		}
+		clearRemovedAccountFromState(name)
 
 		fmt.Printf("Account %q removed.\n", name)
 		return nil

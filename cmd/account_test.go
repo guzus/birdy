@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/guzus/birdy/internal/state"
 	"github.com/guzus/birdy/internal/store"
 )
 
@@ -174,5 +175,27 @@ func TestAccountRemoveTrimsNameBeforeSuccessMessage(t *testing.T) {
 	}
 	if !strings.Contains(string(out), `Account "alpha" removed.`) {
 		t.Fatalf("expected trimmed success message, got %q", string(out))
+	}
+}
+
+func TestAccountRemoveClearsLastUsedState(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeAccountFixtureFile(t, home, []map[string]string{
+		{"name": "alpha", "auth_token": "token-a", "ct0": "ct0-a"},
+		{"name": "beta", "auth_token": "token-b", "ct0": "ct0-b"},
+	})
+	writeStateFixture(t, home, "alpha", "sonnet")
+
+	if err := accountRemoveCmd.RunE(accountRemoveCmd, []string{"alpha"}); err != nil {
+		t.Fatalf("expected remove to succeed, got %v", err)
+	}
+
+	loaded, err := state.Load()
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if loaded.LastUsedName != "" {
+		t.Fatalf("expected last-used state to be cleared, got %q", loaded.LastUsedName)
 	}
 }

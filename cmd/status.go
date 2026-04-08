@@ -35,7 +35,11 @@ var statusCmd = &cobra.Command{
 		fmt.Printf("Strategy:   %s\n", strategyFlag)
 
 		if rs.LastUsedName != "" {
-			fmt.Printf("Last used:  %s\n", rs.LastUsedName)
+			lastUsed := rs.LastUsedName
+			if !accountsContainName(accounts, rs.LastUsedName) {
+				lastUsed += " (not configured)"
+			}
+			fmt.Printf("Last used:  %s\n", lastUsed)
 		} else {
 			fmt.Printf("Last used:  (none)\n")
 		}
@@ -51,4 +55,13 @@ var statusCmd = &cobra.Command{
 
 func init() {
 	rootCmd.AddCommand(statusCmd)
+}
+
+func accountsContainName(accounts []store.Account, name string) bool {
+	for _, account := range accounts {
+		if account.Name == name {
+			return true
+		}
+	}
+	return false
 }
