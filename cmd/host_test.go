@@ -350,3 +350,47 @@ func TestHostedWSSmokeWithInjectedChild(t *testing.T) {
 		t.Fatalf("expected fake tui output, got %q", string(payload))
 	}
 }
+
+func TestHostedWSReportsChildStartFailure(t *testing.T) {
+	t.Setenv("BIRDY_HOST_TUI_PATH", filepath.Join(t.TempDir(), "missing-binary"))
+	t.Setenv("BIRDY_HOST_TUI_ARGS", "")
+
+	webDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(webDir, "index.html"), []byte("<html>host</html>"), 0600); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+
+	server := httptest.NewServer(buildHostedMux("birdy", nil, webDir))
+	defer server.Close()
+
+	header := http.Header{}
+	header.Set("Origin", server.URL)
+	conn := dialTestWebsocket(t, server.URL+"/ws", header)
+	defer conn.Close()
+
+	if err := conn.WriteJSON(hostedWSMessage{Type: "auth", Code: "birdy"}); err != nil {
+		t.Fatalf("write auth: %v", err)
+	}
+	var auth hostedWSAuthMessage
+	if err := conn.ReadJSON(&auth); err != nil {
+		t.Fatalf("read auth: %v", err)
+	}
+	if !auth.OK {
+		t.Fatalf("expected auth ok, got %#v", auth)
+	}
+
+	if err := conn.WriteJSON(hostedWSMessage{Type: "resize", Cols: 80, Rows: 24}); err != nil {
+		t.Fatalf("write resize: %v", err)
+	}
+
+	msgType, payload, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read hosted failure output: %v", err)
+	}
+	if msgType != websocket.TextMessage {
+		t.Fatalf("expected text failure message, got type=%d payload=%q", msgType, string(payload))
+	}
+	if !strings.Contains(string(payload), "failed to start birdy tui") {
+		t.Fatalf("expected startup failure notice, got %q", string(payload))
+	}
+}

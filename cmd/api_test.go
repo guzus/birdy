@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -111,5 +112,88 @@ func TestAPIChatUnauthorized(t *testing.T) {
 
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d body=%q", rr.Code, rr.Body.String())
+	}
+}
+
+func TestAPICommandRunsBirdThroughHostedMux(t *testing.T) {
+	birdPath := writeFakeBirdScript(t, strings.Join([]string{
+		"#!/bin/sh",
+		"echo \"bird args:$*\"",
+		"echo \"AUTH_TOKEN=${AUTH_TOKEN}\"",
+		"echo \"CT0=${CT0}\"",
+	}, "\n"))
+
+	home := t.TempDir()
+	writeAccountsFixture(t, home, []map[string]string{
+		{"name": "alpha", "auth_token": "token-a", "ct0": "ct0-a"},
+	})
+
+	t.Setenv("HOME", home)
+	t.Setenv("BIRDY_BIRD_PATH", birdPath)
+
+	reqBody := bytes.NewBufferString(`{"command":"home","account":"alpha"}`)
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/api/command", reqBody)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer birdy")
+
+	rr := httptest.NewRecorder()
+	buildHostedMux("birdy", nil, t.TempDir()).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%q", rr.Code, rr.Body.String())
+	}
+
+	var resp apiCommandResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v body=%q", err, rr.Body.String())
+	}
+	if !resp.OK || resp.Account != "alpha" || resp.ExitCode != 0 {
+		t.Fatalf("unexpected response: %#v", resp)
+	}
+	if !strings.Contains(resp.Stdout, "bird args:home") {
+		t.Fatalf("expected forwarded bird args, got %q", resp.Stdout)
+	}
+	if !strings.Contains(resp.Stdout, "AUTH_TOKEN=token-a") || !strings.Contains(resp.Stdout, "CT0=ct0-a") {
+		t.Fatalf("expected auth env in stdout, got %q", resp.Stdout)
+	}
+}
+
+func TestAPICommandRejectsUnsupportedCommand(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/api/command", bytes.NewBufferString(`{"command":"account","args":["list"]}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Invite-Code", "birdy")
+
+	rr := httptest.NewRecorder()
+	handleAPICommand("birdy").ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%q", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "unsupported command") {
+		t.Fatalf("expected unsupported command error, got %q", rr.Body.String())
+	}
+}
+
+func writeFakeBirdScript(t *testing.T, contents string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "bird")
+	if err := os.WriteFile(path, []byte(contents), 0755); err != nil {
+		t.Fatalf("write fake bird: %v", err)
+	}
+	return path
+}
+
+func writeAccountsFixture(t *testing.T, home string, accounts any) {
+	t.Helper()
+	configDir := filepath.Join(home, ".config", "birdy")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	data, err := json.Marshal(accounts)
+	if err != nil {
+		t.Fatalf("marshal accounts: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "accounts.json"), data, 0600); err != nil {
+		t.Fatalf("write accounts fixture: %v", err)
 	}
 }
