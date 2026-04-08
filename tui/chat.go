@@ -433,6 +433,8 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			m.cacheHomeSummaryOnDone = false
 			m.refreshViewport()
 			return m, nil
+		} else if err != nil {
+			m.warning = joinWarnings(m.warning, fmt.Sprintf("failed to load home summary cache: %v", err))
 		}
 		return m, m.beginPrompt(homeSummaryPrompt)
 
@@ -503,7 +505,9 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 				if m.nowFn != nil {
 					now = m.nowFn()
 				}
-				_ = saveHomeSummaryCache(summary, now)
+				if err := saveHomeSummaryCache(summary, now); err != nil {
+					m.warning = joinWarnings(m.warning, fmt.Sprintf("failed to save home summary cache: %v", err))
+				}
 			}
 		}
 		if !m.hideHistory {

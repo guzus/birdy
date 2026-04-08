@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -132,5 +134,55 @@ func TestClaudeDoneSavesHomeSummaryCache(t *testing.T) {
 	}
 	if summary != "fresh summary from live run" {
 		t.Fatalf("expected saved summary, got %q", summary)
+	}
+}
+
+func TestAutoQuerySurfacesHomeSummaryCacheLoadFailure(t *testing.T) {
+	validHome := t.TempDir()
+	t.Setenv("HOME", validHome)
+	now := time.Date(2026, 2, 12, 12, 0, 0, 0, time.UTC)
+
+	m := NewChatModel()
+	m.nowFn = func() time.Time { return now }
+	m.accountCount = 1
+
+	homeFile := filepath.Join(t.TempDir(), "home-file")
+	if err := os.WriteFile(homeFile, []byte("not-a-directory"), 0600); err != nil {
+		t.Fatalf("write home file: %v", err)
+	}
+	t.Setenv("HOME", homeFile)
+
+	m, cmd := m.Update(autoQueryMsg{})
+	if cmd == nil {
+		t.Fatal("expected live prompt command after cache load failure")
+	}
+	if !m.streaming {
+		t.Fatal("expected streaming=true after cache load failure fallback")
+	}
+	if !strings.Contains(m.warning, "failed to load home summary cache") {
+		t.Fatalf("expected cache load warning, got %q", m.warning)
+	}
+}
+
+func TestClaudeDoneSurfacesHomeSummaryCacheSaveFailure(t *testing.T) {
+	validHome := t.TempDir()
+	t.Setenv("HOME", validHome)
+	now := time.Date(2026, 2, 12, 12, 0, 0, 0, time.UTC)
+
+	m := NewChatModel()
+	m.nowFn = func() time.Time { return now }
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	_ = m.beginPrompt(homeSummaryPrompt)
+	m.messages = append(m.messages, chatMessage{role: "assistant", content: "fresh summary from live run"})
+
+	homeFile := filepath.Join(t.TempDir(), "home-file")
+	if err := os.WriteFile(homeFile, []byte("not-a-directory"), 0600); err != nil {
+		t.Fatalf("write home file: %v", err)
+	}
+	t.Setenv("HOME", homeFile)
+
+	m, _ = m.Update(claudeDoneMsg{})
+	if !strings.Contains(m.warning, "failed to save home summary cache") {
+		t.Fatalf("expected cache save warning, got %q", m.warning)
 	}
 }
