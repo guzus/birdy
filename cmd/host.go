@@ -3,6 +3,7 @@ package cmd
 import (
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -142,10 +143,12 @@ func serveHostedTTY(w http.ResponseWriter, r *http.Request, inviteCode string) {
 	// Wait for the browser to send its terminal size before starting the TUI.
 	initSize := pty.Winsize{Cols: 120, Rows: 36}
 	limiter := hostWSRateLimiter{}
+	startChild := true
 	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 	for {
 		msgType, payload, readErr := conn.ReadMessage()
 		if readErr != nil {
+			startChild = shouldStartHostedTTYAfterBootstrapError(readErr)
 			break
 		}
 		if !limiter.allow(time.Now(), hostWSMaxMsgsPerSecond) {
@@ -167,6 +170,9 @@ func serveHostedTTY(w http.ResponseWriter, r *http.Request, inviteCode string) {
 		}
 	}
 	conn.SetReadDeadline(time.Time{})
+	if !startChild {
+		return
+	}
 
 	child := hostedTTYCommand()
 
@@ -382,6 +388,20 @@ func authenticateHostedWS(conn *websocket.Conn, inviteCode string) bool {
 		return false
 	}
 	return true
+}
+
+func shouldStartHostedTTYAfterBootstrapError(err error) bool {
+	if err == nil {
+		return true
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+		return false
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	return false
 }
 
 func ensureHostInviteCode(flagValue string) (string, error) {

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -393,4 +394,54 @@ func TestHostedWSReportsChildStartFailure(t *testing.T) {
 	if !strings.Contains(string(payload), "failed to start birdy tui") {
 		t.Fatalf("expected startup failure notice, got %q", string(payload))
 	}
+}
+
+func TestHostedWSDisconnectBeforeResizeDoesNotStartChild(t *testing.T) {
+	scriptDir := t.TempDir()
+	markerPath := filepath.Join(scriptDir, "started.txt")
+	scriptPath := filepath.Join(scriptDir, "fake-host-tui.sh")
+	script := strings.Join([]string{
+		"#!/bin/sh",
+		"echo started > " + shellQuote(markerPath),
+		"sleep 0.2",
+	}, "\n")
+	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+		t.Fatalf("write fake tui script: %v", err)
+	}
+
+	t.Setenv("BIRDY_HOST_TUI_PATH", scriptPath)
+	t.Setenv("BIRDY_HOST_TUI_ARGS", "")
+
+	server := httptest.NewServer(buildHostedMux("birdy", nil, t.TempDir()))
+	defer server.Close()
+
+	header := http.Header{}
+	header.Set("Origin", server.URL)
+	conn := dialTestWebsocket(t, server.URL+"/ws", header)
+
+	if err := conn.WriteJSON(hostedWSMessage{Type: "auth", Code: "birdy"}); err != nil {
+		t.Fatalf("write auth: %v", err)
+	}
+	var auth hostedWSAuthMessage
+	if err := conn.ReadJSON(&auth); err != nil {
+		t.Fatalf("read auth: %v", err)
+	}
+	if !auth.OK {
+		t.Fatalf("expected auth ok, got %#v", auth)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatalf("close websocket: %v", err)
+	}
+
+	time.Sleep(250 * time.Millisecond)
+
+	if _, err := os.Stat(markerPath); err == nil {
+		t.Fatalf("expected hosted child not to start after disconnect, marker %s exists", markerPath)
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("stat marker: %v", err)
+	}
+}
+
+func shellQuote(v string) string {
+	return "'" + strings.ReplaceAll(v, "'", "'\\''") + "'"
 }
