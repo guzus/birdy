@@ -164,6 +164,29 @@ func TestMakeHostedWebHandlerRejectsNonGetMethods(t *testing.T) {
 	}
 }
 
+func TestBuildHostedMuxServesHealthzAndStatic(t *testing.T) {
+	webDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(webDir, "index.html"), []byte("<html>mux</html>"), 0600); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+
+	mux := buildHostedMux("birdy", nil, webDir)
+
+	healthRR := httptest.NewRecorder()
+	healthReq := httptest.NewRequest(http.MethodGet, "http://example.com/healthz", nil)
+	mux.ServeHTTP(healthRR, healthReq)
+	if healthRR.Code != http.StatusOK || strings.TrimSpace(healthRR.Body.String()) != "ok" {
+		t.Fatalf("expected healthz ok, got code=%d body=%q", healthRR.Code, healthRR.Body.String())
+	}
+
+	indexRR := httptest.NewRecorder()
+	indexReq := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
+	mux.ServeHTTP(indexRR, indexReq)
+	if indexRR.Code != http.StatusOK || !strings.Contains(indexRR.Body.String(), "<html>mux</html>") {
+		t.Fatalf("expected static index, got code=%d body=%q", indexRR.Code, indexRR.Body.String())
+	}
+}
+
 func TestAuthenticateHostedWSSucceeds(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := hostUpgrader.Upgrade(w, r, nil)
@@ -257,6 +280,9 @@ func dialTestWebsocket(t *testing.T, serverURL string, header http.Header) *webs
 }
 
 func wsURL(serverURL string) string {
+	if strings.HasPrefix(serverURL, "ws://") || strings.HasPrefix(serverURL, "wss://") {
+		return serverURL
+	}
 	return "ws" + strings.TrimPrefix(serverURL, "http")
 }
 
@@ -267,5 +293,60 @@ func TestHostedWSAuthMessageJSONShape(t *testing.T) {
 	}
 	if !strings.Contains(string(data), `"type":"auth"`) || !strings.Contains(string(data), `"ok":true`) {
 		t.Fatalf("unexpected auth json: %s", data)
+	}
+}
+
+func TestHostedWSSmokeWithInjectedChild(t *testing.T) {
+	scriptDir := t.TempDir()
+	scriptPath := filepath.Join(scriptDir, "fake-host-tui.sh")
+	script := strings.Join([]string{
+		"#!/bin/sh",
+		"printf 'READY FROM FAKE TUI\\n'",
+		"sleep 0.1",
+	}, "\n")
+	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+		t.Fatalf("write fake tui script: %v", err)
+	}
+
+	t.Setenv("BIRDY_HOST_TUI_PATH", scriptPath)
+	t.Setenv("BIRDY_HOST_TUI_ARGS", "")
+
+	webDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(webDir, "index.html"), []byte("<html>host</html>"), 0600); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+
+	server := httptest.NewServer(buildHostedMux("birdy", nil, webDir))
+	defer server.Close()
+
+	header := http.Header{}
+	header.Set("Origin", server.URL)
+	conn := dialTestWebsocket(t, server.URL+"/ws", header)
+	defer conn.Close()
+
+	if err := conn.WriteJSON(hostedWSMessage{Type: "auth", Code: "birdy"}); err != nil {
+		t.Fatalf("write auth: %v", err)
+	}
+	var auth hostedWSAuthMessage
+	if err := conn.ReadJSON(&auth); err != nil {
+		t.Fatalf("read auth: %v", err)
+	}
+	if !auth.OK {
+		t.Fatalf("expected auth ok, got %#v", auth)
+	}
+
+	if err := conn.WriteJSON(hostedWSMessage{Type: "resize", Cols: 80, Rows: 24}); err != nil {
+		t.Fatalf("write resize: %v", err)
+	}
+
+	msgType, payload, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read hosted output: %v", err)
+	}
+	if msgType != websocket.BinaryMessage {
+		t.Fatalf("expected binary output, got type=%d payload=%q", msgType, string(payload))
+	}
+	if !strings.Contains(string(payload), "READY FROM FAKE TUI") {
+		t.Fatalf("expected fake tui output, got %q", string(payload))
 	}
 }

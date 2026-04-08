@@ -52,26 +52,9 @@ var hostCmd = &cobra.Command{
 			fmt.Fprintf(cmd.OutOrStdout(), "web client: %s\n", webDir)
 		}
 
-		mux := http.NewServeMux()
-		mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-			_, _ = io.WriteString(w, "ok")
-		})
-		mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
-			if !isHostOriginAllowed(r, allowedOrigins) {
-				http.Error(w, "forbidden origin", http.StatusForbidden)
-				return
-			}
-			serveHostedTTY(w, r, inviteCode)
-		})
-		mux.HandleFunc("/api/command", handleAPICommand(inviteCode))
-		mux.HandleFunc("/api/chat", handleAPIChat(inviteCode))
-
-		mux.Handle("/", makeHostedWebHandler(webDir))
-
 		server := &http.Server{
 			Addr:              hostAddrFlag,
-			Handler:           mux,
+			Handler:           buildHostedMux(inviteCode, allowedOrigins, webDir),
 			ReadHeaderTimeout: 5 * time.Second,
 			IdleTimeout:       60 * time.Second,
 		}
@@ -105,6 +88,25 @@ var hostUpgrader = websocket.Upgrader{
 type hostWSRateLimiter struct {
 	windowStart time.Time
 	count       int
+}
+
+func buildHostedMux(inviteCode string, allowedOrigins map[string]struct{}, webDir string) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = io.WriteString(w, "ok")
+	})
+	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		if !isHostOriginAllowed(r, allowedOrigins) {
+			http.Error(w, "forbidden origin", http.StatusForbidden)
+			return
+		}
+		serveHostedTTY(w, r, inviteCode)
+	})
+	mux.HandleFunc("/api/command", handleAPICommand(inviteCode))
+	mux.HandleFunc("/api/chat", handleAPIChat(inviteCode))
+	mux.Handle("/", makeHostedWebHandler(webDir))
+	return mux
 }
 
 func (l *hostWSRateLimiter) allow(now time.Time, limit int) bool {
@@ -166,17 +168,7 @@ func serveHostedTTY(w http.ResponseWriter, r *http.Request, inviteCode string) {
 	}
 	conn.SetReadDeadline(time.Time{})
 
-	exePath, err := os.Executable()
-	if err != nil || strings.TrimSpace(exePath) == "" {
-		exePath = "birdy"
-	}
-
-	child := exec.Command(exePath, "tui")
-	childEnv := os.Environ()
-	if strings.TrimSpace(os.Getenv("BIRDY_TUI_HIDE_HISTORY")) == "" {
-		childEnv = append(childEnv, "BIRDY_TUI_HIDE_HISTORY=1")
-	}
-	child.Env = append(childEnv, "BIRDY_TUI_MOUSE=1")
+	child := hostedTTYCommand()
 
 	ptmx, err := pty.StartWithSize(child, &initSize)
 	if err != nil {
@@ -335,6 +327,30 @@ func serveHostedTTY(w http.ResponseWriter, r *http.Request, inviteCode string) {
 			}
 		}
 	}
+}
+
+func hostedTTYCommand() *exec.Cmd {
+	exePath := strings.TrimSpace(os.Getenv("BIRDY_HOST_TUI_PATH"))
+	if exePath == "" {
+		if resolved, err := os.Executable(); err == nil && strings.TrimSpace(resolved) != "" {
+			exePath = resolved
+		} else {
+			exePath = "birdy"
+		}
+	}
+
+	args := []string{"tui"}
+	if rawArgs := strings.TrimSpace(os.Getenv("BIRDY_HOST_TUI_ARGS")); rawArgs != "" {
+		args = strings.Fields(rawArgs)
+	}
+
+	child := exec.Command(exePath, args...)
+	childEnv := os.Environ()
+	if strings.TrimSpace(os.Getenv("BIRDY_TUI_HIDE_HISTORY")) == "" {
+		childEnv = append(childEnv, "BIRDY_TUI_HIDE_HISTORY=1")
+	}
+	child.Env = append(childEnv, "BIRDY_TUI_MOUSE=1")
+	return child
 }
 
 func authenticateHostedWS(conn *websocket.Conn, inviteCode string) bool {
