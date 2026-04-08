@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 	"text/tabwriter"
 
@@ -62,7 +61,7 @@ var accountAddCmd = &cobra.Command{
 		authToken, _ := cmd.Flags().GetString("auth-token")
 		ct0, _ := cmd.Flags().GetString("ct0")
 
-		reader := bufio.NewReader(os.Stdin)
+		reader := bufio.NewReader(cmd.InOrStdin())
 
 		if authToken == "" {
 			_, _ = fmt.Fprint(out, "auth_token: ")
@@ -180,7 +179,7 @@ var accountUpdateCmd = &cobra.Command{
 		authToken, _ := cmd.Flags().GetString("auth-token")
 		ct0, _ := cmd.Flags().GetString("ct0")
 
-		reader := bufio.NewReader(os.Stdin)
+		reader := bufio.NewReader(cmd.InOrStdin())
 
 		if authToken == "" {
 			_, _ = fmt.Fprint(out, "auth_token: ")

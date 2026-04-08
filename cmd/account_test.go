@@ -220,6 +220,45 @@ func TestAccountAddRejectsReadOnlyMode(t *testing.T) {
 	}
 }
 
+func TestAccountAddReadsPromptValuesFromCommandInput(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	if err := accountAddCmd.Flags().Set("auth-token", ""); err != nil {
+		t.Fatalf("reset auth-token: %v", err)
+	}
+	if err := accountAddCmd.Flags().Set("ct0", ""); err != nil {
+		t.Fatalf("reset ct0: %v", err)
+	}
+
+	var out bytes.Buffer
+	accountAddCmd.SetIn(strings.NewReader("token-from-input\nct0-from-input\n"))
+	accountAddCmd.SetOut(&out)
+
+	if err := accountAddCmd.RunE(accountAddCmd, []string{"prompt-user"}); err != nil {
+		t.Fatalf("expected add to succeed, got %v", err)
+	}
+
+	if !strings.Contains(out.String(), "auth_token: ") || !strings.Contains(out.String(), "ct0: ") {
+		t.Fatalf("expected prompts in output, got %q", out.String())
+	}
+	if !strings.Contains(out.String(), `Account "prompt-user" added.`) {
+		t.Fatalf("expected success output, got %q", out.String())
+	}
+
+	st, err := store.Open()
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	acct, err := st.Get("prompt-user")
+	if err != nil {
+		t.Fatalf("expected prompted account to be persisted, got %v", err)
+	}
+	if acct.AuthToken != "token-from-input" || acct.CT0 != "ct0-from-input" {
+		t.Fatalf("unexpected stored credentials: %+v", acct)
+	}
+}
+
 func TestAccountRemoveRejectsReadOnlyMode(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -262,5 +301,47 @@ func TestAccountUpdateRejectsReadOnlyMode(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "read-only mode") {
 		t.Fatalf("expected read-only error, got %v", err)
+	}
+}
+
+func TestAccountUpdateReadsPromptValuesFromCommandInput(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeAccountFixtureFile(t, home, []map[string]string{
+		{"name": "alpha", "auth_token": "old-token", "ct0": "old-ct0"},
+	})
+
+	if err := accountUpdateCmd.Flags().Set("auth-token", ""); err != nil {
+		t.Fatalf("reset auth-token: %v", err)
+	}
+	if err := accountUpdateCmd.Flags().Set("ct0", ""); err != nil {
+		t.Fatalf("reset ct0: %v", err)
+	}
+
+	var out bytes.Buffer
+	accountUpdateCmd.SetIn(strings.NewReader("new-token\nnew-ct0\n"))
+	accountUpdateCmd.SetOut(&out)
+
+	if err := accountUpdateCmd.RunE(accountUpdateCmd, []string{"alpha"}); err != nil {
+		t.Fatalf("expected update to succeed, got %v", err)
+	}
+
+	if !strings.Contains(out.String(), "auth_token: ") || !strings.Contains(out.String(), "ct0: ") {
+		t.Fatalf("expected prompts in output, got %q", out.String())
+	}
+	if !strings.Contains(out.String(), `Account "alpha" updated.`) {
+		t.Fatalf("expected success output, got %q", out.String())
+	}
+
+	st, err := store.Open()
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	acct, err := st.Get("alpha")
+	if err != nil {
+		t.Fatalf("expected updated account to exist, got %v", err)
+	}
+	if acct.AuthToken != "new-token" || acct.CT0 != "new-ct0" {
+		t.Fatalf("unexpected stored credentials: %+v", acct)
 	}
 }
