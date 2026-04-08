@@ -9,6 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/guzus/birdy/internal/state"
+	"github.com/guzus/birdy/internal/store"
 )
 
 type noFlushRecorder struct {
@@ -390,6 +393,104 @@ func TestAPICommandIncludesRecoveryWarningsInStderr(t *testing.T) {
 	}
 	if !strings.Contains(resp.Stderr, "recovered from corrupt state file") {
 		t.Fatalf("expected state recovery warning, got %q", resp.Stderr)
+	}
+}
+
+func TestAPICommandDoesNotPersistUsageOrRotationOnRunnerError(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeAccountsFixture(t, home, []map[string]any{
+		{"name": "alpha", "auth_token": "token-a", "ct0": "ct0-a", "use_count": 0},
+		{"name": "beta", "auth_token": "token-b", "ct0": "ct0-b", "use_count": 0},
+	})
+	writeStateFixture(t, home, "alpha", "sonnet")
+	t.Setenv("BIRDY_BIRD_PATH", filepath.Join(t.TempDir(), "missing-bird"))
+
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/api/command", bytes.NewBufferString(`{"command":"home","strategy":"round-robin"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Invite-Code", "birdy")
+
+	rr := httptest.NewRecorder()
+	handleAPICommand("birdy").ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d body=%q", rr.Code, rr.Body.String())
+	}
+
+	st, err := store.Open()
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	alpha, err := st.Get("alpha")
+	if err != nil {
+		t.Fatalf("get alpha: %v", err)
+	}
+	beta, err := st.Get("beta")
+	if err != nil {
+		t.Fatalf("get beta: %v", err)
+	}
+	if alpha.UseCount != 0 || beta.UseCount != 0 {
+		t.Fatalf("expected no usage increments on runner error, alpha=%d beta=%d", alpha.UseCount, beta.UseCount)
+	}
+
+	loadedState, err := state.Load()
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if loadedState.LastUsedName != "alpha" {
+		t.Fatalf("expected last-used state unchanged on runner error, got %q", loadedState.LastUsedName)
+	}
+}
+
+func TestAPICommandPersistsUsageAndRotationAfterSuccess(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeAccountsFixture(t, home, []map[string]any{
+		{"name": "alpha", "auth_token": "token-a", "ct0": "ct0-a", "use_count": 0},
+		{"name": "beta", "auth_token": "token-b", "ct0": "ct0-b", "use_count": 0},
+	})
+	writeStateFixture(t, home, "alpha", "sonnet")
+	t.Setenv("BIRDY_BIRD_PATH", writeFakeBirdScript(t, "#!/bin/sh\nexit 0\n"))
+
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/api/command", bytes.NewBufferString(`{"command":"home","strategy":"round-robin"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Invite-Code", "birdy")
+
+	rr := httptest.NewRecorder()
+	handleAPICommand("birdy").ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%q", rr.Code, rr.Body.String())
+	}
+
+	st, err := store.Open()
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	alpha, err := st.Get("alpha")
+	if err != nil {
+		t.Fatalf("get alpha: %v", err)
+	}
+	beta, err := st.Get("beta")
+	if err != nil {
+		t.Fatalf("get beta: %v", err)
+	}
+	if alpha.UseCount != 0 {
+		t.Fatalf("expected alpha unchanged, got use_count=%d", alpha.UseCount)
+	}
+	if beta.UseCount != 1 {
+		t.Fatalf("expected beta usage incremented once, got %d", beta.UseCount)
+	}
+	if beta.LastUsed.IsZero() {
+		t.Fatal("expected beta last_used to be set")
+	}
+
+	loadedState, err := state.Load()
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if loadedState.LastUsedName != "beta" {
+		t.Fatalf("expected last-used state updated after success, got %q", loadedState.LastUsedName)
 	}
 }
 

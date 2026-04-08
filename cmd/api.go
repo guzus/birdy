@@ -192,6 +192,8 @@ func handleAPICommand(inviteCode string) http.HandlerFunc {
 		accountName := strings.TrimSpace(req.Account)
 		storeWarning := st.Warning
 		stateWarning := ""
+		persistenceWarnings := make([]string, 0, 2)
+		var rs *state.State
 		if accountName != "" {
 			account, err = st.Get(accountName)
 			if err != nil {
@@ -209,7 +211,7 @@ func handleAPICommand(inviteCode string) http.HandlerFunc {
 				return
 			}
 
-			rs, err := state.Load()
+			rs, err = state.Load()
 			if err != nil {
 				writeJSON(w, http.StatusInternalServerError, apiError{OK: false, Error: "loading rotation state"})
 				return
@@ -220,21 +222,25 @@ func handleAPICommand(inviteCode string) http.HandlerFunc {
 				writeJSON(w, http.StatusInternalServerError, apiError{OK: false, Error: err.Error()})
 				return
 			}
-
-			rs.LastUsedName = account.Name
-			_ = rs.Save()
-			accountName = account.Name
 		}
-
-		_ = st.RecordUsage(account.Name)
-		_ = st.Save()
 
 		exitCode, stdout, stderr, runErr := runner.RunCapture(account, args)
 		if runErr != nil {
 			writeJSON(w, http.StatusInternalServerError, apiError{OK: false, Error: runErr.Error()})
 			return
 		}
-		stderr = mergeWarnings(stderr, storeWarning, stateWarning)
+		if err := st.RecordUsage(account.Name); err != nil {
+			persistenceWarnings = append(persistenceWarnings, fmt.Sprintf("failed to record account usage for %q: %v", account.Name, err))
+		} else if err := st.Save(); err != nil {
+			persistenceWarnings = append(persistenceWarnings, fmt.Sprintf("failed to save account store: %v", err))
+		}
+		if rs != nil {
+			rs.LastUsedName = account.Name
+			if err := rs.Save(); err != nil {
+				persistenceWarnings = append(persistenceWarnings, fmt.Sprintf("failed to save rotation state: %v", err))
+			}
+		}
+		stderr = mergeWarnings(stderr, append([]string{storeWarning, stateWarning}, persistenceWarnings...)...)
 
 		writeJSON(w, http.StatusOK, apiCommandResponse{
 			OK:        true,
