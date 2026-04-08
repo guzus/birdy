@@ -286,6 +286,29 @@ func TestAccountDeleteClearsLastUsedState(t *testing.T) {
 	}
 }
 
+func TestAccountDeletePreservesStateRecoveryWarningAfterReload(t *testing.T) {
+	cleanup := setupTestStore(t,
+		store.Account{Name: "victim", AuthToken: "t", CT0: "c"},
+		store.Account{Name: "other", AuthToken: "t2", CT0: "c2"},
+	)
+	defer cleanup()
+
+	configDir := filepath.Join(os.Getenv("HOME"), ".config", "birdy")
+	if err := os.WriteFile(filepath.Join(configDir, "state.json"), []byte("{"), 0600); err != nil {
+		t.Fatalf("write corrupt state: %v", err)
+	}
+
+	m := NewAccountModel()
+	m.loadAccounts()
+	m.cursor = 0
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+
+	if !strings.Contains(m.warning, "corrupt state file") {
+		t.Fatalf("expected recovered state warning to survive reload, got %q", m.warning)
+	}
+}
+
 func TestAccountAddBlockedInReadOnlyMode(t *testing.T) {
 	cleanup := setupTestStore(t)
 	defer cleanup()

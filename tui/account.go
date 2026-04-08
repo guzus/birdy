@@ -80,7 +80,7 @@ func (m *AccountModel) loadAccounts() {
 	}
 	m.accounts = st.List()
 	m.err = ""
-	m.warning = st.Warning
+	m.warning = joinWarnings(m.warning, st.Warning)
 }
 
 func accountMutationsDisabled() bool {
