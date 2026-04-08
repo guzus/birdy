@@ -164,6 +164,7 @@ func (m *ChatModel) refreshAccountCount() {
 		m.accountCount = st.Len()
 		m.warning = joinWarnings(m.warning, st.Warning)
 	} else {
+		m.accountCount = 0
 		m.warning = joinWarnings(m.warning, fmt.Sprintf("failed to open account store: %v", err))
 	}
 }

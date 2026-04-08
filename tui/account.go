@@ -75,6 +75,7 @@ func (m *AccountModel) initInputs() {
 func (m *AccountModel) loadAccounts() {
 	st, err := store.Open()
 	if err != nil {
+		m.accounts = nil
 		m.err = err.Error()
 		return
 	}

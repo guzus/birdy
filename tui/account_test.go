@@ -443,6 +443,30 @@ func TestNewAccountModelSurfacesRecoveryWarning(t *testing.T) {
 	}
 }
 
+func TestAccountLoadAccountsClearsStaleListOnOpenError(t *testing.T) {
+	cleanup := setupTestStore(t, store.Account{Name: "alpha", AuthToken: "t", CT0: "c"})
+	defer cleanup()
+
+	m := NewAccountModel()
+	if len(m.accounts) != 1 {
+		t.Fatalf("expected initial account list, got %+v", m.accounts)
+	}
+
+	homeFile := filepath.Join(t.TempDir(), "home-file")
+	if err := os.WriteFile(homeFile, []byte("not-a-directory"), 0600); err != nil {
+		t.Fatalf("write home file: %v", err)
+	}
+	t.Setenv("HOME", homeFile)
+
+	m.loadAccounts()
+	if len(m.accounts) != 0 {
+		t.Fatalf("expected stale accounts cleared on open error, got %+v", m.accounts)
+	}
+	if m.err == "" {
+		t.Fatal("expected load error to be surfaced")
+	}
+}
+
 func TestAccountHeaderShowsCorrectTitle(t *testing.T) {
 	m := NewAccountModel()
 	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})

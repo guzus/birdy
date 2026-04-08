@@ -666,6 +666,37 @@ func TestNewChatModelSurfacesStartupLoadFailures(t *testing.T) {
 	}
 }
 
+func TestRefreshAccountCountClearsStaleCountOnStoreOpenError(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	configDir := filepath.Join(home, ".config", "birdy")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		t.Fatalf("mkdir config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "accounts.json"), []byte(`[{"name":"alpha","auth_token":"t","ct0":"c"}]`), 0600); err != nil {
+		t.Fatalf("write accounts: %v", err)
+	}
+
+	m := NewChatModel()
+	if m.accountCount != 1 {
+		t.Fatalf("expected initial account count 1, got %d", m.accountCount)
+	}
+
+	homeFile := filepath.Join(t.TempDir(), "home-file")
+	if err := os.WriteFile(homeFile, []byte("not-a-directory"), 0600); err != nil {
+		t.Fatalf("write home file: %v", err)
+	}
+	t.Setenv("HOME", homeFile)
+
+	m.refreshAccountCount()
+	if m.accountCount != 0 {
+		t.Fatalf("expected account count reset to 0 on refresh failure, got %d", m.accountCount)
+	}
+	if !contains(m.warning, "failed to open account store") {
+		t.Fatalf("expected refresh warning, got %q", m.warning)
+	}
+}
+
 func TestChatEscCancelsStreaming(t *testing.T) {
 	m := NewChatModel()
 	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
