@@ -271,6 +271,41 @@ func TestAPICommandFindsCommandAfterFlagValue(t *testing.T) {
 	}
 }
 
+func TestAPICommandFindsCommandAfterBooleanStyleFlag(t *testing.T) {
+	birdPath := writeFakeBirdScript(t, strings.Join([]string{
+		"#!/bin/sh",
+		"echo \"bird args:$*\"",
+	}, "\n"))
+
+	home := t.TempDir()
+	writeAccountsFixture(t, home, []map[string]string{
+		{"name": "alpha", "auth_token": "token-a", "ct0": "ct0-a"},
+	})
+
+	t.Setenv("HOME", home)
+	t.Setenv("BIRDY_BIRD_PATH", birdPath)
+
+	reqBody := bytes.NewBufferString(`{"args":["--verbose","home"],"account":"alpha"}`)
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/api/command", reqBody)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Invite-Code", "birdy")
+
+	rr := httptest.NewRecorder()
+	handleAPICommand("birdy").ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%q", rr.Code, rr.Body.String())
+	}
+
+	var resp apiCommandResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v body=%q", err, rr.Body.String())
+	}
+	if !strings.Contains(resp.Stdout, "bird args:--verbose home") {
+		t.Fatalf("expected full forwarded args, got %q", resp.Stdout)
+	}
+}
+
 func TestAPICommandRejectsUnsupportedCommand(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/api/command", bytes.NewBufferString(`{"command":"account","args":["list"]}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -289,6 +324,22 @@ func TestAPICommandRejectsUnsupportedCommand(t *testing.T) {
 
 func TestAPICommandRejectsBareSeparatorWithoutCommand(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/api/command", bytes.NewBufferString(`{"args":["--format","json","--"]}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Invite-Code", "birdy")
+
+	rr := httptest.NewRecorder()
+	handleAPICommand("birdy").ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%q", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "missing command") {
+		t.Fatalf("expected missing command error, got %q", rr.Body.String())
+	}
+}
+
+func TestAPICommandRejectsShortFlagValueWithoutCommand(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/api/command", bytes.NewBufferString(`{"args":["-u","alice"]}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Invite-Code", "birdy")
 

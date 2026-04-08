@@ -12,8 +12,14 @@ func TestFirstBirdCommandSkipsFlags(t *testing.T) {
 	if got := firstBirdCommand([]string{"--format", "json", "home"}); got != "home" {
 		t.Fatalf("expected home after long flag value, got %q", got)
 	}
+	if got := firstBirdCommand([]string{"--verbose", "home"}); got != "home" {
+		t.Fatalf("expected home after boolean-style long flag, got %q", got)
+	}
 	if got := firstBirdCommand([]string{"-u", "alice", "thread", "123"}); got != "thread" {
 		t.Fatalf("expected thread after short flag value, got %q", got)
+	}
+	if got := firstBirdCommand([]string{"-v", "home"}); got != "home" {
+		t.Fatalf("expected home after boolean-style short flag, got %q", got)
 	}
 	if got := firstBirdCommand([]string{"tweet", "--"}); got != "tweet" {
 		t.Fatalf("expected tweet to remain command before bare separator, got %q", got)
@@ -23,6 +29,12 @@ func TestFirstBirdCommandSkipsFlags(t *testing.T) {
 	}
 	if got := firstBirdCommand([]string{"--format", "json", "--"}); got != "" {
 		t.Fatalf("expected empty command when separator ends args, got %q", got)
+	}
+	if got := firstBirdCommand([]string{"--user", "alice"}); got != "" {
+		t.Fatalf("expected missing command after long flag value only, got %q", got)
+	}
+	if got := firstBirdCommand([]string{"-u", "alice"}); got != "" {
+		t.Fatalf("expected missing command after short flag value only, got %q", got)
 	}
 	if got := firstBirdCommand([]string{"custom"}); got != "custom" {
 		t.Fatalf("expected fallback custom command, got %q", got)
@@ -45,5 +57,10 @@ func TestIsReadOnlyBirdCommand(t *testing.T) {
 	blocked, name = isReadOnlyBirdCommand([]string{"--format", "json", "tweet", "hello"})
 	if !blocked || name != "tweet" {
 		t.Fatalf("expected tweet blocked after flag value, got blocked=%v name=%q", blocked, name)
+	}
+
+	blocked, name = isReadOnlyBirdCommand([]string{"--verbose", "tweet", "hello"})
+	if !blocked || name != "tweet" {
+		t.Fatalf("expected tweet blocked after boolean-style flag, got blocked=%v name=%q", blocked, name)
 	}
 }

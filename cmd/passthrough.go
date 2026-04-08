@@ -138,13 +138,13 @@ func firstBirdCommand(args []string) string {
 			if strings.Contains(a, "=") {
 				continue
 			}
-			if i+1 < len(args) && shouldSkipFlagValue(args, i+1) {
+			if shouldSkipFlagValue(args, i) {
 				i++
 			}
 			continue
 		}
 		if strings.HasPrefix(a, "-") {
-			if len(a) == 2 && i+1 < len(args) && hasKnownBirdCommand(args[i+2:]) && shouldSkipFlagValue(args, i+1) {
+			if len(a) == 2 && shouldSkipFlagValue(args, i) {
 				i++
 			}
 			continue
@@ -159,21 +159,13 @@ func firstBirdCommand(args []string) string {
 	return firstNonFlag
 }
 
-func shouldSkipFlagValue(args []string, idx int) bool {
-	if idx < 0 || idx >= len(args) {
+func shouldSkipFlagValue(args []string, flagIdx int) bool {
+	idx := flagIdx + 1
+	if flagIdx < 0 || idx < 0 || idx >= len(args) {
 		return false
 	}
-	value := strings.TrimSpace(args[idx])
-	return value != "" && value != "--" && !strings.HasPrefix(value, "-")
-}
-
-func hasKnownBirdCommand(args []string) bool {
-	for _, arg := range args {
-		if isKnownBirdCommand(strings.TrimSpace(strings.ToLower(arg))) {
-			return true
-		}
-	}
-	return false
+	value := strings.TrimSpace(strings.ToLower(args[idx]))
+	return value != "" && value != "--" && !strings.HasPrefix(value, "-") && !isKnownBirdCommand(value)
 }
 
 func isKnownBirdCommand(arg string) bool {
