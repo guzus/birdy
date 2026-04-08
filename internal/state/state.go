@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // State tracks runtime rotation state (persisted between invocations).
@@ -44,7 +45,10 @@ func LoadPath(path string) (*State, error) {
 	}
 
 	if err := json.Unmarshal(data, s); err != nil {
-		return nil, fmt.Errorf("parsing state: %w", err)
+		if quarantineErr := quarantineCorruptStateFile(path); quarantineErr != nil {
+			return nil, fmt.Errorf("parsing state: %w", err)
+		}
+		return s, nil
 	}
 	return s, nil
 }
@@ -61,5 +65,47 @@ func (s *State) Save() error {
 		return fmt.Errorf("marshaling state: %w", err)
 	}
 
-	return os.WriteFile(s.path, data, 0600)
+	tmp, err := os.CreateTemp(dir, filepath.Base(s.path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("creating temp state file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+
+	if err := tmp.Chmod(0600); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("setting temp state permissions: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("writing temp state file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("closing temp state file: %w", err)
+	}
+	if err := os.Rename(tmpPath, s.path); err != nil {
+		return fmt.Errorf("replacing state file: %w", err)
+	}
+	return nil
+}
+
+func quarantineCorruptStateFile(path string) error {
+	dir := filepath.Dir(path)
+	base := filepath.Base(path)
+	stamp := time.Now().UTC().Format("20060102T150405Z")
+	dst := filepath.Join(dir, fmt.Sprintf("%s.corrupt-%s", base, stamp))
+	for i := 0; i < 1000; i++ {
+		target := dst
+		if i > 0 {
+			target = fmt.Sprintf("%s-%02d", dst, i)
+		}
+		if err := os.Rename(path, target); err == nil {
+			return nil
+		} else if os.IsExist(err) {
+			continue
+		} else {
+			return err
+		}
+	}
+	return fmt.Errorf("exhausted corrupt state quarantine attempts for %s", path)
 }

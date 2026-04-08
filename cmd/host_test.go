@@ -1,7 +1,11 @@
 package cmd
 
 import (
+	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -97,5 +101,62 @@ func TestAdvertisedHostLocalFallbacks(t *testing.T) {
 func TestHostedAccessURLWithoutTokenQuery(t *testing.T) {
 	if got := hostedAccessURL("0.0.0.0:8787"); got != "http://127.0.0.1:8787" {
 		t.Fatalf("expected URL without token query, got %q", got)
+	}
+}
+
+func TestMakeHostedWebHandlerServesIndexAndSecurityHeaders(t *testing.T) {
+	webDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(webDir, "index.html"), []byte("<html>ok</html>"), 0600); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
+	makeHostedWebHandler(webDir).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%q", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "<html>ok</html>") {
+		t.Fatalf("expected index body, got %q", rr.Body.String())
+	}
+	if got := rr.Header().Get("Content-Security-Policy"); got == "" {
+		t.Fatal("expected CSP header")
+	}
+	if got := rr.Header().Get("X-Frame-Options"); got != "DENY" {
+		t.Fatalf("expected X-Frame-Options DENY, got %q", got)
+	}
+}
+
+func TestMakeHostedWebHandlerFallsBackToIndexForSPARoute(t *testing.T) {
+	webDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(webDir, "index.html"), []byte("<html>spa</html>"), 0600); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/app/thread/123", nil)
+	makeHostedWebHandler(webDir).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%q", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "<html>spa</html>") {
+		t.Fatalf("expected SPA index fallback, got %q", rr.Body.String())
+	}
+}
+
+func TestMakeHostedWebHandlerRejectsNonGetMethods(t *testing.T) {
+	webDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(webDir, "index.html"), []byte("<html>ok</html>"), 0600); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/", nil)
+	makeHostedWebHandler(webDir).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405, got %d", rr.Code)
 	}
 }
