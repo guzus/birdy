@@ -77,3 +77,61 @@ func TestStateSaveRoundTrip(t *testing.T) {
 		t.Fatalf("unexpected loaded state: %#v", loaded)
 	}
 }
+
+func TestStateSaveNormalizesPersistedValues(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	s := &State{
+		path:         path,
+		LastUsedName: "  alice  ",
+		Model:        "  GPT-5.4-mini  ",
+	}
+	if err := s.Save(); err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+
+	loaded, err := LoadPath(path)
+	if err != nil {
+		t.Fatalf("LoadPath returned error: %v", err)
+	}
+	if loaded.LastUsedName != "alice" {
+		t.Fatalf("expected trimmed LastUsedName, got %q", loaded.LastUsedName)
+	}
+	if loaded.Model != "codex" {
+		t.Fatalf("expected normalized model codex, got %q", loaded.Model)
+	}
+}
+
+func TestLoadPathNormalizesLegacyStateValues(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	raw := `{"last_used_name":"  alice  ","model":"  OpUs  "}`
+	if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	loaded, err := LoadPath(path)
+	if err != nil {
+		t.Fatalf("LoadPath returned error: %v", err)
+	}
+	if loaded.LastUsedName != "alice" {
+		t.Fatalf("expected trimmed LastUsedName, got %q", loaded.LastUsedName)
+	}
+	if loaded.Model != "opus" {
+		t.Fatalf("expected normalized model opus, got %q", loaded.Model)
+	}
+}
+
+func TestLoadPathDropsUnknownModelSelection(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	raw := `{"last_used_name":"alice","model":"unknown-future-model"}`
+	if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	loaded, err := LoadPath(path)
+	if err != nil {
+		t.Fatalf("LoadPath returned error: %v", err)
+	}
+	if loaded.Model != "" {
+		t.Fatalf("expected unknown model to be dropped, got %q", loaded.Model)
+	}
+}

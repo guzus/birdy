@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -53,11 +54,14 @@ func LoadPath(path string) (*State, error) {
 		s.Warning = fmt.Sprintf("recovered from corrupt state file; moved old file to %s", quarantinedPath)
 		return s, nil
 	}
+	s.normalize()
 	return s, nil
 }
 
 // Save persists state to disk.
 func (s *State) Save() error {
+	s.normalize()
+
 	dir := filepath.Dir(s.path)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("creating config dir: %w", err)
@@ -90,6 +94,28 @@ func (s *State) Save() error {
 		return fmt.Errorf("replacing state file: %w", err)
 	}
 	return nil
+}
+
+func (s *State) normalize() {
+	s.LastUsedName = strings.TrimSpace(s.LastUsedName)
+	s.Model = normalizeModelSelection(s.Model)
+}
+
+func normalizeModelSelection(selection string) string {
+	switch strings.ToLower(strings.TrimSpace(selection)) {
+	case "":
+		return ""
+	case "sonnet":
+		return "sonnet"
+	case "opus":
+		return "opus"
+	case "haiku":
+		return "haiku"
+	case "codex", "gpt-5.4", "gpt-5.4-mini":
+		return "codex"
+	default:
+		return ""
+	}
 }
 
 func quarantineCorruptStateFile(path string) (string, error) {
