@@ -164,6 +164,19 @@ func (m *ChatModel) refreshAccountCount() {
 	}
 }
 
+func (m *ChatModel) persistModelSelection() {
+	s, err := state.Load()
+	if err != nil {
+		m.warning = joinWarnings(m.warning, fmt.Sprintf("failed to load model state: %v", err))
+		return
+	}
+	m.warning = joinWarnings(m.warning, s.Warning)
+	s.Model = m.model
+	if err := s.Save(); err != nil {
+		m.warning = joinWarnings(m.warning, fmt.Sprintf("failed to save model state: %v", err))
+	}
+}
+
 func (m ChatModel) Init() tea.Cmd {
 	return tea.Batch(textinput.Blink, m.spinner.Tick, func() tea.Msg { return autoQueryMsg{} })
 }
@@ -333,10 +346,7 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		case "ctrl+t":
 			if !m.streaming {
 				m.model = nextModelSelection(m.model)
-				if s, err := state.Load(); err == nil {
-					s.Model = m.model
-					_ = s.Save()
-				}
+				m.persistModelSelection()
 				return m, nil
 			}
 

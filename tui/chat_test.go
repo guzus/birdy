@@ -607,6 +607,48 @@ func TestNewChatModelLoadsRecoveredModelSelection(t *testing.T) {
 	}
 }
 
+func TestChatCtrlTPersistsModelSelection(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	m := NewChatModel()
+	if m.model != "sonnet" {
+		t.Fatalf("expected initial model sonnet, got %q", m.model)
+	}
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+
+	if m.model != "opus" {
+		t.Fatalf("expected ctrl+t to switch to opus, got %q", m.model)
+	}
+
+	loaded, err := state.Load()
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if loaded.Model != "opus" {
+		t.Fatalf("expected persisted model opus, got %q", loaded.Model)
+	}
+}
+
+func TestChatCtrlTSurfacesModelPersistenceWarning(t *testing.T) {
+	homeFile := filepath.Join(t.TempDir(), "home-file")
+	if err := os.WriteFile(homeFile, []byte("not-a-directory"), 0600); err != nil {
+		t.Fatalf("write home file: %v", err)
+	}
+	t.Setenv("HOME", homeFile)
+
+	m := NewChatModel()
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+
+	if m.model != "opus" {
+		t.Fatalf("expected ctrl+t to still switch model in memory, got %q", m.model)
+	}
+	if !contains(m.warning, "failed to load model state") {
+		t.Fatalf("expected model-state warning, got %q", m.warning)
+	}
+}
+
 func TestChatEscCancelsStreaming(t *testing.T) {
 	m := NewChatModel()
 	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
