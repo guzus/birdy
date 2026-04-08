@@ -1,8 +1,8 @@
 package cmd
 
 import (
+	"bytes"
 	"encoding/json"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -144,23 +144,14 @@ func TestAccountListStillWorksWithEnvOnlyStore(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("BIRDY_ACCOUNTS", `[{"name":"env_user","auth_token":"t","ct0":"c"}]`)
 
-	oldStdout := os.Stdout
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("pipe: %v", err)
-	}
-	os.Stdout = w
-	defer func() { os.Stdout = oldStdout }()
-
+	var out bytes.Buffer
+	accountListCmd.SetOut(&out)
 	runErr := accountListCmd.RunE(accountListCmd, nil)
-	_ = w.Close()
-	out, _ := io.ReadAll(r)
-	_ = r.Close()
 	if runErr != nil {
 		t.Fatalf("expected list to succeed, got %v", runErr)
 	}
-	if !strings.Contains(string(out), "env_user") {
-		t.Fatalf("expected env-backed account in list output, got %q", string(out))
+	if !strings.Contains(out.String(), "env_user") {
+		t.Fatalf("expected env-backed account in list output, got %q", out.String())
 	}
 }
 
@@ -171,23 +162,14 @@ func TestAccountRemoveTrimsNameBeforeSuccessMessage(t *testing.T) {
 		{"name": "alpha", "auth_token": "token-a", "ct0": "ct0-a"},
 	})
 
-	oldStdout := os.Stdout
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("pipe: %v", err)
-	}
-	os.Stdout = w
-	defer func() { os.Stdout = oldStdout }()
-
+	var out bytes.Buffer
+	accountRemoveCmd.SetOut(&out)
 	runErr := accountRemoveCmd.RunE(accountRemoveCmd, []string{"  alpha  "})
-	_ = w.Close()
-	out, _ := io.ReadAll(r)
-	_ = r.Close()
 	if runErr != nil {
 		t.Fatalf("expected remove to succeed, got %v", runErr)
 	}
-	if !strings.Contains(string(out), `Account "alpha" removed.`) {
-		t.Fatalf("expected trimmed success message, got %q", string(out))
+	if !strings.Contains(out.String(), `Account "alpha" removed.`) {
+		t.Fatalf("expected trimmed success message, got %q", out.String())
 	}
 }
 

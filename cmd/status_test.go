@@ -1,8 +1,7 @@
 package cmd
 
 import (
-	"io"
-	"os"
+	"bytes"
 	"strings"
 	"testing"
 )
@@ -15,23 +14,14 @@ func TestStatusMarksStaleLastUsedAccount(t *testing.T) {
 	})
 	writeStateFixture(t, home, "alpha", "sonnet")
 
-	oldStdout := os.Stdout
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("pipe: %v", err)
-	}
-	os.Stdout = w
-	defer func() { os.Stdout = oldStdout }()
-
+	var out bytes.Buffer
+	statusCmd.SetOut(&out)
 	runErr := statusCmd.RunE(statusCmd, nil)
-	_ = w.Close()
-	out, _ := io.ReadAll(r)
-	_ = r.Close()
 	if runErr != nil {
 		t.Fatalf("expected status to succeed, got %v", runErr)
 	}
-	if !strings.Contains(string(out), "Last used:  alpha (not configured)") {
-		t.Fatalf("expected stale last-used annotation, got %q", string(out))
+	if !strings.Contains(out.String(), "Last used:  alpha (not configured)") {
+		t.Fatalf("expected stale last-used annotation, got %q", out.String())
 	}
 }
 
@@ -43,25 +33,16 @@ func TestStatusShowsConfiguredLastUsedAccount(t *testing.T) {
 	})
 	writeStateFixture(t, home, "alpha", "sonnet")
 
-	oldStdout := os.Stdout
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("pipe: %v", err)
-	}
-	os.Stdout = w
-	defer func() { os.Stdout = oldStdout }()
-
+	var out bytes.Buffer
+	statusCmd.SetOut(&out)
 	runErr := statusCmd.RunE(statusCmd, nil)
-	_ = w.Close()
-	out, _ := io.ReadAll(r)
-	_ = r.Close()
 	if runErr != nil {
 		t.Fatalf("expected status to succeed, got %v", runErr)
 	}
-	if !strings.Contains(string(out), "Last used:  alpha") {
-		t.Fatalf("expected last-used account in output, got %q", string(out))
+	if !strings.Contains(out.String(), "Last used:  alpha") {
+		t.Fatalf("expected last-used account in output, got %q", out.String())
 	}
-	if strings.Contains(string(out), "(not configured)") {
-		t.Fatalf("expected configured account not to be marked stale, got %q", string(out))
+	if strings.Contains(out.String(), "(not configured)") {
+		t.Fatalf("expected configured account not to be marked stale, got %q", out.String())
 	}
 }

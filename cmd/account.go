@@ -55,6 +55,7 @@ var accountAddCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := strings.TrimSpace(args[0])
+		out := cmd.OutOrStdout()
 
 		authToken, _ := cmd.Flags().GetString("auth-token")
 		ct0, _ := cmd.Flags().GetString("ct0")
@@ -62,12 +63,12 @@ var accountAddCmd = &cobra.Command{
 		reader := bufio.NewReader(os.Stdin)
 
 		if authToken == "" {
-			fmt.Print("auth_token: ")
+			_, _ = fmt.Fprint(out, "auth_token: ")
 			authToken, _ = reader.ReadString('\n')
 			authToken = strings.TrimSpace(authToken)
 		}
 		if ct0 == "" {
-			fmt.Print("ct0: ")
+			_, _ = fmt.Fprint(out, "ct0: ")
 			ct0, _ = reader.ReadString('\n')
 			ct0 = strings.TrimSpace(ct0)
 		}
@@ -92,7 +93,7 @@ var accountAddCmd = &cobra.Command{
 			return err
 		}
 
-		fmt.Printf("Account %q added.\n", name)
+		_, _ = fmt.Fprintf(out, "Account %q added.\n", name)
 		return nil
 	},
 }
@@ -102,6 +103,7 @@ var accountListCmd = &cobra.Command{
 	Aliases: []string{"ls"},
 	Short:   "List all accounts",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		out := cmd.OutOrStdout()
 		st, err := store.Open()
 		if err != nil {
 			return err
@@ -110,11 +112,11 @@ var accountListCmd = &cobra.Command{
 
 		accounts := st.List()
 		if len(accounts) == 0 {
-			fmt.Println("No accounts configured. Run: birdy account add <name>")
+			_, _ = fmt.Fprintln(out, "No accounts configured. Run: birdy account add <name>")
 			return nil
 		}
 
-		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 		fmt.Fprintln(w, "NAME\tUSES\tLAST USED\tADDED")
 		for _, a := range accounts {
 			lastUsed := "-"
@@ -139,6 +141,7 @@ var accountRemoveCmd = &cobra.Command{
 	Args:    cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := strings.TrimSpace(args[0])
+		out := cmd.OutOrStdout()
 		st, err := store.Open()
 		if err != nil {
 			return err
@@ -156,7 +159,7 @@ var accountRemoveCmd = &cobra.Command{
 		}
 		clearRemovedAccountFromState(name)
 
-		fmt.Printf("Account %q removed.\n", name)
+		_, _ = fmt.Fprintf(out, "Account %q removed.\n", name)
 		return nil
 	},
 }
@@ -167,6 +170,7 @@ var accountUpdateCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := strings.TrimSpace(args[0])
+		out := cmd.OutOrStdout()
 
 		authToken, _ := cmd.Flags().GetString("auth-token")
 		ct0, _ := cmd.Flags().GetString("ct0")
@@ -174,12 +178,12 @@ var accountUpdateCmd = &cobra.Command{
 		reader := bufio.NewReader(os.Stdin)
 
 		if authToken == "" {
-			fmt.Print("auth_token: ")
+			_, _ = fmt.Fprint(out, "auth_token: ")
 			authToken, _ = reader.ReadString('\n')
 			authToken = strings.TrimSpace(authToken)
 		}
 		if ct0 == "" {
-			fmt.Print("ct0: ")
+			_, _ = fmt.Fprint(out, "ct0: ")
 			ct0, _ = reader.ReadString('\n')
 			ct0 = strings.TrimSpace(ct0)
 		}
@@ -204,7 +208,7 @@ var accountUpdateCmd = &cobra.Command{
 			return err
 		}
 
-		fmt.Printf("Account %q updated.\n", name)
+		_, _ = fmt.Fprintf(out, "Account %q updated.\n", name)
 		return nil
 	},
 }
