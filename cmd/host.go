@@ -37,6 +37,7 @@ var hostCmd = &cobra.Command{
 	Short:   "Host birdy TUI in your browser",
 	Long:    "Start a browser-accessible terminal session that runs `birdy tui` over WebSocket.",
 	GroupID: "birdy",
+	Args:    cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		inviteCode, err := ensureHostInviteCode(hostInviteCodeFlag)
 		if err != nil {

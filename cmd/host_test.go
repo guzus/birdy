@@ -55,6 +55,12 @@ func TestEnsureHostInviteCodeRejectsMissing(t *testing.T) {
 	}
 }
 
+func TestHostRejectsUnexpectedArgs(t *testing.T) {
+	if err := hostCmd.Args(hostCmd, []string{"extra"}); err == nil {
+		t.Fatal("expected host to reject unexpected args")
+	}
+}
+
 func TestNormalizeOrigin(t *testing.T) {
 	if got := normalizeOrigin(" https://Example.COM/ "); got != "https://example.com" {
 		t.Fatalf("expected normalized https origin, got %q", got)

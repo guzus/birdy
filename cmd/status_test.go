@@ -73,6 +73,12 @@ func TestStatusRejectsInvalidStrategy(t *testing.T) {
 	}
 }
 
+func TestStatusRejectsUnexpectedArgs(t *testing.T) {
+	if err := statusCmd.Args(statusCmd, []string{"extra"}); err == nil {
+		t.Fatal("expected status to reject unexpected args")
+	}
+}
+
 func TestStatusRoutesWarningsToCommandErr(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

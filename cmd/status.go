@@ -13,6 +13,7 @@ var statusCmd = &cobra.Command{
 	Use:     "status",
 	Short:   "Show current rotation status",
 	GroupID: "birdy",
+	Args:    cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		out := cmd.OutOrStdout()
 		errOut := cmd.ErrOrStderr()

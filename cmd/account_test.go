@@ -155,6 +155,12 @@ func TestAccountListStillWorksWithEnvOnlyStore(t *testing.T) {
 	}
 }
 
+func TestAccountListRejectsUnexpectedArgs(t *testing.T) {
+	if err := accountListCmd.Args(accountListCmd, []string{"extra"}); err == nil {
+		t.Fatal("expected account list to reject unexpected args")
+	}
+}
+
 func TestAccountRemoveTrimsNameBeforeSuccessMessage(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

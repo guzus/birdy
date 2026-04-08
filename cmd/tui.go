@@ -17,6 +17,7 @@ var tuiCmd = &cobra.Command{
 	Short:   "Launch the interactive terminal UI",
 	Long:    "Start birdy's full-screen terminal interface with AI-powered chat, account management, and more.",
 	GroupID: "birdy",
+	Args:    cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Force deterministic terminal rendering and avoid background color probes
 		// that can leak OSC responses into input on some terminals.

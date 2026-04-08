@@ -26,3 +26,9 @@ func TestMouseEnabledFromEnv(t *testing.T) {
 		})
 	}
 }
+
+func TestTUIRejectsUnexpectedArgs(t *testing.T) {
+	if err := tuiCmd.Args(tuiCmd, []string{"extra"}); err == nil {
+		t.Fatal("expected tui to reject unexpected args")
+	}
+}
