@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 
+	"github.com/guzus/birdy/internal/rotation"
 	"github.com/guzus/birdy/internal/state"
 	"github.com/guzus/birdy/internal/store"
 	"github.com/spf13/cobra"
@@ -15,6 +16,10 @@ var statusCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		out := cmd.OutOrStdout()
 		errOut := cmd.ErrOrStderr()
+		strategy, err := rotation.ParseStrategy(strategyFlag)
+		if err != nil {
+			return err
+		}
 
 		st, err := store.Open()
 		if err != nil {
@@ -30,7 +35,7 @@ var statusCmd = &cobra.Command{
 
 		accounts := st.List()
 		_, _ = fmt.Fprintf(out, "Accounts:   %d\n", len(accounts))
-		_, _ = fmt.Fprintf(out, "Strategy:   %s\n", strategyFlag)
+		_, _ = fmt.Fprintf(out, "Strategy:   %s\n", strategy)
 
 		if rs.LastUsedName != "" {
 			lastUsed := rs.LastUsedName

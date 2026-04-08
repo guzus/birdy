@@ -48,6 +48,31 @@ func TestStatusShowsConfiguredLastUsedAccount(t *testing.T) {
 	}
 }
 
+func TestStatusRejectsInvalidStrategy(t *testing.T) {
+	prevStrategy := strategyFlag
+	strategyFlag = "nonsense"
+	defer func() { strategyFlag = prevStrategy }()
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	statusCmd.SetOut(&out)
+	statusCmd.SetErr(&errOut)
+
+	err := statusCmd.RunE(statusCmd, nil)
+	if err == nil {
+		t.Fatal("expected invalid strategy to fail")
+	}
+	if !strings.Contains(err.Error(), "unknown strategy") {
+		t.Fatalf("expected unknown strategy error, got %v", err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("expected no stdout on invalid strategy, got %q", out.String())
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("expected no stderr side output on invalid strategy, got %q", errOut.String())
+	}
+}
+
 func TestStatusRoutesWarningsToCommandErr(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
