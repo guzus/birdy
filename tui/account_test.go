@@ -9,6 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/guzus/birdy/internal/state"
 	"github.com/guzus/birdy/internal/store"
 )
 
@@ -251,6 +252,95 @@ func TestAccountDeleteSuccess(t *testing.T) {
 
 	if len(m.accounts) >= initialCount {
 		t.Error("expected account count to decrease after delete")
+	}
+}
+
+func TestAccountDeleteClearsLastUsedState(t *testing.T) {
+	cleanup := setupTestStore(t,
+		store.Account{Name: "victim", AuthToken: "t", CT0: "c"},
+		store.Account{Name: "other", AuthToken: "t2", CT0: "c2"},
+	)
+	defer cleanup()
+
+	loaded, err := state.Load()
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	loaded.LastUsedName = "victim"
+	if err := loaded.Save(); err != nil {
+		t.Fatalf("save state: %v", err)
+	}
+
+	m := NewAccountModel()
+	m.loadAccounts()
+	m.cursor = 0
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+
+	reloaded, err := state.Load()
+	if err != nil {
+		t.Fatalf("reload state: %v", err)
+	}
+	if reloaded.LastUsedName != "" {
+		t.Fatalf("expected last-used state cleared, got %q", reloaded.LastUsedName)
+	}
+}
+
+func TestAccountAddBlockedInReadOnlyMode(t *testing.T) {
+	cleanup := setupTestStore(t)
+	defer cleanup()
+	t.Setenv("BIRDY_READ_ONLY", "1")
+
+	m := NewAccountModel()
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+
+	if m.view != accountViewList {
+		t.Fatalf("expected to stay in list view, got %v", m.view)
+	}
+	if !strings.Contains(m.err, "read-only mode") {
+		t.Fatalf("expected read-only error, got %q", m.err)
+	}
+}
+
+func TestAccountDeleteBlockedForEnvOnlyStore(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("BIRDY_ACCOUNTS", `[{"name":"env_user","auth_token":"t","ct0":"c"}]`)
+
+	m := NewAccountModel()
+	if len(m.accounts) != 1 {
+		t.Fatalf("expected one env-backed account, got %d", len(m.accounts))
+	}
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+
+	if !strings.Contains(m.err, "env-backed only") {
+		t.Fatalf("expected env-backed mutation error, got %q", m.err)
+	}
+	if len(m.accounts) != 1 || m.accounts[0].Name != "env_user" {
+		t.Fatalf("expected env-backed account to remain, got %+v", m.accounts)
+	}
+}
+
+func TestAccountAddFormSubmitBlockedInReadOnlyMode(t *testing.T) {
+	cleanup := setupTestStore(t)
+	defer cleanup()
+	t.Setenv("BIRDY_READ_ONLY", "1")
+
+	m := NewAccountModel()
+	m.view = accountViewAdd
+	m.initInputs()
+	m.inputs[0].SetValue("testaccount")
+	m.inputs[1].SetValue("token123")
+	m.inputs[2].SetValue("ct0value")
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if m.view != accountViewAdd {
+		t.Fatalf("expected to stay on add view, got %v", m.view)
+	}
+	if !strings.Contains(m.err, "read-only mode") {
+		t.Fatalf("expected read-only error, got %q", m.err)
 	}
 }
 

@@ -2,11 +2,13 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/guzus/birdy/internal/state"
 	"github.com/guzus/birdy/internal/store"
 )
 
@@ -81,6 +83,41 @@ func (m *AccountModel) loadAccounts() {
 	m.warning = st.Warning
 }
 
+func accountMutationsDisabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("BIRDY_READ_ONLY"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func ensureAccountMutationAllowed(st *store.Store) error {
+	if accountMutationsDisabled() {
+		return fmt.Errorf("account mutations are disabled in read-only mode (BIRDY_READ_ONLY)")
+	}
+	if st != nil && st.IsEphemeral() {
+		return fmt.Errorf("account store is env-backed only; unset BIRDY_ACCOUNTS or create ~/.config/birdy/accounts.json to add, update, or remove accounts")
+	}
+	return nil
+}
+
+func clearRemovedAccountStateWarning(name string) string {
+	rs, err := state.Load()
+	if err != nil {
+		return fmt.Sprintf("removed account %q but failed to load rotation state: %v", name, err)
+	}
+	warning := rs.Warning
+	if rs.LastUsedName != name {
+		return warning
+	}
+	rs.LastUsedName = ""
+	if err := rs.Save(); err != nil {
+		return joinWarnings(warning, fmt.Sprintf("removed account %q but failed to clear last-used state: %v", name, err))
+	}
+	return warning
+}
+
 func (m AccountModel) Init() tea.Cmd {
 	return nil
 }
@@ -131,6 +168,16 @@ func (m AccountModel) updateList(msg tea.KeyMsg) (AccountModel, tea.Cmd) {
 		}
 
 	case "a":
+		st, err := store.Open()
+		if err != nil {
+			m.err = err.Error()
+			return m, nil
+		}
+		m.warning = joinWarnings(m.warning, st.Warning)
+		if err := ensureAccountMutationAllowed(st); err != nil {
+			m.err = err.Error()
+			return m, nil
+		}
 		m.view = accountViewAdd
 		m.focusIndex = 0
 		m.err = ""
@@ -152,7 +199,11 @@ func (m AccountModel) updateList(msg tea.KeyMsg) (AccountModel, tea.Cmd) {
 				m.err = err.Error()
 				return m, nil
 			}
-			m.warning = st.Warning
+			m.warning = joinWarnings(m.warning, st.Warning)
+			if err := ensureAccountMutationAllowed(st); err != nil {
+				m.err = err.Error()
+				return m, nil
+			}
 			if err := st.Remove(name); err != nil {
 				m.err = err.Error()
 				return m, nil
@@ -161,6 +212,7 @@ func (m AccountModel) updateList(msg tea.KeyMsg) (AccountModel, tea.Cmd) {
 				m.err = err.Error()
 				return m, nil
 			}
+			m.warning = joinWarnings(m.warning, clearRemovedAccountStateWarning(name))
 			m.loadAccounts()
 			if m.cursor >= len(m.accounts) && m.cursor > 0 {
 				m.cursor--
@@ -211,7 +263,11 @@ func (m AccountModel) updateAddForm(msg tea.KeyMsg) (AccountModel, tea.Cmd) {
 			m.err = err.Error()
 			return m, nil
 		}
-		m.warning = st.Warning
+		m.warning = joinWarnings(m.warning, st.Warning)
+		if err := ensureAccountMutationAllowed(st); err != nil {
+			m.err = err.Error()
+			return m, nil
+		}
 		if err := st.Add(name, authToken, ct0); err != nil {
 			m.err = err.Error()
 			return m, nil
