@@ -277,6 +277,14 @@ func (s *Store) Len() int {
 	return len(s.Accounts)
 }
 
+// IsEphemeral reports whether the store exists only in env-backed memory and
+// cannot persist structural account changes to disk.
+func (s *Store) IsEphemeral() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ephemeral
+}
+
 // Update replaces the credentials for an existing account.
 func (s *Store) Update(name, authToken, ct0 string) error {
 	s.mu.Lock()

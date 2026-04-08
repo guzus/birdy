@@ -18,6 +18,13 @@ var accountCmd = &cobra.Command{
 	GroupID: "birdy",
 }
 
+func ensureAccountStoreWritable(st *store.Store) error {
+	if st == nil || !st.IsEphemeral() {
+		return nil
+	}
+	return fmt.Errorf("account store is env-backed only; unset BIRDY_ACCOUNTS or create ~/.config/birdy/accounts.json to add, update, or remove accounts")
+}
+
 var accountAddCmd = &cobra.Command{
 	Use:   "add <name>",
 	Short: "Add a new account",
@@ -50,6 +57,9 @@ var accountAddCmd = &cobra.Command{
 			return err
 		}
 		printStoreWarning(st)
+		if err := ensureAccountStoreWritable(st); err != nil {
+			return err
+		}
 
 		if err := st.Add(name, authToken, ct0); err != nil {
 			return err
@@ -110,6 +120,9 @@ var accountRemoveCmd = &cobra.Command{
 			return err
 		}
 		printStoreWarning(st)
+		if err := ensureAccountStoreWritable(st); err != nil {
+			return err
+		}
 
 		if err := st.Remove(name); err != nil {
 			return err
@@ -155,6 +168,9 @@ var accountUpdateCmd = &cobra.Command{
 			return err
 		}
 		printStoreWarning(st)
+		if err := ensureAccountStoreWritable(st); err != nil {
+			return err
+		}
 
 		if err := st.Update(name, authToken, ct0); err != nil {
 			return err
