@@ -117,12 +117,73 @@ func readOnlyModeEnabled() bool {
 }
 
 func firstBirdCommand(args []string) string {
-	for _, arg := range args {
+	firstNonFlag := ""
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
 		a := strings.TrimSpace(strings.ToLower(arg))
-		if a == "" || strings.HasPrefix(a, "-") {
+		if a == "" {
 			continue
 		}
-		return a
+		if a == "--" {
+			for j := i + 1; j < len(args); j++ {
+				next := strings.TrimSpace(strings.ToLower(args[j]))
+				if next != "" {
+					return next
+				}
+			}
+			return firstNonFlag
+		}
+		if strings.HasPrefix(a, "--") {
+			if strings.Contains(a, "=") {
+				continue
+			}
+			if i+1 < len(args) && shouldSkipFlagValue(args, i+1) {
+				i++
+			}
+			continue
+		}
+		if strings.HasPrefix(a, "-") {
+			if len(a) == 2 && i+1 < len(args) && hasKnownBirdCommand(args[i+2:]) && shouldSkipFlagValue(args, i+1) {
+				i++
+			}
+			continue
+		}
+		if isKnownBirdCommand(a) {
+			return a
+		}
+		if firstNonFlag == "" {
+			firstNonFlag = a
+		}
 	}
-	return ""
+	return firstNonFlag
+}
+
+func shouldSkipFlagValue(args []string, idx int) bool {
+	if idx < 0 || idx >= len(args) {
+		return false
+	}
+	value := strings.TrimSpace(args[idx])
+	return value != "" && value != "--" && !strings.HasPrefix(value, "-")
+}
+
+func hasKnownBirdCommand(args []string) bool {
+	for _, arg := range args {
+		if isKnownBirdCommand(strings.TrimSpace(strings.ToLower(arg))) {
+			return true
+		}
+	}
+	return false
+}
+
+func isKnownBirdCommand(arg string) bool {
+	if arg == "" || strings.HasPrefix(arg, "-") {
+		return false
+	}
+	if _, ok := apiAllowedBirdCommands[arg]; ok {
+		return true
+	}
+	if _, ok := readOnlyBlockedBirdCommands[arg]; ok {
+		return true
+	}
+	return false
 }
