@@ -43,7 +43,11 @@ func loadHomeSummaryCache(now time.Time) (summary string, cachedAt time.Time, ok
 
 	var rec homeSummaryCacheRecord
 	if err := json.Unmarshal(raw, &rec); err != nil {
-		return "", time.Time{}, false, err
+		quarantinedPath, quarantineErr := quarantineCorruptHomeSummaryCache(path)
+		if quarantineErr != nil {
+			return "", time.Time{}, false, err
+		}
+		return "", time.Time{}, false, fmt.Errorf("recovered from corrupt home summary cache; moved old file to %s", quarantinedPath)
 	}
 
 	rec.Summary = strings.TrimSpace(rec.Summary)
@@ -81,10 +85,49 @@ func saveHomeSummaryCache(summary string, now time.Time) error {
 	if err != nil {
 		return fmt.Errorf("marshaling cache: %w", err)
 	}
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		return fmt.Errorf("writing cache: %w", err)
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("creating temp cache file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+
+	if err := tmp.Chmod(0600); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("setting temp cache permissions: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("writing temp cache file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("closing temp cache file: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("replacing cache file: %w", err)
 	}
 	return nil
+}
+
+func quarantineCorruptHomeSummaryCache(path string) (string, error) {
+	dir := filepath.Dir(path)
+	base := filepath.Base(path)
+	stamp := time.Now().UTC().Format("20060102T150405Z")
+	dst := filepath.Join(dir, fmt.Sprintf("%s.corrupt-%s", base, stamp))
+	for i := 0; i < 1000; i++ {
+		target := dst
+		if i > 0 {
+			target = fmt.Sprintf("%s-%02d", dst, i)
+		}
+		if err := os.Rename(path, target); err == nil {
+			return target, nil
+		} else if os.IsExist(err) {
+			continue
+		} else {
+			return "", err
+		}
+	}
+	return "", fmt.Errorf("exhausted corrupt cache quarantine attempts for %s", path)
 }
 
 func formatHomeSummaryAge(age time.Duration) string {

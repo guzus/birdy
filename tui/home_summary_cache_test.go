@@ -50,6 +50,53 @@ func TestHomeSummaryCacheExpiresAfterTTL(t *testing.T) {
 	}
 }
 
+func TestHomeSummaryCacheQuarantinesCorruptFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	now := time.Date(2026, 2, 12, 12, 0, 0, 0, time.UTC)
+
+	cachePath, err := homeSummaryCachePath()
+	if err != nil {
+		t.Fatalf("homeSummaryCachePath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(cachePath), 0700); err != nil {
+		t.Fatalf("mkdir cache dir: %v", err)
+	}
+	if err := os.WriteFile(cachePath, []byte("{"), 0600); err != nil {
+		t.Fatalf("write corrupt cache: %v", err)
+	}
+
+	_, _, ok, err := loadHomeSummaryCache(now)
+	if err == nil {
+		t.Fatal("expected corrupt cache recovery warning")
+	}
+	if ok {
+		t.Fatal("expected corrupt cache to return miss")
+	}
+	if !strings.Contains(err.Error(), "recovered from corrupt home summary cache") {
+		t.Fatalf("expected recovery warning, got %v", err)
+	}
+
+	if _, statErr := os.Stat(cachePath); !os.IsNotExist(statErr) {
+		t.Fatalf("expected original corrupt cache to be quarantined, stat err=%v", statErr)
+	}
+	matches, globErr := filepath.Glob(cachePath + ".corrupt-*")
+	if globErr != nil {
+		t.Fatalf("glob corrupt cache quarantine: %v", globErr)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("expected one quarantined cache file, got %v", matches)
+	}
+
+	_, _, ok, err = loadHomeSummaryCache(now)
+	if err != nil {
+		t.Fatalf("expected clean miss after quarantine, got %v", err)
+	}
+	if ok {
+		t.Fatal("expected miss after quarantine")
+	}
+}
+
 func TestAutoQueryUsesCachedHomeSummary(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	now := time.Date(2026, 2, 12, 12, 0, 0, 0, time.UTC)
