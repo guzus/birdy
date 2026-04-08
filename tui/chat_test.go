@@ -649,6 +649,23 @@ func TestChatCtrlTSurfacesModelPersistenceWarning(t *testing.T) {
 	}
 }
 
+func TestNewChatModelSurfacesStartupLoadFailures(t *testing.T) {
+	homeFile := filepath.Join(t.TempDir(), "home-file")
+	if err := os.WriteFile(homeFile, []byte("not-a-directory"), 0600); err != nil {
+		t.Fatalf("write home file: %v", err)
+	}
+	t.Setenv("HOME", homeFile)
+
+	m := NewChatModel()
+
+	if !contains(m.warning, "failed to load chat state") {
+		t.Fatalf("expected startup state warning, got %q", m.warning)
+	}
+	if !contains(m.warning, "failed to open account store") {
+		t.Fatalf("expected startup store warning, got %q", m.warning)
+	}
+}
+
 func TestChatEscCancelsStreaming(t *testing.T) {
 	m := NewChatModel()
 	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})

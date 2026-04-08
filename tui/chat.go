@@ -137,6 +137,8 @@ func NewChatModel() ChatModel {
 			model = normalizeModelSelection(s.Model)
 		}
 		warning = joinWarnings(warning, s.Warning)
+	} else {
+		warning = joinWarnings(warning, fmt.Sprintf("failed to load chat state: %v", err))
 	}
 
 	m := ChatModel{
@@ -161,6 +163,8 @@ func (m *ChatModel) refreshAccountCount() {
 	if err == nil {
 		m.accountCount = st.Len()
 		m.warning = joinWarnings(m.warning, st.Warning)
+	} else {
+		m.warning = joinWarnings(m.warning, fmt.Sprintf("failed to open account store: %v", err))
 	}
 }
 
