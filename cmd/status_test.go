@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"os"
 	"strings"
 	"testing"
 )
@@ -44,5 +45,39 @@ func TestStatusShowsConfiguredLastUsedAccount(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "(not configured)") {
 		t.Fatalf("expected configured account not to be marked stale, got %q", out.String())
+	}
+}
+
+func TestStatusRoutesWarningsToCommandErr(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	configDir := home + "/.config/birdy"
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		t.Fatalf("mkdir config: %v", err)
+	}
+	if err := os.WriteFile(configDir+"/accounts.json", []byte("{bad-json"), 0600); err != nil {
+		t.Fatalf("write corrupt accounts: %v", err)
+	}
+	if err := os.WriteFile(configDir+"/state.json", []byte("{bad-json"), 0600); err != nil {
+		t.Fatalf("write corrupt state: %v", err)
+	}
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	statusCmd.SetOut(&out)
+	statusCmd.SetErr(&errOut)
+
+	runErr := statusCmd.RunE(statusCmd, nil)
+	if runErr != nil {
+		t.Fatalf("expected status to succeed, got %v", runErr)
+	}
+	if !strings.Contains(errOut.String(), "[birdy] warning: recovered from corrupt account store") {
+		t.Fatalf("expected account warning on stderr, got %q", errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "[birdy] warning: recovered from corrupt state file") {
+		t.Fatalf("expected state warning on stderr, got %q", errOut.String())
+	}
+	if strings.Contains(out.String(), "[birdy] warning:") {
+		t.Fatalf("expected warnings not to leak into stdout, got %q", out.String())
 	}
 }

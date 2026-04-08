@@ -24,6 +24,7 @@ func runPassthrough(cmd *cobra.Command, args []string) error {
 	if len(args) == 0 {
 		return cmd.Help()
 	}
+	errOut := cmd.ErrOrStderr()
 
 	if blocked, name := isReadOnlyBirdCommand(args); blocked {
 		return fmt.Errorf("%q is disabled in read-only mode (BIRDY_READ_ONLY)", name)
@@ -33,7 +34,7 @@ func runPassthrough(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("opening account store: %w", err)
 	}
-	printStoreWarning(st)
+	printStoreWarning(errOut, st)
 
 	if st.Len() == 0 {
 		return fmt.Errorf("no accounts configured\nRun: birdy account add <name>")
@@ -57,7 +58,7 @@ func runPassthrough(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("loading rotation state: %w", err)
 		}
-		printStateWarning(rs)
+		printStateWarning(errOut, rs)
 
 		account, err = rotation.Pick(st.List(), strat, rs.LastUsedName)
 		if err != nil {
@@ -67,7 +68,7 @@ func runPassthrough(cmd *cobra.Command, args []string) error {
 	}
 
 	if verboseFlag {
-		fmt.Fprintf(os.Stderr, "[birdy] using account: %s\n", account.Name)
+		fmt.Fprintf(errOut, "[birdy] using account: %s\n", account.Name)
 	}
 
 	exitCode, err := runner.Run(account, args)

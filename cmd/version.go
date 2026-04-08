@@ -18,7 +18,7 @@ var versionCmd = &cobra.Command{
 	Short:   "Print birdy version",
 	GroupID: "birdy",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Printf("birdy %s (commit: %s, built: %s)\n", version, commit, date)
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "birdy %s (commit: %s, built: %s)\n", version, commit, date)
 	},
 }
 

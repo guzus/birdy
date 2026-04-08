@@ -3,6 +3,7 @@ package cmd
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"text/tabwriter"
@@ -33,19 +34,19 @@ func ensureAccountMutationAllowed(st *store.Store) error {
 	return ensureAccountStoreWritable(st)
 }
 
-func clearRemovedAccountFromState(name string) {
+func clearRemovedAccountFromState(name string, errOut io.Writer) {
 	rs, err := state.Load()
 	if err != nil {
-		printWarning(fmt.Sprintf("removed account %q but failed to load rotation state: %v", name, err))
+		printWarning(errOut, fmt.Sprintf("removed account %q but failed to load rotation state: %v", name, err))
 		return
 	}
-	printStateWarning(rs)
+	printStateWarning(errOut, rs)
 	if rs.LastUsedName != name {
 		return
 	}
 	rs.LastUsedName = ""
 	if err := rs.Save(); err != nil {
-		printWarning(fmt.Sprintf("removed account %q but failed to clear last-used state: %v", name, err))
+		printWarning(errOut, fmt.Sprintf("removed account %q but failed to clear last-used state: %v", name, err))
 	}
 }
 
@@ -56,6 +57,7 @@ var accountAddCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := strings.TrimSpace(args[0])
 		out := cmd.OutOrStdout()
+		errOut := cmd.ErrOrStderr()
 
 		authToken, _ := cmd.Flags().GetString("auth-token")
 		ct0, _ := cmd.Flags().GetString("ct0")
@@ -81,7 +83,7 @@ var accountAddCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		printStoreWarning(st)
+		printStoreWarning(errOut, st)
 		if err := ensureAccountMutationAllowed(st); err != nil {
 			return err
 		}
@@ -104,11 +106,12 @@ var accountListCmd = &cobra.Command{
 	Short:   "List all accounts",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		out := cmd.OutOrStdout()
+		errOut := cmd.ErrOrStderr()
 		st, err := store.Open()
 		if err != nil {
 			return err
 		}
-		printStoreWarning(st)
+		printStoreWarning(errOut, st)
 
 		accounts := st.List()
 		if len(accounts) == 0 {
@@ -142,11 +145,12 @@ var accountRemoveCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := strings.TrimSpace(args[0])
 		out := cmd.OutOrStdout()
+		errOut := cmd.ErrOrStderr()
 		st, err := store.Open()
 		if err != nil {
 			return err
 		}
-		printStoreWarning(st)
+		printStoreWarning(errOut, st)
 		if err := ensureAccountMutationAllowed(st); err != nil {
 			return err
 		}
@@ -157,7 +161,7 @@ var accountRemoveCmd = &cobra.Command{
 		if err := st.Save(); err != nil {
 			return err
 		}
-		clearRemovedAccountFromState(name)
+		clearRemovedAccountFromState(name, errOut)
 
 		_, _ = fmt.Fprintf(out, "Account %q removed.\n", name)
 		return nil
@@ -171,6 +175,7 @@ var accountUpdateCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := strings.TrimSpace(args[0])
 		out := cmd.OutOrStdout()
+		errOut := cmd.ErrOrStderr()
 
 		authToken, _ := cmd.Flags().GetString("auth-token")
 		ct0, _ := cmd.Flags().GetString("ct0")
@@ -196,7 +201,7 @@ var accountUpdateCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		printStoreWarning(st)
+		printStoreWarning(errOut, st)
 		if err := ensureAccountMutationAllowed(st); err != nil {
 			return err
 		}

@@ -20,17 +20,13 @@ var statusCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if st.Warning != "" {
-			_, _ = fmt.Fprintf(errOut, "[birdy] warning: %s\n", st.Warning)
-		}
+		printStoreWarning(errOut, st)
 
 		rs, err := state.Load()
 		if err != nil {
 			return err
 		}
-		if rs.Warning != "" {
-			_, _ = fmt.Fprintf(errOut, "[birdy] warning: %s\n", rs.Warning)
-		}
+		printStateWarning(errOut, rs)
 
 		accounts := st.List()
 		_, _ = fmt.Fprintf(out, "Accounts:   %d\n", len(accounts))

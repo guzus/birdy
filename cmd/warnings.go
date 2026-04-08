@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -9,26 +10,29 @@ import (
 	"github.com/guzus/birdy/internal/store"
 )
 
-func printStoreWarning(st *store.Store) {
+func printStoreWarning(w io.Writer, st *store.Store) {
 	if st == nil {
 		return
 	}
-	printWarning(st.Warning)
+	printWarning(w, st.Warning)
 }
 
-func printStateWarning(st *state.State) {
+func printStateWarning(w io.Writer, st *state.State) {
 	if st == nil {
 		return
 	}
-	printWarning(st.Warning)
+	printWarning(w, st.Warning)
 }
 
-func printWarning(msg string) {
+func printWarning(w io.Writer, msg string) {
 	msg = strings.TrimSpace(msg)
 	if msg == "" {
 		return
 	}
-	_, _ = fmt.Fprintf(os.Stderr, "[birdy] warning: %s\n", msg)
+	if w == nil {
+		w = os.Stderr
+	}
+	_, _ = fmt.Fprintf(w, "[birdy] warning: %s\n", msg)
 }
 
 func mergeWarnings(existing string, warnings ...string) string {

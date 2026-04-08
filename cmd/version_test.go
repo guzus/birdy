@@ -1,0 +1,18 @@
+package cmd
+
+import (
+	"bytes"
+	"strings"
+	"testing"
+)
+
+func TestVersionRoutesOutputToCommandWriter(t *testing.T) {
+	var out bytes.Buffer
+	versionCmd.SetOut(&out)
+
+	versionCmd.Run(versionCmd, nil)
+
+	if !strings.Contains(out.String(), "birdy ") {
+		t.Fatalf("expected version output in command writer, got %q", out.String())
+	}
+}
