@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 
 const inviteCodeKey = 'birdy_host_invite_code';
 
@@ -17,6 +18,14 @@ type AlphaCard = {
 type FeedItem =
   | { kind: 'card'; card: AlphaCard }
   | { kind: 'chat'; id: string; role: 'user' | 'assistant'; text: string; loading: boolean };
+
+type MarkdownBlock =
+  | { kind: 'heading'; level: 1 | 2 | 3 | 4; text: string }
+  | { kind: 'paragraph'; lines: string[] }
+  | { kind: 'ul'; items: string[] }
+  | { kind: 'ol'; items: string[] }
+  | { kind: 'code'; code: string }
+  | { kind: 'rule' };
 
 const categoryMeta: Record<CardCategory, { icon: string; label: string; color: string; bg: string; border: string; leftBorder: string }> = {
   CRYPTO: { icon: '\u{1F525}', label: 'CRYPTO', color: 'text-cat-crypto', bg: 'bg-cat-crypto/8', border: 'border-cat-crypto/20', leftBorder: 'border-l-cat-crypto' },
@@ -132,6 +141,229 @@ function timeAgo(date: Date): string {
   const hours = Math.floor(minutes / 60);
   if (hours < 24) return `${hours}h ago`;
   return `${Math.floor(hours / 24)}d ago`;
+}
+
+function isMarkdownRule(line: string): boolean {
+  return /^ {0,3}([-*_])(?:\s*\1){2,}\s*$/.test(line);
+}
+
+function isMarkdownBoundary(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed) return true;
+  if (/^#{1,4}\s+/.test(trimmed)) return true;
+  if (/^```/.test(trimmed)) return true;
+  if (/^[-*•]\s+/.test(trimmed)) return true;
+  if (/^\d+\.\s+/.test(trimmed)) return true;
+  return isMarkdownRule(trimmed);
+}
+
+function parseMarkdownBlocks(markdown: string): MarkdownBlock[] {
+  const normalized = markdown.replace(/\r\n?/g, '\n').trim();
+  if (!normalized) return [];
+
+  const lines = normalized.split('\n');
+  const blocks: MarkdownBlock[] = [];
+
+  for (let i = 0; i < lines.length; ) {
+    const line = lines[i];
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      i++;
+      continue;
+    }
+
+    if (/^```/.test(trimmed)) {
+      const codeLines: string[] = [];
+      i++;
+      while (i < lines.length && !/^```/.test(lines[i].trim())) {
+        codeLines.push(lines[i]);
+        i++;
+      }
+      if (i < lines.length) i++;
+      blocks.push({ kind: 'code', code: codeLines.join('\n') });
+      continue;
+    }
+
+    const headingMatch = trimmed.match(/^(#{1,4})\s+(.+)$/);
+    if (headingMatch) {
+      blocks.push({
+        kind: 'heading',
+        level: headingMatch[1].length as 1 | 2 | 3 | 4,
+        text: headingMatch[2].trim(),
+      });
+      i++;
+      continue;
+    }
+
+    if (isMarkdownRule(trimmed)) {
+      blocks.push({ kind: 'rule' });
+      i++;
+      continue;
+    }
+
+    if (/^[-*•]\s+/.test(trimmed)) {
+      const items: string[] = [];
+      while (i < lines.length) {
+        const match = lines[i].trim().match(/^[-*•]\s+(.+)$/);
+        if (!match) break;
+        items.push(match[1].trim());
+        i++;
+      }
+      blocks.push({ kind: 'ul', items });
+      continue;
+    }
+
+    if (/^\d+\.\s+/.test(trimmed)) {
+      const items: string[] = [];
+      while (i < lines.length) {
+        const match = lines[i].trim().match(/^\d+\.\s+(.+)$/);
+        if (!match) break;
+        items.push(match[1].trim());
+        i++;
+      }
+      blocks.push({ kind: 'ol', items });
+      continue;
+    }
+
+    const paragraphLines: string[] = [];
+    while (i < lines.length) {
+      const current = lines[i];
+      if (!current.trim()) break;
+      if (paragraphLines.length > 0 && isMarkdownBoundary(current)) break;
+      paragraphLines.push(current.trim());
+      i++;
+    }
+    blocks.push({ kind: 'paragraph', lines: paragraphLines });
+  }
+
+  return blocks;
+}
+
+function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  let rest = text;
+  let part = 0;
+
+  while (rest) {
+    const patterns: Array<{
+      kind: 'code' | 'link' | 'strong';
+      match: RegExpExecArray | null;
+    }> = [
+      { kind: 'code', match: /`([^`\n]+)`/.exec(rest) },
+      { kind: 'link', match: /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/.exec(rest) },
+      { kind: 'strong', match: /\*\*([^*][\s\S]*?)\*\*/.exec(rest) },
+    ].filter((entry) => entry.match);
+
+    if (patterns.length === 0) {
+      nodes.push(rest);
+      break;
+    }
+
+    patterns.sort((a, b) => (a.match?.index ?? 0) - (b.match?.index ?? 0));
+    const next = patterns[0];
+    const match = next.match!;
+    const index = match.index ?? 0;
+
+    if (index > 0) nodes.push(rest.slice(0, index));
+
+    const key = `${keyPrefix}-${part++}`;
+    if (next.kind === 'code') {
+      nodes.push(
+        <code key={key} className="font-mono text-[0.92em] px-1.5 py-0.5 rounded bg-bg border border-border text-accent">
+          {match[1]}
+        </code>,
+      );
+    } else if (next.kind === 'link') {
+      nodes.push(
+        <a
+          key={key}
+          href={match[2]}
+          target="_blank"
+          rel="noreferrer"
+          className="text-accent underline decoration-accent/40 underline-offset-2 break-all"
+        >
+          {match[1]}
+        </a>,
+      );
+    } else {
+      nodes.push(<strong key={key} className="font-semibold text-text">{renderInlineMarkdown(match[1], key)}</strong>);
+    }
+
+    rest = rest.slice(index + match[0].length);
+  }
+
+  return nodes;
+}
+
+function MarkdownMessage({ text }: { text: string }) {
+  const blocks = parseMarkdownBlocks(text);
+  if (blocks.length === 0) return <span>No response.</span>;
+
+  return (
+    <div className="flex flex-col gap-3 text-sm leading-relaxed text-text-muted break-words">
+      {blocks.map((block, blockIdx) => {
+        const key = `md-${blockIdx}`;
+
+        if (block.kind === 'heading') {
+          const headingClass =
+            block.level === 1
+              ? 'text-xl font-semibold text-text'
+              : block.level === 2
+                ? 'text-lg font-semibold text-text'
+                : 'text-base font-semibold text-text';
+          return (
+            <div key={key} className={headingClass}>
+              {renderInlineMarkdown(block.text, `${key}-heading`)}
+            </div>
+          );
+        }
+
+        if (block.kind === 'paragraph') {
+          return (
+            <p key={key} className="m-0">
+              {block.lines.map((line, lineIdx) => (
+                <Fragment key={`${key}-line-${lineIdx}`}>
+                  {renderInlineMarkdown(line, `${key}-line-${lineIdx}`)}
+                  {lineIdx < block.lines.length - 1 && <br />}
+                </Fragment>
+              ))}
+            </p>
+          );
+        }
+
+        if (block.kind === 'ul') {
+          return (
+            <ul key={key} className="m-0 pl-5 flex flex-col gap-1.5">
+              {block.items.map((item, itemIdx) => (
+                <li key={`${key}-item-${itemIdx}`}>{renderInlineMarkdown(item, `${key}-item-${itemIdx}`)}</li>
+              ))}
+            </ul>
+          );
+        }
+
+        if (block.kind === 'ol') {
+          return (
+            <ol key={key} className="m-0 pl-5 flex flex-col gap-1.5 list-decimal">
+              {block.items.map((item, itemIdx) => (
+                <li key={`${key}-item-${itemIdx}`}>{renderInlineMarkdown(item, `${key}-item-${itemIdx}`)}</li>
+              ))}
+            </ol>
+          );
+        }
+
+        if (block.kind === 'code') {
+          return (
+            <pre key={key} className="m-0 overflow-x-auto rounded-lg border border-border bg-bg px-3 py-2 text-[12px] leading-relaxed text-text">
+              <code>{block.code}</code>
+            </pre>
+          );
+        }
+
+        return <hr key={key} className="border-0 border-t border-border my-1" />;
+      })}
+    </div>
+  );
 }
 
 function InvitePanel({
@@ -284,13 +516,14 @@ function Composer({
 }
 
 function ChatBubble({ item }: { item: FeedItem & { kind: 'chat' } }) {
+  const text = item.loading && !item.text ? 'Thinking...' : item.text || 'No response.';
   return (
     <div className={`bg-surface border border-border rounded-xl py-3.5 px-4 flex flex-col gap-1.5 ${item.role === 'user' ? 'bg-surface-2' : ''}`}>
       <div className={`text-[11px] font-bold uppercase tracking-wide ${item.role === 'user' ? 'text-accent' : 'text-text-dim'}`}>
         {item.role === 'user' ? 'You' : 'birdy'}
       </div>
-      <div className="text-sm leading-relaxed whitespace-pre-wrap break-words">
-        {item.loading && !item.text ? 'Thinking...' : item.text || 'No response.'}
+      <div className={item.role === 'user' ? 'text-sm leading-relaxed whitespace-pre-wrap break-words text-text' : ''}>
+        {item.role === 'user' ? text : <MarkdownMessage text={text} />}
       </div>
     </div>
   );
