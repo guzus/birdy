@@ -513,7 +513,7 @@ function Composer({
       <textarea
         value={prompt}
         placeholder={busy ? 'Type to queue next message\u2026' : 'Ask birdy anything...'}
-        className="bg-bg border border-border rounded-[10px] text-text font-[inherit] text-sm py-2.5 px-3 min-h-[44px] max-h-[150px] resize-y outline-none leading-snug w-full focus:border-accent placeholder:text-text-dim"
+        className="bg-bg border border-border rounded-[10px] text-text font-[inherit] text-sm py-2.5 px-3 min-h-[44px] max-h-[120px] sm:max-h-[150px] resize-none sm:resize-y outline-none leading-snug w-full focus:border-accent placeholder:text-text-dim"
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === 'Enter' && !e.shiftKey && !isMobile) {
@@ -549,7 +549,7 @@ function Composer({
 function ChatBubble({ item }: { item: FeedItem & { kind: 'chat' } }) {
   const text = item.loading && !item.text ? 'Thinking...' : item.text || 'No response.';
   return (
-    <div className={`bg-surface border border-border rounded-xl py-3.5 px-4 flex flex-col gap-1.5 ${item.role === 'user' ? 'bg-surface-2' : ''}`}>
+    <div className={`bg-surface border border-border rounded-xl py-3 px-3 sm:py-3.5 sm:px-4 flex flex-col gap-1.5 ${item.role === 'user' ? 'bg-surface-2' : ''}`}>
       <div className={`text-[11px] font-bold uppercase tracking-wide ${item.role === 'user' ? 'text-accent' : 'text-text-dim'}`}>
         {item.role === 'user' ? 'You' : 'birdy'}
       </div>
