@@ -2,6 +2,8 @@ import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 
 const inviteCodeKey = 'birdy_host_invite_code';
+const cardsStorageKey = 'birdy_cards';
+const chatStorageKey = 'birdy_chat_items';
 
 type CardCategory = 'CRYPTO' | 'AI' | 'TRENDING' | 'SIGNAL' | 'RESEARCH';
 
@@ -459,6 +461,14 @@ function AlphaCardView({
   );
 }
 
+function sanitizeError(raw: string): string {
+  if (!raw) return 'Something went wrong.';
+  if (/<[a-z][\s\S]*>/i.test(raw)) return 'Request failed — server returned an error.';
+  const trimmed = raw.trim();
+  if (trimmed.length > 200) return trimmed.slice(0, 200) + '\u2026';
+  return trimmed;
+}
+
 function ScanIndicator({ tools, onCancel }: { tools: string[]; onCancel: () => void }) {
   return (
     <div className="bg-surface border border-border rounded-xl p-5 flex flex-col items-center gap-3">
@@ -488,35 +498,50 @@ function Composer({
   busy,
   onChange,
   onSend,
+  onStop,
 }: {
   prompt: string;
   busy: boolean;
   onChange: (v: string) => void;
   onSend: () => void;
+  onStop?: () => void;
 }) {
+  const isMobile = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches;
+
   return (
     <footer className="grid grid-cols-[minmax(0,1fr)_auto] gap-2.5 items-end bg-surface border border-border rounded-xl p-2.5">
       <textarea
         value={prompt}
-        disabled={busy}
-        placeholder="Ask birdy anything..."
+        placeholder={busy ? 'Type to queue next message\u2026' : 'Ask birdy anything...'}
         className="bg-bg border border-border rounded-[10px] text-text font-[inherit] text-sm py-2.5 px-3 min-h-[44px] max-h-[150px] resize-y outline-none leading-snug w-full focus:border-accent placeholder:text-text-dim"
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={(e) => {
-          if (e.key === 'Enter' && !e.shiftKey) {
+          if (e.key === 'Enter' && !e.shiftKey && !isMobile) {
             e.preventDefault();
             onSend();
           }
         }}
       />
-      <button
-        type="button"
-        disabled={busy || !prompt.trim()}
-        className="w-10 h-10 rounded-[10px] border border-accent bg-accent text-bg text-lg font-bold cursor-pointer flex items-center justify-center transition-opacity duration-150 disabled:opacity-30 disabled:cursor-not-allowed"
-        onClick={onSend}
-      >
-        &rarr;
-      </button>
+      <div className="flex flex-col gap-1.5">
+        {busy && onStop && (
+          <button
+            type="button"
+            className="w-10 h-10 rounded-[10px] border border-danger/60 bg-danger/10 text-danger text-sm font-bold cursor-pointer flex items-center justify-center transition-opacity duration-150 hover:bg-danger/20"
+            onClick={onStop}
+            title="Stop"
+          >
+            &#9632;
+          </button>
+        )}
+        <button
+          type="button"
+          disabled={!prompt.trim()}
+          className="w-10 h-10 rounded-[10px] border border-accent bg-accent text-bg text-lg font-bold cursor-pointer flex items-center justify-center transition-opacity duration-150 disabled:opacity-30 disabled:cursor-not-allowed"
+          onClick={onSend}
+        >
+          &rarr;
+        </button>
+      </div>
     </footer>
   );
 }
@@ -546,8 +571,21 @@ export function App() {
   const [authStatus, setAuthStatus] = useState('Enter invite code.');
   const [authed, setAuthed] = useState(false);
 
-  const [cards, setCards] = useState<AlphaCard[]>([]);
-  const [chatItems, setChatItems] = useState<(FeedItem & { kind: 'chat' })[]>([]);
+  const [cards, setCards] = useState<AlphaCard[]>(() => {
+    try {
+      const stored = sessionStorage.getItem(cardsStorageKey);
+      if (!stored) return [];
+      return (JSON.parse(stored) as AlphaCard[]).map((c) => ({ ...c, timestamp: new Date(c.timestamp) }));
+    } catch { return []; }
+  });
+  const [chatItems, setChatItems] = useState<(FeedItem & { kind: 'chat' })[]>(() => {
+    try {
+      const stored = sessionStorage.getItem(chatStorageKey);
+      if (!stored) return [];
+      const items = JSON.parse(stored) as (FeedItem & { kind: 'chat' })[];
+      return items.map((item) => (item.loading ? { ...item, loading: false } : item));
+    } catch { return []; }
+  });
   const [scanning, setScanning] = useState(false);
   const [scanTools, setScanTools] = useState<string[]>([]);
   const [prompt, setPrompt] = useState('');
@@ -557,10 +595,22 @@ export function App() {
   const streamRunRef = useRef(0);
   const didAutoAuthRef = useRef(false);
   const feedRef = useRef<HTMLDivElement>(null);
+  const chatItemsRef = useRef(chatItems);
+  chatItemsRef.current = chatItems;
+  const queuedPromptRef = useRef<string | null>(null);
+  const doSendRef = useRef<((ask: string) => void) | undefined>(undefined);
 
   useEffect(() => {
     inviteCodeRef.current = inviteCode;
   }, [inviteCode]);
+
+  useEffect(() => {
+    try { sessionStorage.setItem(cardsStorageKey, JSON.stringify(cards)); } catch {}
+  }, [cards]);
+
+  useEffect(() => {
+    try { sessionStorage.setItem(chatStorageKey, JSON.stringify(chatItems)); } catch {}
+  }, [chatItems]);
 
   const persistInviteCode = useCallback((code: string) => {
     window.localStorage.setItem(inviteCodeKey, code);
@@ -726,6 +776,17 @@ export function App() {
     setScanTools([]);
   }, []);
 
+  const cancelChat = useCallback(() => {
+    streamAbortRef.current?.abort();
+    streamAbortRef.current = null;
+    setGenBusy(false);
+    setChatItems((prev) =>
+      prev.map((item) =>
+        item.loading ? { ...item, loading: false, text: item.text || 'Cancelled.' } : item,
+      ),
+    );
+  }, []);
+
   const verifyInviteCode = useCallback(
     async (rawCode?: string) => {
       const code = (rawCode ?? inviteCodeRef.current).trim();
@@ -779,8 +840,9 @@ export function App() {
   useEffect(() => {
     if (!authed || didAutoScanRef.current) return;
     didAutoScanRef.current = true;
+    if (cards.length > 0) return; // skip auto-scan if session has data
     void runScan();
-  }, [authed, runScan]);
+  }, [authed, runScan]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     return () => {
@@ -862,7 +924,7 @@ Be concise but thorough.`;
             if (streamRunRef.current !== runID) return;
             setChatItems((prev) =>
               prev.map((item) =>
-                item.id === assistantId ? { ...item, text: err || 'Error', loading: false } : item,
+                item.id === assistantId ? { ...item, text: sanitizeError(err), loading: false } : item,
               ),
             );
           },
@@ -873,7 +935,7 @@ Be concise but thorough.`;
         setChatItems((prev) =>
           prev.map((item) =>
             item.id === assistantId
-              ? { ...item, text: err instanceof Error ? err.message : 'Request failed', loading: false }
+              ? { ...item, text: sanitizeError(err instanceof Error ? err.message : 'Request failed'), loading: false }
               : item,
           ),
         );
@@ -885,12 +947,31 @@ Be concise but thorough.`;
     [genBusy, scanning, streamChat],
   );
 
-  const sendMessage = useCallback(async () => {
-    const ask = prompt.trim();
-    if (!ask || genBusy || scanning) return;
+  const buildChatPrompt = useCallback((newMessage: string): string => {
+    const history = chatItemsRef.current
+      .filter((item) => item.text && !item.loading)
+      .slice(-10);
+    if (history.length === 0) return newMessage;
+    const lines = history.map((item) =>
+      `${item.role === 'user' ? 'User' : 'Assistant'}: ${item.text}`,
+    ).join('\n\n');
+    return `Conversation so far:\n${lines}\n\nUser: ${newMessage}\n\nContinue the conversation. Respond to the latest message using the context above.`;
+  }, []);
+
+  const sendMessage = useCallback(async (overridePrompt?: string) => {
+    const ask = (overridePrompt ?? prompt).trim();
+    if (!ask) return;
+
+    if (genBusy || scanning) {
+      queuedPromptRef.current = ask;
+      if (!overridePrompt) setPrompt('');
+      return;
+    }
 
     setGenBusy(true);
-    setPrompt('');
+    if (!overridePrompt) setPrompt('');
+
+    const contextPrompt = buildChatPrompt(ask);
 
     const userItem: FeedItem & { kind: 'chat' } = {
       kind: 'chat',
@@ -915,7 +996,7 @@ Be concise but thorough.`;
     const runID = ++streamRunRef.current;
 
     try {
-      await streamChat(ask, {
+      await streamChat(contextPrompt, {
         signal: controller.signal,
         onToken: (text) => {
           if (streamRunRef.current !== runID) return;
@@ -944,7 +1025,7 @@ Be concise but thorough.`;
           if (streamRunRef.current !== runID) return;
           setChatItems((prev) =>
             prev.map((item) =>
-              item.id === assistantId ? { ...item, text: err || 'Error', loading: false } : item,
+              item.id === assistantId ? { ...item, text: sanitizeError(err), loading: false } : item,
             ),
           );
         },
@@ -955,7 +1036,7 @@ Be concise but thorough.`;
       setChatItems((prev) =>
         prev.map((item) =>
           item.id === assistantId
-            ? { ...item, text: err instanceof Error ? err.message : 'Request failed', loading: false }
+            ? { ...item, text: sanitizeError(err instanceof Error ? err.message : 'Request failed'), loading: false }
             : item,
         ),
       );
@@ -963,7 +1044,17 @@ Be concise but thorough.`;
       if (streamRunRef.current === runID) setGenBusy(false);
       if (streamAbortRef.current === controller) streamAbortRef.current = null;
     }
-  }, [prompt, genBusy, scanning, streamChat]);
+  }, [prompt, genBusy, scanning, streamChat, buildChatPrompt]);
+
+  doSendRef.current = (ask: string) => void sendMessage(ask);
+
+  useEffect(() => {
+    if (genBusy || scanning) return;
+    const queued = queuedPromptRef.current;
+    if (!queued) return;
+    queuedPromptRef.current = null;
+    doSendRef.current?.(queued);
+  }, [genBusy, scanning]);
 
   useEffect(() => {
     if (feedRef.current) {
@@ -1037,6 +1128,7 @@ Be concise but thorough.`;
         busy={genBusy || scanning}
         onChange={setPrompt}
         onSend={() => void sendMessage()}
+        onStop={genBusy ? cancelChat : scanning ? cancelScan : undefined}
       />
     </div>
   );
