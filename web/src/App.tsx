@@ -1034,26 +1034,6 @@ export function App() {
     }
   }, [cards, chatItems, scanning]);
 
-  if (!authed) {
-    return (
-      <div className="h-full max-w-[640px] mx-auto grid grid-rows-[auto_minmax(0,1fr)] p-3 sm:p-4 gap-0">
-        <header className="flex items-center justify-between py-3 border-b border-border">
-          <h1 className="m-0 text-lg font-semibold tracking-tight text-text">birdy</h1>
-          <span className="text-[11px] text-text-dim">
-            {authBusy ? 'checking...' : ''}
-          </span>
-        </header>
-        <InvitePanel
-          inviteCode={inviteCode}
-          status={authStatus}
-          busy={authBusy}
-          onChange={setInviteCode}
-          onSubmit={() => void verifyInviteCode(inviteCodeRef.current)}
-        />
-      </div>
-    );
-  }
-
   const handleNewChat = useCallback(() => {
     streamAbortRef.current?.abort();
     streamAbortRef.current = null;
@@ -1090,6 +1070,26 @@ export function App() {
       return next;
     });
   }, [activeConvId]);
+
+  if (!authed) {
+    return (
+      <div className="h-full max-w-[640px] mx-auto grid grid-rows-[auto_minmax(0,1fr)] p-3 sm:p-4 gap-0">
+        <header className="flex items-center justify-between py-3 border-b border-border">
+          <h1 className="m-0 text-lg font-semibold tracking-tight text-text">birdy</h1>
+          <span className="text-[11px] text-text-dim">
+            {authBusy ? 'checking...' : ''}
+          </span>
+        </header>
+        <InvitePanel
+          inviteCode={inviteCode}
+          status={authStatus}
+          busy={authBusy}
+          onChange={setInviteCode}
+          onSubmit={() => void verifyInviteCode(inviteCodeRef.current)}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="h-full flex">
