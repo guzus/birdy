@@ -594,7 +594,7 @@ function Composer({
 function ChatBubble({ item }: { item: FeedItem & { kind: 'chat' } }) {
   const text = item.loading && !item.text ? 'Thinking...' : item.text || 'No response.';
   return (
-    <div className={`border-b border-border py-3 sm:py-4 flex flex-col gap-1 ${item.role === 'user' ? 'bg-bg-2 -mx-3 px-3 sm:-mx-4 sm:px-4' : ''}`}>
+    <div className={`border-b border-border py-3 sm:py-4 flex flex-col gap-1 ${item.role === 'user' ? 'bg-accent-light rounded' : ''}`}>
       <div className={`text-[11px] font-medium uppercase tracking-wide ${item.role === 'user' ? 'text-text' : 'text-text-dim'}`}>
         {item.role === 'user' ? 'You' : 'birdy'}
       </div>
@@ -1103,7 +1103,7 @@ export function App() {
           {conversations.map(conv => (
             <div
               key={conv.id}
-              className={`group flex items-center cursor-pointer border-b border-border/30 ${conv.id === activeConvId ? 'bg-bg-2' : 'hover:bg-bg-2/50'}`}
+              className={`group flex items-center cursor-pointer border-b border-border/30 ${conv.id === activeConvId ? 'bg-accent-light' : 'hover:bg-bg-2/50'}`}
             >
               <button
                 onClick={() => switchConv(conv.id)}
@@ -1149,15 +1149,7 @@ export function App() {
             </button>
             <h1 className="m-0 text-lg font-semibold tracking-tight text-text">birdy</h1>
           </div>
-          <div className="flex items-center gap-4">
-            <button
-              className="text-text-dim text-sm cursor-pointer bg-transparent border-none font-[inherit] hover:text-text transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-              disabled={scanning || genBusy}
-              onClick={() => void runScan()}
-            >
-              {scanning ? 'scanning...' : 'Scan'}
-            </button>
-          </div>
+          <div className="flex items-center gap-4"></div>
         </header>
 
         <main className="min-h-0 overflow-y-auto flex flex-col py-1 hide-scrollbar" ref={feedRef}>
