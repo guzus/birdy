@@ -459,7 +459,7 @@ function AlphaCardView({
   );
 }
 
-function ScanIndicator({ tools }: { tools: string[] }) {
+function ScanIndicator({ tools, onCancel }: { tools: string[]; onCancel: () => void }) {
   return (
     <div className="bg-surface border border-border rounded-xl p-5 flex flex-col items-center gap-3">
       <div className="w-3 h-3 rounded-full bg-accent animate-pulse-dot" />
@@ -473,6 +473,12 @@ function ScanIndicator({ tools }: { tools: string[] }) {
           ))}
         </div>
       )}
+      <button
+        onClick={onCancel}
+        className="mt-1 px-4 py-1.5 text-[12px] font-medium text-text-muted bg-surface-2 border border-border rounded-lg hover:bg-border hover:text-text transition-colors cursor-pointer"
+      >
+        Cancel
+      </button>
     </div>
   );
 }
@@ -712,6 +718,13 @@ export function App() {
       if (streamAbortRef.current === controller) streamAbortRef.current = null;
     }
   }, [scanning, genBusy, streamChat]);
+
+  const cancelScan = useCallback(() => {
+    streamAbortRef.current?.abort();
+    streamAbortRef.current = null;
+    setScanning(false);
+    setScanTools([]);
+  }, []);
 
   const verifyInviteCode = useCallback(
     async (rawCode?: string) => {
@@ -1002,7 +1015,7 @@ Be concise but thorough.`;
       </header>
 
       <main className="min-h-0 overflow-y-auto flex flex-col gap-3 py-1 scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent" ref={feedRef}>
-        {scanning && <ScanIndicator tools={scanTools} />}
+        {scanning && <ScanIndicator tools={scanTools} onCancel={cancelScan} />}
 
         {!scanning && cards.length === 0 && chatItems.length === 0 && (
           <div className="flex items-center justify-center h-[200px] text-text-dim text-sm">
