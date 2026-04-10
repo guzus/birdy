@@ -1132,7 +1132,13 @@ export function App() {
       )}
 
       {/* Main content */}
-      <div className="flex-1 min-w-0 h-full max-w-[640px] mx-auto grid grid-rows-[auto_minmax(0,1fr)_auto] p-3 sm:p-4 gap-0">
+      <div className="flex-1 min-w-0 h-full flex flex-col">
+        {/* Desktop promo banner */}
+        <div className="hidden md:flex items-center justify-end gap-4 px-4 py-1.5 text-[11px] text-text-dim border-b border-border/50">
+          <a href="https://memetherscan.xyz" target="_blank" rel="noreferrer" className="hover:text-text transition-colors no-underline text-text-dim">memetherscan.xyz &mdash; Monitor trending memes</a>
+          <a href="https://polymarket.com/?r=s3xy" target="_blank" rel="noreferrer" className="hover:text-text transition-colors no-underline text-text-dim">Polymarket &mdash; Bet on anything</a>
+        </div>
+      <div className="flex-1 min-w-0 max-w-[640px] mx-auto w-full grid grid-rows-[auto_minmax(0,1fr)_auto] p-3 sm:p-4 gap-0">
         <header className="flex items-center justify-between py-3 border-b border-border">
           <div className="flex items-center gap-3">
             <button
@@ -1186,6 +1192,7 @@ export function App() {
           onSend={() => void sendMessage()}
           onStop={genBusy ? cancelChat : scanning ? cancelScan : undefined}
         />
+      </div>
       </div>
     </div>
   );
