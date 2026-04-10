@@ -835,13 +835,7 @@ export function App() {
     void verifyInviteCode(inviteCodeRef.current);
   }, [verifyInviteCode]);
 
-  const didAutoScanRef = useRef(false);
-  useEffect(() => {
-    if (!authed || didAutoScanRef.current) return;
-    didAutoScanRef.current = true;
-    if (cards.length > 0) return; // skip auto-scan if session has data
-    void runScan();
-  }, [authed, runScan]); // eslint-disable-line react-hooks/exhaustive-deps
+  // No auto-scan — user triggers it manually via CTA or Refresh button.
 
   useEffect(() => {
     return () => {
@@ -1085,22 +1079,48 @@ Be concise but thorough.`;
     <div className="h-full max-w-[640px] mx-auto grid grid-rows-[auto_minmax(0,1fr)_auto] p-3 sm:p-4 gap-0">
       <header className="flex items-center justify-between py-3 border-b border-border">
         <h1 className="m-0 text-lg font-semibold tracking-tight text-text">birdy</h1>
-        <button
-          className="text-text-dim text-sm cursor-pointer bg-transparent border-none font-[inherit] hover:text-text transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-          disabled={scanning || genBusy}
-          onClick={() => void runScan()}
-          title="Refresh"
-        >
-          {scanning ? 'scanning...' : 'Refresh'}
-        </button>
+        <div className="flex items-center gap-4">
+          {(chatItems.length > 0 || cards.length > 0) && (
+            <button
+              className="text-text-dim text-sm cursor-pointer bg-transparent border-none font-[inherit] hover:text-text transition-colors"
+              onClick={() => {
+                streamAbortRef.current?.abort();
+                streamAbortRef.current = null;
+                setScanning(false);
+                setScanTools([]);
+                setGenBusy(false);
+                setCards([]);
+                setChatItems([]);
+                queuedPromptRef.current = null;
+              }}
+            >
+              New
+            </button>
+          )}
+          <button
+            className="text-text-dim text-sm cursor-pointer bg-transparent border-none font-[inherit] hover:text-text transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+            disabled={scanning || genBusy}
+            onClick={() => void runScan()}
+            title="Refresh"
+          >
+            {scanning ? 'scanning...' : 'Refresh'}
+          </button>
+        </div>
       </header>
 
       <main className="min-h-0 overflow-y-auto flex flex-col py-1 hide-scrollbar" ref={feedRef}>
         {scanning && <ScanIndicator tools={scanTools} onCancel={cancelScan} />}
 
         {!scanning && cards.length === 0 && chatItems.length === 0 && (
-          <div className="flex items-center justify-center h-[200px] text-text-dim text-sm">
-            <p className="m-0">No signals yet. Scan starting...</p>
+          <div className="flex flex-col items-center justify-center h-[300px] gap-4">
+            <p className="m-0 text-text-dim text-sm">No signals yet.</p>
+            <button
+              className="bg-text text-bg border-none rounded-lg font-[inherit] text-sm font-medium py-2.5 px-6 cursor-pointer hover:opacity-80 transition-opacity disabled:opacity-30 disabled:cursor-not-allowed"
+              disabled={genBusy}
+              onClick={() => void runScan()}
+            >
+              Scan Timeline
+            </button>
           </div>
         )}
 
