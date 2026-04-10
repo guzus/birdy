@@ -2,8 +2,7 @@ import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 
 const inviteCodeKey = 'birdy_host_invite_code';
-const cardsStorageKey = 'birdy_cards';
-const chatStorageKey = 'birdy_chat_items';
+const conversationsKey = 'birdy_conversations';
 
 type CardCategory = 'CRYPTO' | 'AI' | 'TRENDING' | 'SIGNAL' | 'RESEARCH';
 
@@ -20,6 +19,53 @@ type AlphaCard = {
 type FeedItem =
   | { kind: 'card'; card: AlphaCard }
   | { kind: 'chat'; id: string; role: 'user' | 'assistant'; text: string; loading: boolean };
+
+type Conversation = {
+  id: string;
+  title: string;
+  chatItems: (FeedItem & { kind: 'chat' })[];
+  cards: AlphaCard[];
+  createdAt: number;
+  updatedAt: number;
+};
+
+function makeConvId() {
+  return `conv-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function loadConversations(): Conversation[] {
+  try {
+    const raw = localStorage.getItem(conversationsKey);
+    if (raw) {
+      return (JSON.parse(raw) as Conversation[]).map(c => ({
+        ...c,
+        cards: c.cards.map(card => ({ ...card, timestamp: new Date(card.timestamp) })),
+        chatItems: c.chatItems.map(item => item.loading ? { ...item, loading: false } : item),
+      }));
+    }
+    // Migrate legacy sessionStorage data
+    const oldCards = sessionStorage.getItem('birdy_cards');
+    const oldChat = sessionStorage.getItem('birdy_chat_items');
+    if (oldCards || oldChat) {
+      const cards = oldCards
+        ? (JSON.parse(oldCards) as AlphaCard[]).map(c => ({ ...c, timestamp: new Date(c.timestamp) }))
+        : [];
+      const chatItems = oldChat
+        ? (JSON.parse(oldChat) as (FeedItem & { kind: 'chat' })[]).map(i => i.loading ? { ...i, loading: false } : i)
+        : [];
+      sessionStorage.removeItem('birdy_cards');
+      sessionStorage.removeItem('birdy_chat_items');
+      if (cards.length > 0 || chatItems.length > 0) {
+        const firstMsg = chatItems.find(i => i.role === 'user');
+        return [{
+          id: makeConvId(), title: firstMsg?.text.slice(0, 50) ?? 'Imported chat',
+          chatItems, cards, createdAt: Date.now(), updatedAt: Date.now(),
+        }];
+      }
+    }
+  } catch {}
+  return [];
+}
 
 type MarkdownBlock =
   | { kind: 'heading'; level: 1 | 2 | 3 | 4; text: string }
@@ -570,25 +616,35 @@ export function App() {
   const [authStatus, setAuthStatus] = useState('Enter invite code.');
   const [authed, setAuthed] = useState(false);
 
-  const [cards, setCards] = useState<AlphaCard[]>(() => {
-    try {
-      const stored = sessionStorage.getItem(cardsStorageKey);
-      if (!stored) return [];
-      return (JSON.parse(stored) as AlphaCard[]).map((c) => ({ ...c, timestamp: new Date(c.timestamp) }));
-    } catch { return []; }
+  const [conversations, setConversations] = useState<Conversation[]>(loadConversations);
+  const [activeConvId, setActiveConvId] = useState<string | null>(() => {
+    const convs = loadConversations();
+    return convs.length > 0 ? convs[0].id : null;
   });
-  const [chatItems, setChatItems] = useState<(FeedItem & { kind: 'chat' })[]>(() => {
-    try {
-      const stored = sessionStorage.getItem(chatStorageKey);
-      if (!stored) return [];
-      const items = JSON.parse(stored) as (FeedItem & { kind: 'chat' })[];
-      return items.map((item) => (item.loading ? { ...item, loading: false } : item));
-    } catch { return []; }
-  });
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [scanTools, setScanTools] = useState<string[]>([]);
   const [prompt, setPrompt] = useState('');
   const [genBusy, setGenBusy] = useState(false);
+
+  const activeConv = conversations.find(c => c.id === activeConvId) ?? null;
+  const cards = activeConv?.cards ?? [];
+  const chatItems = activeConv?.chatItems ?? [];
+
+  const updateConv = useCallback((id: string, fn: (c: Conversation) => Conversation) => {
+    setConversations(prev => prev.map(c => c.id === id ? fn(c) : c));
+  }, []);
+
+  const ensureConv = useCallback((): string => {
+    if (activeConvId) return activeConvId;
+    const newConv: Conversation = {
+      id: makeConvId(), title: 'New chat', chatItems: [], cards: [],
+      createdAt: Date.now(), updatedAt: Date.now(),
+    };
+    setConversations(prev => [newConv, ...prev]);
+    setActiveConvId(newConv.id);
+    return newConv.id;
+  }, [activeConvId]);
 
   const streamAbortRef = useRef<AbortController | null>(null);
   const streamRunRef = useRef(0);
@@ -604,12 +660,8 @@ export function App() {
   }, [inviteCode]);
 
   useEffect(() => {
-    try { sessionStorage.setItem(cardsStorageKey, JSON.stringify(cards)); } catch {}
-  }, [cards]);
-
-  useEffect(() => {
-    try { sessionStorage.setItem(chatStorageKey, JSON.stringify(chatItems)); } catch {}
-  }, [chatItems]);
+    try { localStorage.setItem(conversationsKey, JSON.stringify(conversations)); } catch {}
+  }, [conversations]);
 
   const persistInviteCode = useCallback((code: string) => {
     window.localStorage.setItem(inviteCodeKey, code);
@@ -711,6 +763,7 @@ export function App() {
 
   const runScan = useCallback(async () => {
     if (scanning || genBusy) return;
+    const convId = ensureConv();
     setScanning(true);
     setScanTools([]);
 
@@ -720,6 +773,10 @@ export function App() {
     const runID = ++streamRunRef.current;
 
     let accumulated = '';
+
+    const applyCards = (parsed: AlphaCard[]) => {
+      if (parsed.length > 0) updateConv(convId, c => ({ ...c, cards: parsed, updatedAt: Date.now() }));
+    };
 
     try {
       await streamChat(SCAN_PROMPT, {
@@ -738,17 +795,13 @@ export function App() {
         },
         onDone: (fullText) => {
           if (streamRunRef.current !== runID) return;
-          const parsed = parseCardsFromMarkdown(fullText);
-          if (parsed.length > 0) setCards(parsed);
+          applyCards(parseCardsFromMarkdown(fullText));
           setScanning(false);
           setScanTools([]);
         },
         onError: () => {
           if (streamRunRef.current !== runID) return;
-          if (accumulated) {
-            const parsed = parseCardsFromMarkdown(accumulated);
-            if (parsed.length > 0) setCards(parsed);
-          }
+          if (accumulated) applyCards(parseCardsFromMarkdown(accumulated));
           setScanning(false);
           setScanTools([]);
         },
@@ -756,17 +809,14 @@ export function App() {
     } catch (err) {
       if (controller.signal.aborted) return;
       if (streamRunRef.current !== runID) return;
-      if (accumulated) {
-        const parsed = parseCardsFromMarkdown(accumulated);
-        if (parsed.length > 0) setCards(parsed);
-      }
+      if (accumulated) applyCards(parseCardsFromMarkdown(accumulated));
       setScanning(false);
       setScanTools([]);
     } finally {
       if (streamRunRef.current === runID) setScanning(false);
       if (streamAbortRef.current === controller) streamAbortRef.current = null;
     }
-  }, [scanning, genBusy, streamChat]);
+  }, [scanning, genBusy, streamChat, ensureConv, updateConv]);
 
   const cancelScan = useCallback(() => {
     streamAbortRef.current?.abort();
@@ -779,12 +829,16 @@ export function App() {
     streamAbortRef.current?.abort();
     streamAbortRef.current = null;
     setGenBusy(false);
-    setChatItems((prev) =>
-      prev.map((item) =>
-        item.loading ? { ...item, loading: false, text: item.text || 'Cancelled.' } : item,
-      ),
-    );
-  }, []);
+    if (activeConvId) {
+      updateConv(activeConvId, c => ({
+        ...c,
+        chatItems: c.chatItems.map(item =>
+          item.loading ? { ...item, loading: false, text: item.text || 'Cancelled.' } : item,
+        ),
+        updatedAt: Date.now(),
+      }));
+    }
+  }, [activeConvId, updateConv]);
 
   const verifyInviteCode = useCallback(
     async (rawCode?: string) => {
@@ -847,97 +901,53 @@ export function App() {
   const handleDeepDive = useCallback(
     async (card: AlphaCard) => {
       if (genBusy || scanning) return;
+      const convId = ensureConv();
       setGenBusy(true);
 
       const userItem: FeedItem & { kind: 'chat' } = {
-        kind: 'chat',
-        id: `u-${Date.now()}`,
-        role: 'user',
-        text: `Deep dive: ${card.title}`,
-        loading: false,
+        kind: 'chat', id: `u-${Date.now()}`, role: 'user',
+        text: `Deep dive: ${card.title}`, loading: false,
       };
       const assistantId = `a-${Date.now()}`;
       const assistantItem: FeedItem & { kind: 'chat' } = {
-        kind: 'chat',
-        id: assistantId,
-        role: 'assistant',
-        text: '',
-        loading: true,
+        kind: 'chat', id: assistantId, role: 'assistant', text: '', loading: true,
       };
-      setChatItems((prev) => [...prev, userItem, assistantItem]);
+      updateConv(convId, c => ({
+        ...c,
+        chatItems: [...c.chatItems, userItem, assistantItem],
+        title: c.chatItems.some(i => i.role === 'user') ? c.title : `Deep dive: ${card.title}`.slice(0, 50),
+        updatedAt: Date.now(),
+      }));
 
       const controller = new AbortController();
       streamAbortRef.current?.abort();
       streamAbortRef.current = controller;
       const runID = ++streamRunRef.current;
 
-      const deepDivePrompt = `Deep dive into this topic from Twitter: "${card.title}"
+      const mapItem = (fn: (item: FeedItem & { kind: 'chat' }) => FeedItem & { kind: 'chat' }) =>
+        updateConv(convId, c => ({ ...c, chatItems: c.chatItems.map(i => i.id === assistantId ? fn(i) : i), updatedAt: Date.now() }));
 
-Context from initial scan:
-${card.rawMarkdown}
-
-Instructions:
-1. Search for more details using \`birdy search "${card.title}"\`
-2. Look for related threads and discussions
-3. Provide a thorough analysis with:
-   - What's actually happening
-   - Key players and their positions
-   - Potential implications
-   - Links to relevant tweets/threads if found
-
-Be concise but thorough.`;
+      const deepDivePrompt = `Deep dive into this topic from Twitter: "${card.title}"\n\nContext from initial scan:\n${card.rawMarkdown}\n\nInstructions:\n1. Search for more details using \`birdy search "${card.title}"\`\n2. Look for related threads and discussions\n3. Provide a thorough analysis with:\n   - What's actually happening\n   - Key players and their positions\n   - Potential implications\n   - Links to relevant tweets/threads if found\n\nBe concise but thorough.`;
 
       try {
         await streamChat(deepDivePrompt, {
           signal: controller.signal,
-          onToken: (text) => {
-            if (streamRunRef.current !== runID) return;
-            setChatItems((prev) =>
-              prev.map((item) =>
-                item.id === assistantId ? { ...item, text: item.text + text } : item,
-              ),
-            );
-          },
-          onSnapshot: (text) => {
-            if (streamRunRef.current !== runID) return;
-            setChatItems((prev) =>
-              prev.map((item) => (item.id === assistantId ? { ...item, text } : item)),
-            );
-          },
+          onToken: (text) => { if (streamRunRef.current !== runID) return; mapItem(i => ({ ...i, text: i.text + text })); },
+          onSnapshot: (text) => { if (streamRunRef.current !== runID) return; mapItem(i => ({ ...i, text })); },
           onTool: () => {},
-          onDone: () => {
-            if (streamRunRef.current !== runID) return;
-            setChatItems((prev) =>
-              prev.map((item) =>
-                item.id === assistantId ? { ...item, loading: false } : item,
-              ),
-            );
-          },
-          onError: (err) => {
-            if (streamRunRef.current !== runID) return;
-            setChatItems((prev) =>
-              prev.map((item) =>
-                item.id === assistantId ? { ...item, text: sanitizeError(err), loading: false } : item,
-              ),
-            );
-          },
+          onDone: () => { if (streamRunRef.current !== runID) return; mapItem(i => ({ ...i, loading: false })); },
+          onError: (err) => { if (streamRunRef.current !== runID) return; mapItem(i => ({ ...i, text: sanitizeError(err), loading: false })); },
         });
       } catch (err) {
         if (controller.signal.aborted) return;
         if (streamRunRef.current !== runID) return;
-        setChatItems((prev) =>
-          prev.map((item) =>
-            item.id === assistantId
-              ? { ...item, text: sanitizeError(err instanceof Error ? err.message : 'Request failed'), loading: false }
-              : item,
-          ),
-        );
+        mapItem(i => ({ ...i, text: sanitizeError(err instanceof Error ? err.message : 'Request failed'), loading: false }));
       } finally {
         if (streamRunRef.current === runID) setGenBusy(false);
         if (streamAbortRef.current === controller) streamAbortRef.current = null;
       }
     },
-    [genBusy, scanning, streamChat],
+    [genBusy, scanning, streamChat, ensureConv, updateConv],
   );
 
   const buildChatPrompt = useCallback((newMessage: string): string => {
@@ -961,27 +971,28 @@ Be concise but thorough.`;
       return;
     }
 
+    const convId = ensureConv();
     setGenBusy(true);
     if (!overridePrompt) setPrompt('');
 
     const contextPrompt = buildChatPrompt(ask);
 
     const userItem: FeedItem & { kind: 'chat' } = {
-      kind: 'chat',
-      id: `u-${Date.now()}`,
-      role: 'user',
-      text: ask,
-      loading: false,
+      kind: 'chat', id: `u-${Date.now()}`, role: 'user', text: ask, loading: false,
     };
     const assistantId = `a-${Date.now()}`;
     const assistantItem: FeedItem & { kind: 'chat' } = {
-      kind: 'chat',
-      id: assistantId,
-      role: 'assistant',
-      text: '',
-      loading: true,
+      kind: 'chat', id: assistantId, role: 'assistant', text: '', loading: true,
     };
-    setChatItems((prev) => [...prev, userItem, assistantItem]);
+    updateConv(convId, c => ({
+      ...c,
+      chatItems: [...c.chatItems, userItem, assistantItem],
+      title: c.chatItems.some(i => i.role === 'user') ? c.title : ask.slice(0, 50),
+      updatedAt: Date.now(),
+    }));
+
+    const mapItem = (fn: (item: FeedItem & { kind: 'chat' }) => FeedItem & { kind: 'chat' }) =>
+      updateConv(convId, c => ({ ...c, chatItems: c.chatItems.map(i => i.id === assistantId ? fn(i) : i), updatedAt: Date.now() }));
 
     const controller = new AbortController();
     streamAbortRef.current?.abort();
@@ -991,53 +1002,21 @@ Be concise but thorough.`;
     try {
       await streamChat(contextPrompt, {
         signal: controller.signal,
-        onToken: (text) => {
-          if (streamRunRef.current !== runID) return;
-          setChatItems((prev) =>
-            prev.map((item) =>
-              item.id === assistantId ? { ...item, text: item.text + text } : item,
-            ),
-          );
-        },
-        onSnapshot: (text) => {
-          if (streamRunRef.current !== runID) return;
-          setChatItems((prev) =>
-            prev.map((item) => (item.id === assistantId ? { ...item, text } : item)),
-          );
-        },
+        onToken: (text) => { if (streamRunRef.current !== runID) return; mapItem(i => ({ ...i, text: i.text + text })); },
+        onSnapshot: (text) => { if (streamRunRef.current !== runID) return; mapItem(i => ({ ...i, text })); },
         onTool: () => {},
-        onDone: () => {
-          if (streamRunRef.current !== runID) return;
-          setChatItems((prev) =>
-            prev.map((item) =>
-              item.id === assistantId ? { ...item, loading: false } : item,
-            ),
-          );
-        },
-        onError: (err) => {
-          if (streamRunRef.current !== runID) return;
-          setChatItems((prev) =>
-            prev.map((item) =>
-              item.id === assistantId ? { ...item, text: sanitizeError(err), loading: false } : item,
-            ),
-          );
-        },
+        onDone: () => { if (streamRunRef.current !== runID) return; mapItem(i => ({ ...i, loading: false })); },
+        onError: (err) => { if (streamRunRef.current !== runID) return; mapItem(i => ({ ...i, text: sanitizeError(err), loading: false })); },
       });
     } catch (err) {
       if (controller.signal.aborted) return;
       if (streamRunRef.current !== runID) return;
-      setChatItems((prev) =>
-        prev.map((item) =>
-          item.id === assistantId
-            ? { ...item, text: sanitizeError(err instanceof Error ? err.message : 'Request failed'), loading: false }
-            : item,
-        ),
-      );
+      mapItem(i => ({ ...i, text: sanitizeError(err instanceof Error ? err.message : 'Request failed'), loading: false }));
     } finally {
       if (streamRunRef.current === runID) setGenBusy(false);
       if (streamAbortRef.current === controller) streamAbortRef.current = null;
     }
-  }, [prompt, genBusy, scanning, streamChat, buildChatPrompt]);
+  }, [prompt, genBusy, scanning, streamChat, buildChatPrompt, ensureConv, updateConv]);
 
   doSendRef.current = (ask: string) => void sendMessage(ask);
 
@@ -1075,71 +1054,139 @@ Be concise but thorough.`;
     );
   }
 
+  const handleNewChat = useCallback(() => {
+    streamAbortRef.current?.abort();
+    streamAbortRef.current = null;
+    setScanning(false);
+    setScanTools([]);
+    setGenBusy(false);
+    queuedPromptRef.current = null;
+    const newConv: Conversation = {
+      id: makeConvId(), title: 'New chat', chatItems: [], cards: [],
+      createdAt: Date.now(), updatedAt: Date.now(),
+    };
+    setConversations(prev => [newConv, ...prev]);
+    setActiveConvId(newConv.id);
+    setSidebarOpen(false);
+  }, []);
+
+  const switchConv = useCallback((id: string) => {
+    streamAbortRef.current?.abort();
+    streamAbortRef.current = null;
+    setScanning(false);
+    setScanTools([]);
+    setGenBusy(false);
+    queuedPromptRef.current = null;
+    setActiveConvId(id);
+    setSidebarOpen(false);
+  }, []);
+
+  const deleteConv = useCallback((id: string) => {
+    setConversations(prev => {
+      const next = prev.filter(c => c.id !== id);
+      if (id === activeConvId) {
+        setActiveConvId(next.length > 0 ? next[0].id : null);
+      }
+      return next;
+    });
+  }, [activeConvId]);
+
   return (
-    <div className="h-full max-w-[640px] mx-auto grid grid-rows-[auto_minmax(0,1fr)_auto] p-3 sm:p-4 gap-0">
-      <header className="flex items-center justify-between py-3 border-b border-border">
-        <h1 className="m-0 text-lg font-semibold tracking-tight text-text">birdy</h1>
-        <div className="flex items-center gap-4">
-          {(chatItems.length > 0 || cards.length > 0) && (
-            <button
-              className="text-text-dim text-sm cursor-pointer bg-transparent border-none font-[inherit] hover:text-text transition-colors"
-              onClick={() => {
-                streamAbortRef.current?.abort();
-                streamAbortRef.current = null;
-                setScanning(false);
-                setScanTools([]);
-                setGenBusy(false);
-                setCards([]);
-                setChatItems([]);
-                queuedPromptRef.current = null;
-              }}
-            >
-              New
-            </button>
-          )}
-          <button
-            className="text-text-dim text-sm cursor-pointer bg-transparent border-none font-[inherit] hover:text-text transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-            disabled={scanning || genBusy}
-            onClick={() => void runScan()}
-            title="Refresh"
-          >
-            {scanning ? 'scanning...' : 'Refresh'}
-          </button>
+    <div className="h-full flex">
+      {/* Sidebar */}
+      <aside className={`fixed inset-y-0 left-0 z-30 w-[260px] bg-bg border-r border-border flex flex-col transition-transform duration-200 md:relative md:translate-x-0 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+        <div className="flex items-center justify-between p-3 border-b border-border">
+          <span className="text-sm font-semibold text-text">Chats</span>
+          <button onClick={handleNewChat} className="text-xs text-text-dim hover:text-text bg-transparent border-none cursor-pointer font-[inherit]">+ New</button>
         </div>
-      </header>
+        <div className="flex-1 overflow-y-auto hide-scrollbar">
+          {conversations.map(conv => (
+            <div
+              key={conv.id}
+              className={`group flex items-center cursor-pointer border-b border-border/30 ${conv.id === activeConvId ? 'bg-bg-2' : 'hover:bg-bg-2/50'}`}
+            >
+              <button
+                onClick={() => switchConv(conv.id)}
+                className="flex-1 text-left px-3 py-2.5 flex flex-col gap-0.5 bg-transparent border-none cursor-pointer font-[inherit] min-w-0"
+              >
+                <span className="text-sm text-text truncate block">{conv.title}</span>
+                <span className="text-[10px] text-text-dim font-mono">{timeAgo(new Date(conv.updatedAt))}</span>
+              </button>
+              <button
+                onClick={(e) => { e.stopPropagation(); deleteConv(conv.id); }}
+                className="hidden group-hover:block px-2 text-text-dim hover:text-danger text-xs bg-transparent border-none cursor-pointer"
+              >
+                &times;
+              </button>
+            </div>
+          ))}
+          {conversations.length === 0 && (
+            <p className="text-text-dim text-xs p-3 m-0">No conversations yet.</p>
+          )}
+        </div>
+      </aside>
 
-      <main className="min-h-0 overflow-y-auto flex flex-col py-1 hide-scrollbar" ref={feedRef}>
-        {scanning && <ScanIndicator tools={scanTools} onCancel={cancelScan} />}
+      {/* Mobile backdrop */}
+      {sidebarOpen && (
+        <div className="fixed inset-0 z-20 bg-black/20 md:hidden" onClick={() => setSidebarOpen(false)} />
+      )}
 
-        {!scanning && cards.length === 0 && chatItems.length === 0 && (
-          <div className="flex flex-col items-center justify-center h-[300px] gap-4">
-            <p className="m-0 text-text-dim text-sm">No signals yet.</p>
+      {/* Main content */}
+      <div className="flex-1 min-w-0 h-full max-w-[640px] mx-auto grid grid-rows-[auto_minmax(0,1fr)_auto] p-3 sm:p-4 gap-0">
+        <header className="flex items-center justify-between py-3 border-b border-border">
+          <div className="flex items-center gap-3">
             <button
-              className="bg-text text-bg border-none rounded-lg font-[inherit] text-sm font-medium py-2.5 px-6 cursor-pointer hover:opacity-80 transition-opacity disabled:opacity-30 disabled:cursor-not-allowed"
-              disabled={genBusy}
+              className="md:hidden text-text text-lg bg-transparent border-none cursor-pointer p-0 leading-none"
+              onClick={() => setSidebarOpen(o => !o)}
+            >
+              &#9776;
+            </button>
+            <h1 className="m-0 text-lg font-semibold tracking-tight text-text">birdy</h1>
+          </div>
+          <div className="flex items-center gap-4">
+            <button
+              className="text-text-dim text-sm cursor-pointer bg-transparent border-none font-[inherit] hover:text-text transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+              disabled={scanning || genBusy}
               onClick={() => void runScan()}
             >
-              Scan Timeline
+              {scanning ? 'scanning...' : 'Scan'}
             </button>
           </div>
-        )}
+        </header>
 
-        {cards.map((card) => (
-          <AlphaCardView key={card.id} card={card} onDeepDive={handleDeepDive} />
-        ))}
+        <main className="min-h-0 overflow-y-auto flex flex-col py-1 hide-scrollbar" ref={feedRef}>
+          {scanning && <ScanIndicator tools={scanTools} onCancel={cancelScan} />}
 
-        {chatItems.map((item) => (
-          <ChatBubble key={item.id} item={item} />
-        ))}
-      </main>
+          {!scanning && cards.length === 0 && chatItems.length === 0 && (
+            <div className="flex flex-col items-center justify-center h-[300px] gap-4">
+              <p className="m-0 text-text-dim text-sm">Start a conversation or scan your timeline.</p>
+              <button
+                className="bg-text text-bg border-none rounded-lg font-[inherit] text-sm font-medium py-2.5 px-6 cursor-pointer hover:opacity-80 transition-opacity disabled:opacity-30 disabled:cursor-not-allowed"
+                disabled={genBusy}
+                onClick={() => void runScan()}
+              >
+                Scan Timeline
+              </button>
+            </div>
+          )}
 
-      <Composer
-        prompt={prompt}
-        busy={genBusy || scanning}
-        onChange={setPrompt}
-        onSend={() => void sendMessage()}
-        onStop={genBusy ? cancelChat : scanning ? cancelScan : undefined}
-      />
+          {cards.map((card) => (
+            <AlphaCardView key={card.id} card={card} onDeepDive={handleDeepDive} />
+          ))}
+
+          {chatItems.map((item) => (
+            <ChatBubble key={item.id} item={item} />
+          ))}
+        </main>
+
+        <Composer
+          prompt={prompt}
+          busy={genBusy || scanning}
+          onChange={setPrompt}
+          onSend={() => void sendMessage()}
+          onStop={genBusy ? cancelChat : scanning ? cancelScan : undefined}
+        />
+      </div>
     </div>
   );
 }
