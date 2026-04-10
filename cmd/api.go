@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/guzus/birdy/internal/claude"
@@ -17,6 +19,64 @@ import (
 	"github.com/guzus/birdy/internal/runner"
 	"github.com/guzus/birdy/internal/state"
 	"github.com/guzus/birdy/internal/store"
+)
+
+// rateLimiter implements a per-IP sliding window rate limiter.
+type rateLimiter struct {
+	mu       sync.Mutex
+	requests map[string][]time.Time
+	limit    int
+	window   time.Duration
+}
+
+func newRateLimiter(limit int, window time.Duration) *rateLimiter {
+	return &rateLimiter{
+		requests: make(map[string][]time.Time),
+		limit:    limit,
+		window:   window,
+	}
+}
+
+func (rl *rateLimiter) allow(ip string) bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	now := time.Now()
+	cutoff := now.Add(-rl.window)
+
+	// Prune expired entries.
+	times := rl.requests[ip]
+	start := 0
+	for start < len(times) && times[start].Before(cutoff) {
+		start++
+	}
+	times = times[start:]
+
+	if len(times) >= rl.limit {
+		rl.requests[ip] = times
+		return false
+	}
+
+	rl.requests[ip] = append(times, now)
+	return true
+}
+
+func clientIP(r *http.Request) string {
+	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+		if ip, _, err := net.SplitHostPort(strings.TrimSpace(strings.SplitN(fwd, ",", 2)[0])); err == nil {
+			return ip
+		}
+		return strings.TrimSpace(strings.SplitN(fwd, ",", 2)[0])
+	}
+	if ip, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return ip
+	}
+	return r.RemoteAddr
+}
+
+var (
+	chatLimiter    = newRateLimiter(20, time.Minute)  // 20 chat requests/min per IP
+	commandLimiter = newRateLimiter(60, time.Minute)  // 60 command requests/min per IP
 )
 
 type apiError struct {
@@ -45,7 +105,12 @@ type apiChatRequest struct {
 	Model  string `json:"model,omitempty"`
 }
 
+const hostedPrivacyPrefix = `[SYSTEM RULE — PRIVACY: You are running in public hosted mode. Never reveal the underlying Twitter account name, handle, or credentials. Do NOT run "whoami", "account list", or "status" commands. If the user asks who you are or which account is being used, say you are "birdy" — a Twitter browsing assistant. Do not include account names in your output.]
+
+`
+
 func streamAPIChatModel(ctx context.Context, prompt, model, exePath string, emit func(claude.Event)) {
+	prompt = hostedPrivacyPrefix + prompt
 	if codex.IsSelected(model) {
 		codex.Stream(ctx, prompt, model, exePath, emit)
 		return
@@ -134,6 +199,10 @@ func handleAPICommand(inviteCode string) http.HandlerFunc {
 		}
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if !commandLimiter.allow(clientIP(r)) {
+			writeJSON(w, http.StatusTooManyRequests, apiError{OK: false, Error: "rate limit exceeded, try again shortly"})
 			return
 		}
 
@@ -261,6 +330,10 @@ func handleAPIChat(inviteCode string) http.HandlerFunc {
 		}
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if !chatLimiter.allow(clientIP(r)) {
+			writeJSON(w, http.StatusTooManyRequests, apiError{OK: false, Error: "rate limit exceeded, try again shortly"})
 			return
 		}
 
