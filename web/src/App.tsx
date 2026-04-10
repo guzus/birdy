@@ -427,7 +427,7 @@ function AlphaCardView({
 }) {
   const meta = categoryMeta[card.category];
   return (
-    <article className={`bg-surface border border-border rounded-xl p-4 flex flex-col gap-2.5 transition-[border-color] duration-150 hover:border-border-hover border-l-3 ${meta.leftBorder}`}>
+    <article className={`bg-surface border border-border rounded-xl p-3 sm:p-4 flex flex-col gap-2 sm:gap-2.5 transition-[border-color] duration-150 hover:border-border-hover border-l-3 ${meta.leftBorder}`}>
       <div className="flex items-center justify-between">
         <span className={`text-[10px] font-bold uppercase tracking-wide py-0.5 px-2 rounded-md ${meta.color} ${meta.bg} border ${meta.border}`}>
           {meta.icon} {meta.label}
@@ -452,7 +452,7 @@ function AlphaCardView({
         </div>
       )}
       <button
-        className="self-start bg-transparent border border-border text-text-muted text-xs font-semibold py-1.5 px-3.5 rounded-lg cursor-pointer font-[inherit] transition-all duration-150 hover:border-accent hover:text-accent"
+        className="self-start bg-transparent border border-border text-text-muted text-xs font-semibold py-2.5 px-4 rounded-lg cursor-pointer font-[inherit] transition-all duration-150 hover:border-accent hover:text-accent"
         onClick={() => onDeepDive(card)}
       >
         Deep Dive
@@ -509,7 +509,7 @@ function Composer({
   const isMobile = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches;
 
   return (
-    <footer className="grid grid-cols-[minmax(0,1fr)_auto] gap-2.5 items-end bg-surface border border-border rounded-xl p-2.5">
+    <footer className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 items-end bg-surface border border-border rounded-xl p-2 sm:p-2.5">
       <textarea
         value={prompt}
         placeholder={busy ? 'Type to queue next message\u2026' : 'Ask birdy anything...'}
@@ -1064,8 +1064,8 @@ Be concise but thorough.`;
 
   if (!authed) {
     return (
-      <div className="h-full max-w-[720px] mx-auto grid grid-rows-[auto_minmax(0,1fr)] p-3 gap-3">
-        <header className="flex items-center justify-between py-3.5 px-4 bg-surface border border-border rounded-xl">
+      <div className="h-full max-w-[720px] mx-auto grid grid-rows-[auto_minmax(0,1fr)] p-2 sm:p-3 gap-2 sm:gap-3">
+        <header className="flex items-center justify-between py-2.5 px-3 sm:py-3.5 sm:px-4 bg-surface border border-border rounded-xl">
           <div>
             <h1 className="m-0 text-xl font-bold tracking-tight text-accent">birdy alpha</h1>
           </div>
@@ -1085,8 +1085,8 @@ Be concise but thorough.`;
   }
 
   return (
-    <div className="h-full max-w-[720px] mx-auto grid grid-rows-[auto_minmax(0,1fr)_auto] p-3 gap-3">
-      <header className="flex items-center justify-between py-3.5 px-4 bg-surface border border-border rounded-xl">
+    <div className="h-full max-w-[720px] mx-auto grid grid-rows-[auto_minmax(0,1fr)_auto] p-2 sm:p-3 gap-2 sm:gap-3">
+      <header className="flex items-center justify-between py-2.5 px-3 sm:py-3.5 sm:px-4 bg-surface border border-border rounded-xl">
         <div>
           <h1 className="m-0 text-xl font-bold tracking-tight text-accent">birdy alpha</h1>
         </div>
@@ -1095,7 +1095,7 @@ Be concise but thorough.`;
             live
           </span>
           <button
-            className="bg-surface-2 border border-border text-text-muted w-8 h-8 rounded-lg text-base cursor-pointer flex items-center justify-center transition-all duration-150 hover:border-accent hover:text-accent disabled:opacity-40 disabled:cursor-not-allowed"
+            className="bg-surface-2 border border-border text-text-muted w-10 h-10 rounded-lg text-base cursor-pointer flex items-center justify-center transition-all duration-150 hover:border-accent hover:text-accent disabled:opacity-40 disabled:cursor-not-allowed"
             disabled={scanning || genBusy}
             onClick={() => void runScan()}
             title="Refresh scan"

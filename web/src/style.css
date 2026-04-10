@@ -22,7 +22,10 @@
 
 @layer base {
   html, body, #root {
-    @apply m-0 h-full;
+    @apply m-0;
+    height: 100dvh;
+    height: 100vh; /* fallback for older browsers */
+    height: 100dvh;
   }
 
   body {
@@ -30,6 +33,8 @@
     color: var(--color-text);
     font-family: 'Inter', -apple-system, sans-serif;
     -webkit-font-smoothing: antialiased;
+    -webkit-text-size-adjust: 100%;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
   }
 }
 
