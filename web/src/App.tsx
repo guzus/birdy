@@ -29,12 +29,12 @@ type MarkdownBlock =
   | { kind: 'code'; code: string }
   | { kind: 'rule' };
 
-const categoryMeta: Record<CardCategory, { icon: string; label: string; color: string; bg: string; border: string; leftBorder: string }> = {
-  CRYPTO: { icon: '\u{1F525}', label: 'CRYPTO', color: 'text-cat-crypto', bg: 'bg-cat-crypto/8', border: 'border-cat-crypto/20', leftBorder: 'border-l-cat-crypto' },
-  AI: { icon: '\u{1F916}', label: 'AI', color: 'text-cat-ai', bg: 'bg-cat-ai/8', border: 'border-cat-ai/20', leftBorder: 'border-l-cat-ai' },
-  TRENDING: { icon: '\u{1F4C8}', label: 'TRENDING', color: 'text-cat-trending', bg: 'bg-cat-trending/8', border: 'border-cat-trending/20', leftBorder: 'border-l-cat-trending' },
-  SIGNAL: { icon: '\u{1F4E1}', label: 'SIGNAL', color: 'text-cat-signal', bg: 'bg-cat-signal/8', border: 'border-cat-signal/20', leftBorder: 'border-l-cat-signal' },
-  RESEARCH: { icon: '\u{1F50D}', label: 'RESEARCH', color: 'text-cat-research', bg: 'bg-cat-research/8', border: 'border-cat-research/20', leftBorder: 'border-l-cat-research' },
+const categoryMeta: Record<CardCategory, { label: string }> = {
+  CRYPTO: { label: 'Crypto' },
+  AI: { label: 'AI' },
+  TRENDING: { label: 'Trending' },
+  SIGNAL: { label: 'Signal' },
+  RESEARCH: { label: 'Research' },
 };
 
 const SCAN_PROMPT = `You are birdy's alpha radar. Scan Twitter for the latest signals across crypto/DeFi, AI/tech, and general trends.
@@ -272,7 +272,7 @@ function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
     const key = `${keyPrefix}-${part++}`;
     if (next.kind === 'code') {
       nodes.push(
-        <code key={key} className="font-mono text-[0.92em] px-1.5 py-0.5 rounded bg-bg border border-border text-accent">
+        <code key={key} className="font-mono text-[0.92em] px-1.5 py-0.5 rounded bg-bg-2 text-text">
           {match[1]}
         </code>,
       );
@@ -283,7 +283,7 @@ function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
           href={match[2]}
           target="_blank"
           rel="noreferrer"
-          className="text-accent underline decoration-accent/40 underline-offset-2 break-all"
+          className="text-text underline decoration-text-dim/40 underline-offset-2 break-all"
         >
           {match[1]}
         </a>,
@@ -356,7 +356,7 @@ function MarkdownMessage({ text }: { text: string }) {
 
         if (block.kind === 'code') {
           return (
-            <pre key={key} className="m-0 overflow-x-auto rounded-lg border border-border bg-bg px-3 py-2 text-[12px] leading-relaxed text-text">
+            <pre key={key} className="m-0 overflow-x-auto rounded-lg bg-bg-2 px-3 py-2 text-[12px] leading-relaxed text-text">
               <code>{block.code}</code>
             </pre>
           );
@@ -383,9 +383,9 @@ function InvitePanel({
 }) {
   return (
     <div className="flex items-center justify-center min-h-0 flex-1">
-      <div className="w-full max-w-[380px] bg-surface border border-border rounded-xl p-6 flex flex-col gap-3">
-        <h2 className="m-0 text-lg font-bold text-accent">Unlock birdy alpha</h2>
-        <p className="m-0 text-[13px] text-text-muted">Enter your invite code to start scanning.</p>
+      <div className="w-full max-w-[380px] border border-border rounded-lg p-6 flex flex-col gap-3">
+        <h2 className="m-0 text-lg font-semibold text-text">birdy</h2>
+        <p className="m-0 text-[13px] text-text-muted">Enter your invite code.</p>
         <input
           type="text"
           autoComplete="off"
@@ -393,7 +393,7 @@ function InvitePanel({
           value={inviteCode}
           placeholder="invite code"
           disabled={busy}
-          className="w-full bg-bg border border-border rounded-[10px] text-text font-[inherit] text-sm py-2.5 px-3 outline-none focus:border-accent placeholder:text-text-dim"
+          className="w-full bg-transparent border border-border rounded-lg text-text font-[inherit] text-sm py-2.5 px-3 outline-none focus:border-text placeholder:text-text-dim"
           onChange={(e) => onChange(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter') {
@@ -405,7 +405,7 @@ function InvitePanel({
         <button
           type="button"
           disabled={busy || !inviteCode.trim()}
-          className="self-start bg-accent border-none rounded-[10px] text-bg font-[inherit] text-xs font-bold uppercase tracking-wide py-2.5 px-5 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+          className="self-start bg-text text-bg border-none rounded-lg font-[inherit] text-xs font-medium py-2.5 px-5 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
           onClick={onSubmit}
         >
           {busy ? 'checking...' : 'unlock'}
@@ -427,35 +427,34 @@ function AlphaCardView({
 }) {
   const meta = categoryMeta[card.category];
   return (
-    <article className={`bg-surface border border-border rounded-xl p-3 sm:p-4 flex flex-col gap-2 sm:gap-2.5 transition-[border-color] duration-150 hover:border-border-hover border-l-3 ${meta.leftBorder}`}>
-      <div className="flex items-center justify-between">
-        <span className={`text-[10px] font-bold uppercase tracking-wide py-0.5 px-2 rounded-md ${meta.color} ${meta.bg} border ${meta.border}`}>
-          {meta.icon} {meta.label}
-        </span>
-        <span className="text-[11px] text-text-dim font-mono">{timeAgo(card.timestamp)}</span>
+    <article className="border-b border-border py-4 sm:py-5 flex flex-col gap-2">
+      <div className="flex items-center gap-2 text-[11px] text-text-dim">
+        <span className="uppercase tracking-wide font-medium">{meta.label}</span>
+        <span>&middot;</span>
+        <span className="font-mono">{timeAgo(card.timestamp)}</span>
       </div>
-      <h3 className="m-0 text-[15px] font-semibold leading-snug text-text">{card.title}</h3>
+      <h3 className="m-0 text-base font-semibold leading-snug text-text">{card.title}</h3>
       {card.bullets.length > 0 && (
-        <ul className="m-0 pl-[18px] flex flex-col gap-1">
+        <ul className="m-0 pl-4 flex flex-col gap-0.5">
           {card.bullets.map((b, i) => (
-            <li key={i} className="text-[13px] leading-normal text-text-muted">{b}</li>
+            <li key={i} className="text-[13px] leading-relaxed text-text-muted">{b}</li>
           ))}
         </ul>
       )}
       {card.sources.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
           {card.sources.map((s) => (
-            <span key={s} className="font-mono text-[11px] text-accent bg-accent/8 border border-accent/15 py-0.5 px-1.5 rounded">
+            <span key={s} className="font-mono text-[11px] text-text-dim">
               {s}
             </span>
           ))}
         </div>
       )}
       <button
-        className="self-start bg-transparent border border-border text-text-muted text-xs font-semibold py-2.5 px-4 rounded-lg cursor-pointer font-[inherit] transition-all duration-150 hover:border-accent hover:text-accent"
+        className="self-start text-text-dim text-xs font-medium underline underline-offset-2 cursor-pointer font-[inherit] bg-transparent border-none p-0 hover:text-text transition-colors"
         onClick={() => onDeepDive(card)}
       >
-        Deep Dive
+        Deep dive
       </button>
     </article>
   );
@@ -471,13 +470,13 @@ function sanitizeError(raw: string): string {
 
 function ScanIndicator({ tools, onCancel }: { tools: string[]; onCancel: () => void }) {
   return (
-    <div className="bg-surface border border-border rounded-xl p-5 flex flex-col items-center gap-3">
-      <div className="w-3 h-3 rounded-full bg-accent animate-pulse-dot" />
-      <span className="text-[13px] text-text-muted font-medium">Scanning Twitter...</span>
+    <div className="py-8 flex flex-col items-center gap-3">
+      <div className="w-2 h-2 rounded-full bg-text-dim animate-pulse-dot" />
+      <span className="text-[13px] text-text-dim">Scanning...</span>
       {tools.length > 0 && (
         <div className="flex flex-wrap gap-1.5 justify-center">
           {tools.map((t) => (
-            <code key={t} className="font-mono text-[11px] py-0.5 px-2 rounded-md bg-surface-2 border border-border text-accent">
+            <code key={t} className="font-mono text-[10px] py-0.5 px-1.5 text-text-dim">
               {t}
             </code>
           ))}
@@ -485,7 +484,7 @@ function ScanIndicator({ tools, onCancel }: { tools: string[]; onCancel: () => v
       )}
       <button
         onClick={onCancel}
-        className="mt-1 px-4 py-1.5 text-[12px] font-medium text-text-muted bg-surface-2 border border-border rounded-lg hover:bg-border hover:text-text transition-colors cursor-pointer"
+        className="text-[12px] text-text-dim underline underline-offset-2 bg-transparent border-none cursor-pointer font-[inherit] hover:text-text"
       >
         Cancel
       </button>
@@ -509,11 +508,11 @@ function Composer({
   const isMobile = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches;
 
   return (
-    <footer className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 items-end bg-surface border border-border rounded-xl p-2 sm:p-2.5">
+    <footer className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 items-end border-t border-border pt-2 sm:pt-3 px-1">
       <textarea
         value={prompt}
-        placeholder={busy ? 'Type to queue next message\u2026' : 'Ask birdy anything...'}
-        className="bg-bg border border-border rounded-[10px] text-text font-[inherit] text-sm py-2.5 px-3 min-h-[44px] max-h-[120px] sm:max-h-[150px] resize-none sm:resize-y outline-none leading-snug w-full focus:border-accent placeholder:text-text-dim"
+        placeholder={busy ? 'Type to queue next message\u2026' : 'Ask anything...'}
+        className="bg-transparent border border-border rounded-lg text-text font-[inherit] text-sm py-2.5 px-3 min-h-[44px] max-h-[120px] sm:max-h-[150px] resize-none sm:resize-y outline-none leading-snug w-full focus:border-text placeholder:text-text-dim"
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === 'Enter' && !e.shiftKey && !isMobile) {
@@ -526,7 +525,7 @@ function Composer({
         {busy && onStop && (
           <button
             type="button"
-            className="w-10 h-10 rounded-[10px] border border-danger/60 bg-danger/10 text-danger text-sm font-bold cursor-pointer flex items-center justify-center transition-opacity duration-150 hover:bg-danger/20"
+            className="w-10 h-10 rounded-lg border border-border text-danger text-sm font-bold cursor-pointer flex items-center justify-center hover:bg-bg-2 transition-colors"
             onClick={onStop}
             title="Stop"
           >
@@ -536,7 +535,7 @@ function Composer({
         <button
           type="button"
           disabled={!prompt.trim()}
-          className="w-10 h-10 rounded-[10px] border border-accent bg-accent text-bg text-lg font-bold cursor-pointer flex items-center justify-center transition-opacity duration-150 disabled:opacity-30 disabled:cursor-not-allowed"
+          className="w-10 h-10 rounded-lg border border-border bg-text text-bg text-lg font-bold cursor-pointer flex items-center justify-center transition-opacity duration-150 disabled:opacity-20 disabled:cursor-not-allowed"
           onClick={onSend}
         >
           &rarr;
@@ -549,8 +548,8 @@ function Composer({
 function ChatBubble({ item }: { item: FeedItem & { kind: 'chat' } }) {
   const text = item.loading && !item.text ? 'Thinking...' : item.text || 'No response.';
   return (
-    <div className={`bg-surface border border-border rounded-xl py-3 px-3 sm:py-3.5 sm:px-4 flex flex-col gap-1.5 ${item.role === 'user' ? 'bg-surface-2' : ''}`}>
-      <div className={`text-[11px] font-bold uppercase tracking-wide ${item.role === 'user' ? 'text-accent' : 'text-text-dim'}`}>
+    <div className={`border-b border-border py-3 sm:py-4 flex flex-col gap-1 ${item.role === 'user' ? 'bg-bg-2 -mx-3 px-3 sm:-mx-4 sm:px-4' : ''}`}>
+      <div className={`text-[11px] font-medium uppercase tracking-wide ${item.role === 'user' ? 'text-text' : 'text-text-dim'}`}>
         {item.role === 'user' ? 'You' : 'birdy'}
       </div>
       <div className={item.role === 'user' ? 'text-sm leading-relaxed whitespace-pre-wrap break-words text-text' : ''}>
@@ -1064,13 +1063,11 @@ Be concise but thorough.`;
 
   if (!authed) {
     return (
-      <div className="h-full max-w-[720px] mx-auto grid grid-rows-[auto_minmax(0,1fr)] p-2 sm:p-3 gap-2 sm:gap-3">
-        <header className="flex items-center justify-between py-2.5 px-3 sm:py-3.5 sm:px-4 bg-surface border border-border rounded-xl">
-          <div>
-            <h1 className="m-0 text-xl font-bold tracking-tight text-accent">birdy alpha</h1>
-          </div>
-          <span className="text-[10px] font-bold uppercase tracking-widest py-1 px-2.5 rounded-full text-text-muted bg-surface-2 border border-border">
-            {authBusy ? 'checking' : 'locked'}
+      <div className="h-full max-w-[640px] mx-auto grid grid-rows-[auto_minmax(0,1fr)] p-3 sm:p-4 gap-0">
+        <header className="flex items-center justify-between py-3 border-b border-border">
+          <h1 className="m-0 text-lg font-semibold tracking-tight text-text">birdy</h1>
+          <span className="text-[11px] text-text-dim">
+            {authBusy ? 'checking...' : ''}
           </span>
         </header>
         <InvitePanel
@@ -1085,27 +1082,20 @@ Be concise but thorough.`;
   }
 
   return (
-    <div className="h-full max-w-[720px] mx-auto grid grid-rows-[auto_minmax(0,1fr)_auto] p-2 sm:p-3 gap-2 sm:gap-3">
-      <header className="flex items-center justify-between py-2.5 px-3 sm:py-3.5 sm:px-4 bg-surface border border-border rounded-xl">
-        <div>
-          <h1 className="m-0 text-xl font-bold tracking-tight text-accent">birdy alpha</h1>
-        </div>
-        <div className="flex items-center gap-2.5">
-          <span className="text-[10px] font-bold uppercase tracking-widest py-1 px-2.5 rounded-full text-cat-crypto bg-cat-crypto/10 border border-cat-crypto/20">
-            live
-          </span>
-          <button
-            className="bg-surface-2 border border-border text-text-muted w-10 h-10 rounded-lg text-base cursor-pointer flex items-center justify-center transition-all duration-150 hover:border-accent hover:text-accent disabled:opacity-40 disabled:cursor-not-allowed"
-            disabled={scanning || genBusy}
-            onClick={() => void runScan()}
-            title="Refresh scan"
-          >
-            {scanning ? '\u23F3' : '\u21BB'}
-          </button>
-        </div>
+    <div className="h-full max-w-[640px] mx-auto grid grid-rows-[auto_minmax(0,1fr)_auto] p-3 sm:p-4 gap-0">
+      <header className="flex items-center justify-between py-3 border-b border-border">
+        <h1 className="m-0 text-lg font-semibold tracking-tight text-text">birdy</h1>
+        <button
+          className="text-text-dim text-sm cursor-pointer bg-transparent border-none font-[inherit] hover:text-text transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+          disabled={scanning || genBusy}
+          onClick={() => void runScan()}
+          title="Refresh"
+        >
+          {scanning ? 'scanning...' : 'Refresh'}
+        </button>
       </header>
 
-      <main className="min-h-0 overflow-y-auto flex flex-col gap-3 py-1 scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent" ref={feedRef}>
+      <main className="min-h-0 overflow-y-auto flex flex-col py-1 hide-scrollbar" ref={feedRef}>
         {scanning && <ScanIndicator tools={scanTools} onCancel={cancelScan} />}
 
         {!scanning && cards.length === 0 && chatItems.length === 0 && (
