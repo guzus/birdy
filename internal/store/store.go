@@ -15,6 +15,7 @@ type Account struct {
 	Name      string    `json:"name"`
 	AuthToken string    `json:"auth_token"`
 	CT0       string    `json:"ct0"`
+	ReadOnly  bool      `json:"read_only,omitempty"`
 	AddedAt   time.Time `json:"added_at"`
 	LastUsed  time.Time `json:"last_used,omitempty"`
 	UseCount  int64     `json:"use_count"`
@@ -192,6 +193,11 @@ func quarantineCorruptStoreFile(path string) (string, error) {
 
 // Add creates a new account entry. Returns error if name already exists.
 func (s *Store) Add(name, authToken, ct0 string) error {
+	return s.AddWithReadOnly(name, authToken, ct0, false)
+}
+
+// AddWithReadOnly creates a new account entry with an explicit read-only mode.
+func (s *Store) AddWithReadOnly(name, authToken, ct0 string, readOnly bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -210,6 +216,7 @@ func (s *Store) Add(name, authToken, ct0 string) error {
 		Name:      name,
 		AuthToken: authToken,
 		CT0:       ct0,
+		ReadOnly:  readOnly,
 		AddedAt:   time.Now(),
 	})
 	return nil
@@ -299,6 +306,25 @@ func (s *Store) Update(name, authToken, ct0 string) error {
 		if s.Accounts[i].Name == name {
 			s.Accounts[i].AuthToken = authToken
 			s.Accounts[i].CT0 = ct0
+			return nil
+		}
+	}
+	return fmt.Errorf("account %q not found", name)
+}
+
+// SetReadOnly updates the read-only mode for an existing account.
+func (s *Store) SetReadOnly(name string, readOnly bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	name = normalizeAccountName(name)
+	if name == "" {
+		return fmt.Errorf("account name is required")
+	}
+
+	for i := range s.Accounts {
+		if s.Accounts[i].Name == name {
+			s.Accounts[i].ReadOnly = readOnly
 			return nil
 		}
 	}

@@ -170,6 +170,9 @@ birdy account add alt
 # Or pass credentials directly
 birdy account add bot --auth-token "xxx" --ct0 "yyy"
 
+# Restrict a specific account to read-only bird commands
+birdy account update bot --read-only
+
 # Now use bird commands through birdy - accounts rotate automatically
 birdy read 1234567890
 birdy search "golang"
@@ -192,11 +195,16 @@ birdy account list
 ## Account management
 
 ```bash
-birdy account add <name>       # Add account (interactive or with --auth-token/--ct0)
-birdy account list              # List all accounts with usage stats
+birdy account add <name>        # Add account (interactive or with --auth-token/--ct0)
+birdy account add <name> --read-only
+birdy account list              # List all accounts with access mode + usage stats
 birdy account update <name>     # Update credentials for an account
+birdy account update <name> --read-only
+birdy account update <name> --read-write
 birdy account remove <name>     # Remove an account
 ```
+
+Use `--read-only` on add or update to keep a specific account available for reads while blocking mutating bird commands like `tweet`, `reply`, `follow`, `unfollow`, and `unbookmark`. Use `--read-write` to lift that restriction.
 
 ## Rotation strategies
 
@@ -229,7 +237,7 @@ Repeat for each account you want to add.
 In CI environments where there's no interactive terminal, set the `BIRDY_ACCOUNTS` env var with a JSON array of accounts:
 
 ```bash
-export BIRDY_ACCOUNTS='[{"name":"bot1","auth_token":"xxx","ct0":"yyy"},{"name":"bot2","auth_token":"aaa","ct0":"bbb"}]'
+export BIRDY_ACCOUNTS='[{"name":"bot1","auth_token":"xxx","ct0":"yyy","read_only":true},{"name":"bot2","auth_token":"aaa","ct0":"bbb"}]'
 birdy -v read 1234567890
 ```
 

@@ -75,8 +75,8 @@ func clientIP(r *http.Request) string {
 }
 
 var (
-	chatLimiter    = newRateLimiter(20, time.Minute)  // 20 chat requests/min per IP
-	commandLimiter = newRateLimiter(60, time.Minute)  // 60 command requests/min per IP
+	chatLimiter    = newRateLimiter(20, time.Minute) // 20 chat requests/min per IP
+	commandLimiter = newRateLimiter(60, time.Minute) // 60 command requests/min per IP
 )
 
 type apiError struct {
@@ -240,11 +240,6 @@ func handleAPICommand(inviteCode string) http.HandlerFunc {
 			return
 		}
 
-		if blocked, name := isReadOnlyBirdCommand(args); blocked {
-			writeJSON(w, http.StatusForbidden, apiError{OK: false, Error: fmt.Sprintf("%q is disabled in read-only mode", name)})
-			return
-		}
-
 		start := time.Now()
 
 		st, err := store.Open()
@@ -286,11 +281,24 @@ func handleAPICommand(inviteCode string) http.HandlerFunc {
 				return
 			}
 			stateWarning = rs.Warning
-			account, err = rotation.Pick(st.List(), parsed, rs.LastUsedName)
+			accounts := st.List()
+			if blocked, name := isMutatingBirdCommand(args); blocked {
+				accounts = filterWritableAccounts(accounts)
+				if len(accounts) == 0 {
+					writeJSON(w, http.StatusForbidden, apiError{OK: false, Error: fmt.Sprintf("no writable accounts configured for %q", name)})
+					return
+				}
+			}
+			account, err = rotation.Pick(accounts, parsed, rs.LastUsedName)
 			if err != nil {
 				writeJSON(w, http.StatusInternalServerError, apiError{OK: false, Error: err.Error()})
 				return
 			}
+		}
+
+		if err := ensureBirdCommandAllowed(account, args); err != nil {
+			writeJSON(w, http.StatusForbidden, apiError{OK: false, Error: err.Error()})
+			return
 		}
 
 		exitCode, stdout, stderr, runErr := runner.RunCapture(account, args)

@@ -404,6 +404,88 @@ func TestAPICommandRejectsWriteCommandsInReadOnlyMode(t *testing.T) {
 	}
 }
 
+func TestAPICommandRejectsWriteCommandsForReadOnlyAccount(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeAccountsFixture(t, home, []map[string]any{
+		{"name": "alpha", "auth_token": "token-a", "ct0": "ct0-a", "read_only": true},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/api/command", bytes.NewBufferString(`{"command":"tweet","args":["hi"],"account":"alpha"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Invite-Code", "birdy")
+
+	rr := httptest.NewRecorder()
+	handleAPICommand("birdy").ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d body=%q", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "read-only account") || !strings.Contains(rr.Body.String(), "alpha") {
+		t.Fatalf("expected account read-only error, got %q", rr.Body.String())
+	}
+}
+
+func TestAPICommandRotationSkipsReadOnlyAccountsForWrites(t *testing.T) {
+	birdPath := writeFakeBirdScript(t, strings.Join([]string{
+		"#!/bin/sh",
+		"echo \"AUTH_TOKEN=${AUTH_TOKEN}\"",
+	}, "\n"))
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("BIRDY_BIRD_PATH", birdPath)
+	writeAccountsFixture(t, home, []map[string]any{
+		{"name": "alpha", "auth_token": "token-a", "ct0": "ct0-a", "read_only": true, "use_count": 0},
+		{"name": "beta", "auth_token": "token-b", "ct0": "ct0-b", "use_count": 0},
+	})
+	writeStateFixture(t, home, "beta", "sonnet")
+
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/api/command", bytes.NewBufferString(`{"command":"tweet","args":["hi"],"strategy":"round-robin"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Invite-Code", "birdy")
+
+	rr := httptest.NewRecorder()
+	handleAPICommand("birdy").ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%q", rr.Code, rr.Body.String())
+	}
+	var resp apiCommandResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v body=%q", err, rr.Body.String())
+	}
+	if resp.Account != "beta" {
+		t.Fatalf("expected writable account selected, got %#v", resp)
+	}
+	if !strings.Contains(resp.Stdout, "AUTH_TOKEN=token-b") {
+		t.Fatalf("expected writable account credentials, got %q", resp.Stdout)
+	}
+}
+
+func TestAPICommandRejectsWritesWhenAllAccountsAreReadOnly(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeAccountsFixture(t, home, []map[string]any{
+		{"name": "alpha", "auth_token": "token-a", "ct0": "ct0-a", "read_only": true},
+		{"name": "beta", "auth_token": "token-b", "ct0": "ct0-b", "read_only": true},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/api/command", bytes.NewBufferString(`{"command":"tweet","args":["hi"]}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Invite-Code", "birdy")
+
+	rr := httptest.NewRecorder()
+	handleAPICommand("birdy").ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d body=%q", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "no writable accounts configured") {
+		t.Fatalf("expected no writable accounts error, got %q", rr.Body.String())
+	}
+}
+
 func TestAPICommandIncludesRecoveryWarningsInStderr(t *testing.T) {
 	birdPath := writeFakeBirdScript(t, strings.Join([]string{
 		"#!/bin/sh",
