@@ -10,6 +10,7 @@ import (
 
 	"github.com/guzus/birdy/internal/state"
 	"github.com/guzus/birdy/internal/store"
+	"github.com/spf13/cobra"
 )
 
 func writeAccountFixtureFile(t *testing.T, home string, accounts any) {
@@ -24,6 +25,30 @@ func writeAccountFixtureFile(t *testing.T, home string, accounts any) {
 	}
 	if err := os.WriteFile(filepath.Join(configDir, "accounts.json"), data, 0600); err != nil {
 		t.Fatalf("write accounts fixture: %v", err)
+	}
+}
+
+func resetAccountCommandFlags(t *testing.T) {
+	t.Helper()
+	for _, reset := range []struct {
+		cmd  *cobra.Command
+		name string
+		val  string
+	}{
+		{accountAddCmd, "auth-token", ""},
+		{accountAddCmd, "ct0", ""},
+		{accountAddCmd, "read-only", "false"},
+		{accountUpdateCmd, "auth-token", ""},
+		{accountUpdateCmd, "ct0", ""},
+		{accountUpdateCmd, "read-only", "false"},
+		{accountUpdateCmd, "read-write", "false"},
+	} {
+		if err := reset.cmd.Flags().Set(reset.name, reset.val); err != nil {
+			t.Fatalf("reset %s: %v", reset.name, err)
+		}
+		if flag := reset.cmd.Flags().Lookup(reset.name); flag != nil {
+			flag.Changed = false
+		}
 	}
 }
 
@@ -74,6 +99,7 @@ func TestAccountAddRejectsEnvOnlyStore(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("BIRDY_ACCOUNTS", `[{"name":"env_user","auth_token":"t","ct0":"c"}]`)
+	resetAccountCommandFlags(t)
 
 	if err := accountAddCmd.Flags().Set("auth-token", "token"); err != nil {
 		t.Fatalf("set auth-token: %v", err)
@@ -118,6 +144,7 @@ func TestAccountUpdateRejectsEnvOnlyStore(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("BIRDY_ACCOUNTS", `[{"name":"env_user","auth_token":"t","ct0":"c"}]`)
+	resetAccountCommandFlags(t)
 
 	if err := accountUpdateCmd.Flags().Set("auth-token", "token"); err != nil {
 		t.Fatalf("set auth-token: %v", err)
@@ -205,6 +232,7 @@ func TestAccountAddRejectsReadOnlyMode(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("BIRDY_READ_ONLY", "1")
+	resetAccountCommandFlags(t)
 
 	if err := accountAddCmd.Flags().Set("auth-token", "token"); err != nil {
 		t.Fatalf("set auth-token: %v", err)
@@ -229,6 +257,7 @@ func TestAccountAddRejectsReadOnlyMode(t *testing.T) {
 func TestAccountAddReadsPromptValuesFromCommandInput(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	resetAccountCommandFlags(t)
 
 	if err := accountAddCmd.Flags().Set("auth-token", ""); err != nil {
 		t.Fatalf("reset auth-token: %v", err)
@@ -248,7 +277,7 @@ func TestAccountAddReadsPromptValuesFromCommandInput(t *testing.T) {
 	if !strings.Contains(out.String(), "auth_token: ") || !strings.Contains(out.String(), "ct0: ") {
 		t.Fatalf("expected prompts in output, got %q", out.String())
 	}
-	if !strings.Contains(out.String(), `Account "prompt-user" added.`) {
+	if !strings.Contains(out.String(), `Account "prompt-user" added (read-write).`) {
 		t.Fatalf("expected success output, got %q", out.String())
 	}
 
@@ -262,6 +291,43 @@ func TestAccountAddReadsPromptValuesFromCommandInput(t *testing.T) {
 	}
 	if acct.AuthToken != "token-from-input" || acct.CT0 != "ct0-from-input" {
 		t.Fatalf("unexpected stored credentials: %+v", acct)
+	}
+}
+
+func TestAccountAddCanMarkAccountReadOnly(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	resetAccountCommandFlags(t)
+
+	if err := accountAddCmd.Flags().Set("auth-token", "token"); err != nil {
+		t.Fatalf("set auth-token: %v", err)
+	}
+	if err := accountAddCmd.Flags().Set("ct0", "ct0"); err != nil {
+		t.Fatalf("set ct0: %v", err)
+	}
+	if err := accountAddCmd.Flags().Set("read-only", "true"); err != nil {
+		t.Fatalf("set read-only: %v", err)
+	}
+
+	var out bytes.Buffer
+	accountAddCmd.SetOut(&out)
+	if err := accountAddCmd.RunE(accountAddCmd, []string{"restricted"}); err != nil {
+		t.Fatalf("expected add to succeed, got %v", err)
+	}
+	if !strings.Contains(out.String(), `Account "restricted" added (read-only).`) {
+		t.Fatalf("expected read-only success output, got %q", out.String())
+	}
+
+	st, err := store.Open()
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	acct, err := st.Get("restricted")
+	if err != nil {
+		t.Fatalf("get restricted: %v", err)
+	}
+	if !acct.ReadOnly {
+		t.Fatalf("expected account to be read-only, got %+v", acct)
 	}
 }
 
@@ -289,6 +355,7 @@ func TestAccountUpdateRejectsReadOnlyMode(t *testing.T) {
 	writeAccountFixtureFile(t, home, []map[string]string{
 		{"name": "alpha", "auth_token": "token-a", "ct0": "ct0-a"},
 	})
+	resetAccountCommandFlags(t)
 
 	if err := accountUpdateCmd.Flags().Set("auth-token", "token"); err != nil {
 		t.Fatalf("set auth-token: %v", err)
@@ -316,13 +383,7 @@ func TestAccountUpdateReadsPromptValuesFromCommandInput(t *testing.T) {
 	writeAccountFixtureFile(t, home, []map[string]string{
 		{"name": "alpha", "auth_token": "old-token", "ct0": "old-ct0"},
 	})
-
-	if err := accountUpdateCmd.Flags().Set("auth-token", ""); err != nil {
-		t.Fatalf("reset auth-token: %v", err)
-	}
-	if err := accountUpdateCmd.Flags().Set("ct0", ""); err != nil {
-		t.Fatalf("reset ct0: %v", err)
-	}
+	resetAccountCommandFlags(t)
 
 	var out bytes.Buffer
 	accountUpdateCmd.SetIn(strings.NewReader("new-token\nnew-ct0\n"))
@@ -335,7 +396,7 @@ func TestAccountUpdateReadsPromptValuesFromCommandInput(t *testing.T) {
 	if !strings.Contains(out.String(), "auth_token: ") || !strings.Contains(out.String(), "ct0: ") {
 		t.Fatalf("expected prompts in output, got %q", out.String())
 	}
-	if !strings.Contains(out.String(), `Account "alpha" updated.`) {
+	if !strings.Contains(out.String(), `Account "alpha" updated (read-write).`) {
 		t.Fatalf("expected success output, got %q", out.String())
 	}
 
@@ -349,5 +410,88 @@ func TestAccountUpdateReadsPromptValuesFromCommandInput(t *testing.T) {
 	}
 	if acct.AuthToken != "new-token" || acct.CT0 != "new-ct0" {
 		t.Fatalf("unexpected stored credentials: %+v", acct)
+	}
+}
+
+func TestAccountUpdateCanToggleReadOnlyWithoutPromptingForCredentials(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeAccountFixtureFile(t, home, []map[string]any{
+		{"name": "alpha", "auth_token": "old-token", "ct0": "old-ct0"},
+	})
+	resetAccountCommandFlags(t)
+
+	if err := accountUpdateCmd.Flags().Set("read-only", "true"); err != nil {
+		t.Fatalf("set read-only: %v", err)
+	}
+
+	var out bytes.Buffer
+	accountUpdateCmd.SetIn(strings.NewReader(""))
+	accountUpdateCmd.SetOut(&out)
+
+	if err := accountUpdateCmd.RunE(accountUpdateCmd, []string{"alpha"}); err != nil {
+		t.Fatalf("expected mode-only update to succeed, got %v", err)
+	}
+	if strings.Contains(out.String(), "auth_token: ") || strings.Contains(out.String(), "ct0: ") {
+		t.Fatalf("expected no credential prompts, got %q", out.String())
+	}
+	if !strings.Contains(out.String(), `Account "alpha" updated (read-only).`) {
+		t.Fatalf("expected read-only success output, got %q", out.String())
+	}
+
+	st, err := store.Open()
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	acct, err := st.Get("alpha")
+	if err != nil {
+		t.Fatalf("get alpha: %v", err)
+	}
+	if acct.AuthToken != "old-token" || acct.CT0 != "old-ct0" {
+		t.Fatalf("expected credentials unchanged, got %+v", acct)
+	}
+	if !acct.ReadOnly {
+		t.Fatalf("expected read-only account, got %+v", acct)
+	}
+}
+
+func TestAccountUpdateRejectsConflictingAccessFlags(t *testing.T) {
+	resetAccountCommandFlags(t)
+	if err := accountUpdateCmd.Flags().Set("read-only", "true"); err != nil {
+		t.Fatalf("set read-only: %v", err)
+	}
+	if err := accountUpdateCmd.Flags().Set("read-write", "true"); err != nil {
+		t.Fatalf("set read-write: %v", err)
+	}
+	defer resetAccountCommandFlags(t)
+
+	err := accountUpdateCmd.RunE(accountUpdateCmd, []string{"alpha"})
+	if err == nil {
+		t.Fatal("expected conflicting access flags to fail")
+	}
+	if !strings.Contains(err.Error(), "choose only one") {
+		t.Fatalf("expected conflicting flag error, got %v", err)
+	}
+}
+
+func TestAccountListShowsAccessColumn(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeAccountFixtureFile(t, home, []map[string]any{
+		{"name": "alpha", "auth_token": "token-a", "ct0": "ct0-a", "read_only": true},
+		{"name": "beta", "auth_token": "token-b", "ct0": "ct0-b"},
+	})
+
+	var out bytes.Buffer
+	accountListCmd.SetOut(&out)
+	if err := accountListCmd.RunE(accountListCmd, nil); err != nil {
+		t.Fatalf("expected list to succeed, got %v", err)
+	}
+	content := out.String()
+	if !strings.Contains(content, "ACCESS") {
+		t.Fatalf("expected access column, got %q", content)
+	}
+	if !strings.Contains(content, "read-only") || !strings.Contains(content, "read-write") {
+		t.Fatalf("expected account access labels, got %q", content)
 	}
 }

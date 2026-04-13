@@ -1,6 +1,11 @@
 package cmd
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	"github.com/guzus/birdy/internal/store"
+)
 
 func TestFirstBirdCommandSkipsFlags(t *testing.T) {
 	if got := firstBirdCommand([]string{"--foo", "-v", "tweet"}); got != "tweet" {
@@ -41,26 +46,57 @@ func TestFirstBirdCommandSkipsFlags(t *testing.T) {
 	}
 }
 
-func TestIsReadOnlyBirdCommand(t *testing.T) {
-	t.Setenv("BIRDY_READ_ONLY", "1")
-
-	blocked, name := isReadOnlyBirdCommand([]string{"tweet", "hello"})
+func TestIsMutatingBirdCommand(t *testing.T) {
+	blocked, name := isMutatingBirdCommand([]string{"tweet", "hello"})
 	if !blocked || name != "tweet" {
 		t.Fatalf("expected tweet blocked, got blocked=%v name=%q", blocked, name)
 	}
 
-	blocked, name = isReadOnlyBirdCommand([]string{"home"})
+	blocked, name = isMutatingBirdCommand([]string{"home"})
 	if blocked {
 		t.Fatalf("expected home allowed, got blocked=%v name=%q", blocked, name)
 	}
 
-	blocked, name = isReadOnlyBirdCommand([]string{"--format", "json", "tweet", "hello"})
+	blocked, name = isMutatingBirdCommand([]string{"--format", "json", "tweet", "hello"})
 	if !blocked || name != "tweet" {
 		t.Fatalf("expected tweet blocked after flag value, got blocked=%v name=%q", blocked, name)
 	}
 
-	blocked, name = isReadOnlyBirdCommand([]string{"--verbose", "tweet", "hello"})
+	blocked, name = isMutatingBirdCommand([]string{"--verbose", "tweet", "hello"})
 	if !blocked || name != "tweet" {
 		t.Fatalf("expected tweet blocked after boolean-style flag, got blocked=%v name=%q", blocked, name)
+	}
+}
+
+func TestEnsureBirdCommandAllowedHonorsGlobalReadOnlyMode(t *testing.T) {
+	t.Setenv("BIRDY_READ_ONLY", "1")
+
+	err := ensureBirdCommandAllowed(&store.Account{Name: "alpha"}, []string{"tweet", "hello"})
+	if err == nil {
+		t.Fatal("expected global read-only mode to block tweet")
+	}
+	if !strings.Contains(err.Error(), "BIRDY_READ_ONLY") {
+		t.Fatalf("expected global read-only error, got %v", err)
+	}
+}
+
+func TestEnsureBirdCommandAllowedHonorsAccountReadOnlyMode(t *testing.T) {
+	err := ensureBirdCommandAllowed(&store.Account{Name: "alpha", ReadOnly: true}, []string{"tweet", "hello"})
+	if err == nil {
+		t.Fatal("expected account read-only mode to block tweet")
+	}
+	if !strings.Contains(err.Error(), `read-only account "alpha"`) {
+		t.Fatalf("expected account read-only error, got %v", err)
+	}
+}
+
+func TestFilterWritableAccounts(t *testing.T) {
+	accounts := filterWritableAccounts([]store.Account{
+		{Name: "alpha", ReadOnly: true},
+		{Name: "beta"},
+		{Name: "gamma", ReadOnly: true},
+	})
+	if len(accounts) != 1 || accounts[0].Name != "beta" {
+		t.Fatalf("expected only writable account to remain, got %+v", accounts)
 	}
 }

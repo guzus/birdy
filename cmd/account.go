@@ -33,6 +33,28 @@ func ensureAccountMutationAllowed(st *store.Store) error {
 	return ensureAccountStoreWritable(st)
 }
 
+func accountAccessLabel(readOnly bool) string {
+	if readOnly {
+		return "read-only"
+	}
+	return "read-write"
+}
+
+func resolveReadOnlyUpdateFlags(cmd *cobra.Command) (bool, bool, error) {
+	readOnlyChanged := cmd.Flags().Changed("read-only")
+	readWriteChanged := cmd.Flags().Changed("read-write")
+	if readOnlyChanged && readWriteChanged {
+		return false, false, fmt.Errorf("choose only one of --read-only or --read-write")
+	}
+	if readOnlyChanged {
+		return true, true, nil
+	}
+	if readWriteChanged {
+		return false, true, nil
+	}
+	return false, false, nil
+}
+
 func clearRemovedAccountFromState(name string, errOut io.Writer) {
 	rs, err := state.Load()
 	if err != nil {
@@ -60,6 +82,7 @@ var accountAddCmd = &cobra.Command{
 
 		authToken, _ := cmd.Flags().GetString("auth-token")
 		ct0, _ := cmd.Flags().GetString("ct0")
+		readOnly, _ := cmd.Flags().GetBool("read-only")
 
 		reader := bufio.NewReader(cmd.InOrStdin())
 
@@ -87,14 +110,14 @@ var accountAddCmd = &cobra.Command{
 			return err
 		}
 
-		if err := st.Add(name, authToken, ct0); err != nil {
+		if err := st.AddWithReadOnly(name, authToken, ct0, readOnly); err != nil {
 			return err
 		}
 		if err := st.Save(); err != nil {
 			return err
 		}
 
-		_, _ = fmt.Fprintf(out, "Account %q added.\n", name)
+		_, _ = fmt.Fprintf(out, "Account %q added (%s).\n", name, accountAccessLabel(readOnly))
 		return nil
 	},
 }
@@ -120,14 +143,15 @@ var accountListCmd = &cobra.Command{
 		}
 
 		w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "NAME\tUSES\tLAST USED\tADDED")
+		fmt.Fprintln(w, "NAME\tACCESS\tUSES\tLAST USED\tADDED")
 		for _, a := range accounts {
 			lastUsed := "-"
 			if !a.LastUsed.IsZero() {
 				lastUsed = a.LastUsed.Format("2006-01-02 15:04")
 			}
-			fmt.Fprintf(w, "%s\t%d\t%s\t%s\n",
+			fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%s\n",
 				a.Name,
+				accountAccessLabel(a.ReadOnly),
 				a.UseCount,
 				lastUsed,
 				a.AddedAt.Format("2006-01-02 15:04"),
@@ -179,22 +203,30 @@ var accountUpdateCmd = &cobra.Command{
 
 		authToken, _ := cmd.Flags().GetString("auth-token")
 		ct0, _ := cmd.Flags().GetString("ct0")
+		authTokenChanged := cmd.Flags().Changed("auth-token")
+		ct0Changed := cmd.Flags().Changed("ct0")
+		readOnly, modeChanged, err := resolveReadOnlyUpdateFlags(cmd)
+		if err != nil {
+			return err
+		}
 
 		reader := bufio.NewReader(cmd.InOrStdin())
+		updateCredentials := !modeChanged || authTokenChanged || ct0Changed
+		if updateCredentials {
+			if !authTokenChanged {
+				_, _ = fmt.Fprint(out, "auth_token: ")
+				authToken, _ = reader.ReadString('\n')
+				authToken = strings.TrimSpace(authToken)
+			}
+			if !ct0Changed {
+				_, _ = fmt.Fprint(out, "ct0: ")
+				ct0, _ = reader.ReadString('\n')
+				ct0 = strings.TrimSpace(ct0)
+			}
 
-		if authToken == "" {
-			_, _ = fmt.Fprint(out, "auth_token: ")
-			authToken, _ = reader.ReadString('\n')
-			authToken = strings.TrimSpace(authToken)
-		}
-		if ct0 == "" {
-			_, _ = fmt.Fprint(out, "ct0: ")
-			ct0, _ = reader.ReadString('\n')
-			ct0 = strings.TrimSpace(ct0)
-		}
-
-		if authToken == "" || ct0 == "" {
-			return fmt.Errorf("both auth_token and ct0 are required")
+			if authToken == "" || ct0 == "" {
+				return fmt.Errorf("both auth_token and ct0 are required")
+			}
 		}
 
 		st, err := store.Open()
@@ -206,14 +238,26 @@ var accountUpdateCmd = &cobra.Command{
 			return err
 		}
 
-		if err := st.Update(name, authToken, ct0); err != nil {
-			return err
+		if updateCredentials {
+			if err := st.Update(name, authToken, ct0); err != nil {
+				return err
+			}
+		}
+		if modeChanged {
+			if err := st.SetReadOnly(name, readOnly); err != nil {
+				return err
+			}
 		}
 		if err := st.Save(); err != nil {
 			return err
 		}
 
-		_, _ = fmt.Fprintf(out, "Account %q updated.\n", name)
+		account, err := st.Get(name)
+		if err != nil {
+			return err
+		}
+
+		_, _ = fmt.Fprintf(out, "Account %q updated (%s).\n", name, accountAccessLabel(account.ReadOnly))
 		return nil
 	},
 }
@@ -221,9 +265,12 @@ var accountUpdateCmd = &cobra.Command{
 func init() {
 	accountAddCmd.Flags().String("auth-token", "", "auth_token cookie value")
 	accountAddCmd.Flags().String("ct0", "", "ct0 cookie value")
+	accountAddCmd.Flags().Bool("read-only", false, "mark the account as restricted to read-only bird commands")
 
 	accountUpdateCmd.Flags().String("auth-token", "", "auth_token cookie value")
 	accountUpdateCmd.Flags().String("ct0", "", "ct0 cookie value")
+	accountUpdateCmd.Flags().Bool("read-only", false, "restrict the account to read-only bird commands")
+	accountUpdateCmd.Flags().Bool("read-write", false, "allow the account to run mutating bird commands again")
 
 	accountCmd.AddCommand(accountAddCmd)
 	accountCmd.AddCommand(accountListCmd)

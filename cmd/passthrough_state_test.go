@@ -150,3 +150,89 @@ func TestRunPassthroughSpecificAccountSkipsRotationStateOnSuccess(t *testing.T) 
 		t.Fatalf("expected explicit account path not to rewrite rotation state unexpectedly, got %q", loadedState.LastUsedName)
 	}
 }
+
+func TestRunPassthroughRejectsWriteCommandForExplicitReadOnlyAccount(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeAccountFixtureFile(t, home, []map[string]any{
+		{"name": "alpha", "auth_token": "token-a", "ct0": "ct0-a", "read_only": true},
+	})
+
+	prevStrategy, prevAccount, prevVerbose := strategyFlag, accountFlag, verboseFlag
+	strategyFlag, accountFlag, verboseFlag = "round-robin", "alpha", false
+	defer func() {
+		strategyFlag, accountFlag, verboseFlag = prevStrategy, prevAccount, prevVerbose
+	}()
+
+	err := runPassthrough(rootCmd, []string{"tweet", "hello"})
+	if err == nil {
+		t.Fatal("expected explicit read-only account to block write command")
+	}
+	if !strings.Contains(err.Error(), `read-only account "alpha"`) {
+		t.Fatalf("expected read-only account error, got %v", err)
+	}
+}
+
+func TestRunPassthroughSkipsReadOnlyAccountsForWriteCommands(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeAccountFixtureFile(t, home, []map[string]any{
+		{"name": "alpha", "auth_token": "token-a", "ct0": "ct0-a", "read_only": true, "use_count": 0},
+		{"name": "beta", "auth_token": "token-b", "ct0": "ct0-b", "use_count": 0},
+	})
+	writeStateFixture(t, home, "beta", "sonnet")
+
+	birdPath := filepath.Join(t.TempDir(), "bird")
+	script := strings.Join([]string{
+		"#!/bin/sh",
+		"echo \"$AUTH_TOKEN\" > \"$BIRDY_CAPTURE\"",
+		"exit 0",
+	}, "\n")
+	if err := os.WriteFile(birdPath, []byte(script), 0755); err != nil {
+		t.Fatalf("write fake bird: %v", err)
+	}
+	capturePath := filepath.Join(t.TempDir(), "capture.txt")
+	t.Setenv("BIRDY_BIRD_PATH", birdPath)
+	t.Setenv("BIRDY_CAPTURE", capturePath)
+
+	prevStrategy, prevAccount, prevVerbose := strategyFlag, accountFlag, verboseFlag
+	strategyFlag, accountFlag, verboseFlag = "round-robin", "", false
+	defer func() {
+		strategyFlag, accountFlag, verboseFlag = prevStrategy, prevAccount, prevVerbose
+	}()
+
+	if err := runPassthrough(rootCmd, []string{"tweet", "hello"}); err != nil {
+		t.Fatalf("expected passthrough success, got %v", err)
+	}
+
+	captured, err := os.ReadFile(capturePath)
+	if err != nil {
+		t.Fatalf("read capture: %v", err)
+	}
+	if strings.TrimSpace(string(captured)) != "token-b" {
+		t.Fatalf("expected writable account token, got %q", string(captured))
+	}
+}
+
+func TestRunPassthroughRejectsWriteCommandWhenAllAccountsAreReadOnly(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeAccountFixtureFile(t, home, []map[string]any{
+		{"name": "alpha", "auth_token": "token-a", "ct0": "ct0-a", "read_only": true},
+		{"name": "beta", "auth_token": "token-b", "ct0": "ct0-b", "read_only": true},
+	})
+
+	prevStrategy, prevAccount, prevVerbose := strategyFlag, accountFlag, verboseFlag
+	strategyFlag, accountFlag, verboseFlag = "round-robin", "", false
+	defer func() {
+		strategyFlag, accountFlag, verboseFlag = prevStrategy, prevAccount, prevVerbose
+	}()
+
+	err := runPassthrough(rootCmd, []string{"tweet", "hello"})
+	if err == nil {
+		t.Fatal("expected no writable accounts error")
+	}
+	if !strings.Contains(err.Error(), "no writable accounts configured") {
+		t.Fatalf("expected no writable accounts error, got %v", err)
+	}
+}

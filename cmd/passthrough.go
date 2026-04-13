@@ -12,23 +12,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var readOnlyBlockedBirdCommands = map[string]struct{}{
-	"tweet":      {},
-	"reply":      {},
-	"follow":     {},
-	"unfollow":   {},
-	"unbookmark": {},
-}
-
 func runPassthrough(cmd *cobra.Command, args []string) error {
 	if len(args) == 0 {
 		return cmd.Help()
 	}
 	errOut := cmd.ErrOrStderr()
-
-	if blocked, name := isReadOnlyBirdCommand(args); blocked {
-		return fmt.Errorf("%q is disabled in read-only mode (BIRDY_READ_ONLY)", name)
-	}
 
 	st, err := store.Open()
 	if err != nil {
@@ -60,11 +48,23 @@ func runPassthrough(cmd *cobra.Command, args []string) error {
 		}
 		printStateWarning(errOut, rs)
 
-		account, err = rotation.Pick(st.List(), strat, rs.LastUsedName)
+		accounts := st.List()
+		if blocked, name := isMutatingBirdCommand(args); blocked {
+			accounts = filterWritableAccounts(accounts)
+			if len(accounts) == 0 {
+				return fmt.Errorf("no writable accounts configured for %q", name)
+			}
+		}
+
+		account, err = rotation.Pick(accounts, strat, rs.LastUsedName)
 		if err != nil {
 			return err
 		}
 
+	}
+
+	if err := ensureBirdCommandAllowed(account, args); err != nil {
+		return err
 	}
 
 	if verboseFlag {
@@ -93,19 +93,6 @@ func runPassthrough(cmd *cobra.Command, args []string) error {
 		os.Exit(exitCode)
 	}
 	return nil
-}
-
-func isReadOnlyBirdCommand(args []string) (bool, string) {
-	if !readOnlyModeEnabled() {
-		return false, ""
-	}
-
-	cmd := firstBirdCommand(args)
-	if cmd == "" {
-		return false, ""
-	}
-	_, blocked := readOnlyBlockedBirdCommands[cmd]
-	return blocked, cmd
 }
 
 func readOnlyModeEnabled() bool {

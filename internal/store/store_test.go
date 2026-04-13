@@ -81,6 +81,23 @@ func TestAddNormalizesWhitespace(t *testing.T) {
 	}
 }
 
+func TestAddWithReadOnlyPersistsMode(t *testing.T) {
+	path := tempStorePath(t)
+	st, _ := OpenPath(path)
+
+	if err := st.AddWithReadOnly("alice", "token_a", "ct0_a", true); err != nil {
+		t.Fatalf("failed to add read-only account: %v", err)
+	}
+
+	a, err := st.Get("alice")
+	if err != nil {
+		t.Fatalf("failed to get account: %v", err)
+	}
+	if !a.ReadOnly {
+		t.Fatalf("expected account to be read-only, got %#v", a)
+	}
+}
+
 func TestAddRejectsBlankFields(t *testing.T) {
 	path := tempStorePath(t)
 	st, _ := OpenPath(path)
@@ -290,12 +307,54 @@ func TestUpdateNotFound(t *testing.T) {
 	}
 }
 
+func TestSetReadOnly(t *testing.T) {
+	path := tempStorePath(t)
+	st, _ := OpenPath(path)
+
+	st.Add("alice", "token_a", "ct0_a")
+
+	if err := st.SetReadOnly("alice", true); err != nil {
+		t.Fatalf("failed to set read-only: %v", err)
+	}
+
+	a, err := st.Get("alice")
+	if err != nil {
+		t.Fatalf("failed to get account: %v", err)
+	}
+	if !a.ReadOnly {
+		t.Fatalf("expected read-only account, got %#v", a)
+	}
+
+	if err := st.SetReadOnly("alice", false); err != nil {
+		t.Fatalf("failed to clear read-only: %v", err)
+	}
+	a, err = st.Get("alice")
+	if err != nil {
+		t.Fatalf("failed to get account after clear: %v", err)
+	}
+	if a.ReadOnly {
+		t.Fatalf("expected read-write account, got %#v", a)
+	}
+}
+
+func TestSetReadOnlyNotFound(t *testing.T) {
+	path := tempStorePath(t)
+	st, _ := OpenPath(path)
+
+	if err := st.SetReadOnly("missing", true); err == nil {
+		t.Fatal("expected error setting read-only for missing account")
+	}
+}
+
 func TestSaveAndReload(t *testing.T) {
 	path := tempStorePath(t)
 	st, _ := OpenPath(path)
 
 	st.Add("alice", "token_a", "ct0_a")
 	st.Add("bob", "token_b", "ct0_b")
+	if err := st.SetReadOnly("bob", true); err != nil {
+		t.Fatalf("set read-only: %v", err)
+	}
 
 	if err := st.Save(); err != nil {
 		t.Fatalf("failed to save: %v", err)
@@ -308,6 +367,13 @@ func TestSaveAndReload(t *testing.T) {
 	}
 	if st2.Len() != 2 {
 		t.Errorf("expected 2 accounts after reload, got %d", st2.Len())
+	}
+	bob, err := st2.Get("bob")
+	if err != nil {
+		t.Fatalf("get bob after reload: %v", err)
+	}
+	if !bob.ReadOnly {
+		t.Fatalf("expected read-only mode to survive reload, got %#v", bob)
 	}
 }
 
