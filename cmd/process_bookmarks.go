@@ -114,7 +114,7 @@ func init() {
 	processBookmarksCmd.Flags().StringVar(&pbCount, "count", "10", "Number of bookmarks to fetch")
 	processBookmarksCmd.Flags().BoolVar(&pbDryRun, "dry-run", false, "Print formatted output without sending")
 	processBookmarksCmd.Flags().BoolVar(&pbDigest, "digest", false, "Have Claude agentically digest each bookmark (uses birdy as a tool)")
-	processBookmarksCmd.Flags().StringVar(&pbModel, "model", "claude-sonnet-4-6", "Claude model for --digest")
+	processBookmarksCmd.Flags().StringVar(&pbModel, "model", "opus", "Claude model for --digest")
 	processBookmarksCmd.Flags().IntVar(&pbTimeout, "digest-timeout", 120, "Per-bookmark digest timeout in seconds")
 	rootCmd.AddCommand(processBookmarksCmd)
 }
