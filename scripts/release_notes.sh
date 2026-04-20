@@ -5,6 +5,11 @@ current_ref="${1:-HEAD}"
 previous_ref="${2:-}"
 repo_url="${REPO_URL:-https://github.com/guzus/birdy}"
 
+if ! git rev-parse -q --verify "${current_ref}^{commit}" >/dev/null; then
+  printf 'error: unknown ref %q\n' "${current_ref}" >&2
+  exit 1
+fi
+
 if [[ -z "${previous_ref}" ]]; then
   if [[ "${current_ref}" == "HEAD" ]]; then
     previous_ref="$(git describe --tags --abbrev=0 HEAD 2>/dev/null || true)"
@@ -14,6 +19,10 @@ if [[ -z "${previous_ref}" ]]; then
 fi
 
 if [[ -n "${previous_ref}" ]]; then
+  if ! git rev-parse -q --verify "${previous_ref}^{commit}" >/dev/null; then
+    printf 'error: unknown previous ref %q\n' "${previous_ref}" >&2
+    exit 1
+  fi
   range="${previous_ref}..${current_ref}"
 else
   range="${current_ref}"
@@ -81,7 +90,15 @@ print_section() {
 
 bird_version="$(sed -n 's/.*"version": "\([^"]*\)".*/\1/p' third_party/@steipete/bird/package.json | head -n1)"
 
-mapfile -t subjects < <(git log --no-merges --reverse --format='%s' "${range}")
+if ! subjects_raw="$(git log --no-merges --reverse --format='%s' "${range}")"; then
+  printf 'error: failed to collect commits for range %q\n' "${range}" >&2
+  exit 1
+fi
+
+subjects=()
+if [[ -n "${subjects_raw}" ]]; then
+  mapfile -t subjects < <(printf '%s\n' "${subjects_raw}")
+fi
 
 feature_entries=()
 fix_entries=()

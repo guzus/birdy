@@ -239,6 +239,10 @@ func handleAPICommand(inviteCode string) http.HandlerFunc {
 			writeJSON(w, http.StatusBadRequest, apiError{OK: false, Error: "unsupported command"})
 			return
 		}
+		if err := ensureBirdCommandAllowed(nil, args); err != nil {
+			writeJSON(w, http.StatusForbidden, apiError{OK: false, Error: err.Error()})
+			return
+		}
 
 		start := time.Now()
 
