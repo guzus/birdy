@@ -35,7 +35,7 @@ jobs:
         run: go test ./... -count=1
 
       - name: Generate Release Notes
-        run: ./scripts/release_notes.sh "${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}" > .release-notes.md
+        run: ./scripts/release_notes.sh "${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}" > /tmp/birdy-release-notes.md
 
       - name: GoReleaser
         uses: goreleaser/goreleaser-action@v6
@@ -44,6 +44,6 @@ jobs:
           version: latest
           # Homebrew publishing requires a PAT with access to the tap repo.
           # This workflow always skips it; do it separately if needed.
-          args: release --clean --skip=homebrew --release-notes=.release-notes.md
+          args: release --clean --skip=homebrew --release-notes=/tmp/birdy-release-notes.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
