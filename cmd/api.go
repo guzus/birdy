@@ -61,6 +61,39 @@ func (rl *rateLimiter) allow(ip string) bool {
 	return true
 }
 
+// allowN reserves n slots atomically. Either all n fit within the window
+// budget (and are recorded) or none are. Used for batch endpoints so a
+// 16-op multi-command counts the same as 16 sequential single-op calls.
+func (rl *rateLimiter) allowN(ip string, n int) bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	if n <= 0 {
+		return true
+	}
+
+	now := time.Now()
+	cutoff := now.Add(-rl.window)
+
+	times := rl.requests[ip]
+	start := 0
+	for start < len(times) && times[start].Before(cutoff) {
+		start++
+	}
+	times = times[start:]
+
+	if len(times)+n > rl.limit {
+		rl.requests[ip] = times
+		return false
+	}
+
+	for i := 0; i < n; i++ {
+		times = append(times, now)
+	}
+	rl.requests[ip] = times
+	return true
+}
+
 func clientIP(r *http.Request) string {
 	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
 		if ip, _, err := net.SplitHostPort(strings.TrimSpace(strings.SplitN(fwd, ",", 2)[0])); err == nil {
