@@ -291,12 +291,24 @@ func handleAPIMultiCommand(inviteCode string) http.HandlerFunc {
 			wg.Add(1)
 			go func(i int, t opTask) {
 				defer wg.Done()
-				// Per-batch cap (client hint).
-				batchSem <- struct{}{}
-				defer func() { <-batchSem }()
+				// Per-batch cap (client hint). Honor client disconnect so
+				// queued ops drop instead of being run after the client
+				// has gone away.
+				select {
+				case batchSem <- struct{}{}:
+					defer func() { <-batchSem }()
+				case <-r.Context().Done():
+					results[i] = apiMultiOpResult{ID: t.ID, OK: false, Error: "client closed request"}
+					return
+				}
 				// Process-wide cap shared with /api/command.
-				apiSubprocessSem <- struct{}{}
-				defer func() { <-apiSubprocessSem }()
+				select {
+				case apiSubprocessSem <- struct{}{}:
+					defer func() { <-apiSubprocessSem }()
+				case <-r.Context().Done():
+					results[i] = apiMultiOpResult{ID: t.ID, OK: false, Error: "client closed request"}
+					return
+				}
 
 				opStart := time.Now()
 				exitCode, stdout, stderr, runErr := runner.RunCapture(t.Account, t.Args)
