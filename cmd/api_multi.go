@@ -345,9 +345,9 @@ func handleAPIMultiCommand(inviteCode string) http.HandlerFunc {
 		// like a series of sequential single-op calls would have.
 		if rs != nil {
 			var lastSuccessfulAccount string
-			for _, r := range results {
-				if r.OK {
-					lastSuccessfulAccount = r.Account
+			for _, res := range results {
+				if res.OK {
+					lastSuccessfulAccount = res.Account
 				}
 			}
 			if lastSuccessfulAccount != "" {
