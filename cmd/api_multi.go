@@ -133,9 +133,12 @@ func handleAPIMultiCommand(inviteCode string) http.HandlerFunc {
 			return
 		}
 
-		conc := apiMultiCommandConcurrency
-		if req.Concurrency > 0 && req.Concurrency < conc {
-			conc = req.Concurrency
+		// Per-batch concurrency hint (client-controlled). Capped at the
+		// process-wide ceiling. Even when this is high, the goroutines also
+		// acquire apiSubprocessSem so the cross-endpoint cap is enforced.
+		batchConc := apiMultiCommandConcurrency
+		if req.Concurrency > 0 && req.Concurrency < batchConc {
+			batchConc = req.Concurrency
 		}
 
 		st, err := store.Open()
@@ -184,6 +187,12 @@ func handleAPIMultiCommand(inviteCode string) http.HandlerFunc {
 		// (multi-fetch uses the same pattern). Per-op validation errors are
 		// captured inline; the goroutine pool below skips ops that already
 		// have an Err set.
+		//
+		// We work against a *local* copy of the account list. After each pick
+		// we increment the picked account's UseCount/LastUsed in this copy so
+		// subsequent picks under "least-used" / "least-recently-used" see the
+		// updated stats and distribute the batch instead of pinning every op
+		// to the same fresh account.
 		type opTask struct {
 			ID      string
 			Args    []string
@@ -191,6 +200,11 @@ func handleAPIMultiCommand(inviteCode string) http.HandlerFunc {
 			Err     string
 		}
 		tasks := make([]opTask, len(req.Operations))
+		var accountsSnapshot []store.Account
+		if accountName == "" {
+			accountsSnapshot = st.List()
+		}
+		now := time.Now()
 		for i, op := range req.Operations {
 			args := opArgs[i]
 			t := opTask{ID: op.ID, Args: args}
@@ -221,22 +235,33 @@ func handleAPIMultiCommand(inviteCode string) http.HandlerFunc {
 					continue
 				}
 			} else {
-				accounts := st.List()
+				eligible := accountsSnapshot
 				if blocked, name := isMutatingBirdCommand(args); blocked {
-					accounts = filterWritableAccounts(accounts)
-					if len(accounts) == 0 {
+					eligible = filterWritableAccounts(accountsSnapshot)
+					if len(eligible) == 0 {
 						t.Err = fmt.Sprintf("no writable accounts configured for %q", name)
 						tasks[i] = t
 						continue
 					}
 				}
-				account, err = rotation.Pick(accounts, strat, rs.LastUsedName)
+				picked, err := rotation.Pick(eligible, strat, rs.LastUsedName)
 				if err != nil {
 					t.Err = err.Error()
 					tasks[i] = t
 					continue
 				}
-				rs.LastUsedName = account.Name
+				rs.LastUsedName = picked.Name
+				// Advance the local snapshot so the next pick under
+				// least-used / least-recently-used sees this account as
+				// just-used and distributes the batch.
+				for j := range accountsSnapshot {
+					if accountsSnapshot[j].Name == picked.Name {
+						accountsSnapshot[j].UseCount++
+						accountsSnapshot[j].LastUsed = now
+						break
+					}
+				}
+				account = picked
 			}
 			if err := ensureBirdCommandAllowed(account, args); err != nil {
 				t.Err = err.Error()
@@ -247,18 +272,14 @@ func handleAPIMultiCommand(inviteCode string) http.HandlerFunc {
 			tasks[i] = t
 		}
 
-		// Persist rotation state once before fanning out — multi-fetch
-		// pattern. Rotation order is deterministic across the batch even if
-		// the goroutines finish in arbitrary order.
-		if rs != nil {
-			if err := rs.Save(); err != nil {
-				batchWarnings = append(batchWarnings, fmt.Sprintf("failed to save rotation state: %v", err))
-			}
-		}
+		// Rotation state is NOT saved here. We persist after the goroutines
+		// complete so a batch where every op fails before reaching the runner
+		// (e.g. bad BIRDY_BIRD_PATH, missing bird binary) doesn't advance
+		// rotation past accounts that never ran.
 
-		sem := make(chan struct{}, conc)
 		var wg sync.WaitGroup
 		results := make([]apiMultiOpResult, len(tasks))
+		batchSem := make(chan struct{}, batchConc)
 
 		for i, t := range tasks {
 			results[i].ID = t.ID
@@ -268,10 +289,14 @@ func handleAPIMultiCommand(inviteCode string) http.HandlerFunc {
 				continue
 			}
 			wg.Add(1)
-			sem <- struct{}{}
 			go func(i int, t opTask) {
 				defer wg.Done()
-				defer func() { <-sem }()
+				// Per-batch cap (client hint).
+				batchSem <- struct{}{}
+				defer func() { <-batchSem }()
+				// Process-wide cap shared with /api/command.
+				apiSubprocessSem <- struct{}{}
+				defer func() { <-apiSubprocessSem }()
 
 				opStart := time.Now()
 				exitCode, stdout, stderr, runErr := runner.RunCapture(t.Account, t.Args)
@@ -301,6 +326,25 @@ func handleAPIMultiCommand(inviteCode string) http.HandlerFunc {
 			}(i, t)
 		}
 		wg.Wait()
+
+		// Persist rotation state only when at least one op reached the runner
+		// (mirrors /api/command semantics). Use the LAST successful op's
+		// account as LastUsedName so a partially-successful batch behaves
+		// like a series of sequential single-op calls would have.
+		if rs != nil {
+			var lastSuccessfulAccount string
+			for _, r := range results {
+				if r.OK {
+					lastSuccessfulAccount = r.Account
+				}
+			}
+			if lastSuccessfulAccount != "" {
+				rs.LastUsedName = lastSuccessfulAccount
+				if err := rs.Save(); err != nil {
+					batchWarnings = append(batchWarnings, fmt.Sprintf("failed to save rotation state: %v", err))
+				}
+			}
+		}
 
 		if err := st.Save(); err != nil {
 			batchWarnings = append(batchWarnings, fmt.Sprintf("failed to save account store: %v", err))

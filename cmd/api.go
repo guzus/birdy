@@ -151,12 +151,19 @@ func streamAPIChatModel(ctx context.Context, prompt, model, exePath string, emit
 	claude.Stream(ctx, prompt, model, exePath, emit)
 }
 
-// apiCommandConcurrency caps in-flight bird subprocesses spawned by
-// /api/command. The 60 req/min/IP rate limit allows bursts of 60 concurrent
-// requests in the worst case; without this cap each one fans out a fresh
-// bird (Node) process. Eight is enough for interactive web use and small
-// enough to keep the host responsive under burst.
+// apiCommandConcurrency caps in-flight bird subprocesses spawned by the
+// hosted API endpoints. The 60 req/min/IP rate limit allows bursts of 60
+// concurrent requests in the worst case; without this cap each one fans
+// out a fresh bird (Node) process. Eight is enough for interactive web
+// use and small enough to keep the host responsive under burst.
 const apiCommandConcurrency = 8
+
+// apiSubprocessSem is a process-wide semaphore shared by /api/command and
+// /api/multi-command so the cap applies across endpoints, not per-handler
+// or per-batch. Without sharing, multiple concurrent /api/multi-command
+// requests would each construct their own per-batch semaphore and
+// collectively exceed the process cap.
+var apiSubprocessSem = make(chan struct{}, apiCommandConcurrency)
 
 var apiAllowedBirdCommands = map[string]struct{}{
 	"about":         {},
@@ -232,8 +239,6 @@ func decodeStrictJSON(r *http.Request, dst any) error {
 }
 
 func handleAPICommand(inviteCode string) http.HandlerFunc {
-	sem := make(chan struct{}, apiCommandConcurrency)
-
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !apiAuthorized(r, inviteCode) {
 			writeJSON(w, http.StatusUnauthorized, apiError{OK: false, Error: "unauthorized"})
@@ -288,11 +293,12 @@ func handleAPICommand(inviteCode string) http.HandlerFunc {
 
 		start := time.Now()
 
-		// Cap concurrent bird subprocess spawns. Honor client disconnect so a
-		// queued client that gives up doesn't tie up an account or a slot.
+		// Cap concurrent bird subprocess spawns process-wide. Honor client
+		// disconnect so a queued client that gives up doesn't tie up an
+		// account or a slot.
 		select {
-		case sem <- struct{}{}:
-			defer func() { <-sem }()
+		case apiSubprocessSem <- struct{}{}:
+			defer func() { <-apiSubprocessSem }()
 		case <-r.Context().Done():
 			writeJSON(w, 499, apiError{OK: false, Error: "client closed request"})
 			return

@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/guzus/birdy/internal/state"
 )
 
 func multiCommandRequest(t *testing.T, body string) *http.Request {
@@ -257,6 +260,93 @@ func TestAPIMultiCommandRunsConcurrently(t *testing.T) {
 		if !r.OK {
 			t.Fatalf("op %q failed: %+v", r.ID, r)
 		}
+	}
+}
+
+func TestAPIMultiCommandDoesNotAdvanceRotationWhenAllOpsFailBeforeRunner(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeAccountsFixture(t, home, []map[string]any{
+		{"name": "alpha", "auth_token": "token-a", "ct0": "ct0-a"},
+		{"name": "beta", "auth_token": "token-b", "ct0": "ct0-b"},
+	})
+	writeStateFixture(t, home, "alpha", "sonnet")
+	// Point bird at a path that doesn't exist so RunCapture errors before
+	// the runner can spawn anything. All ops should fail with `runErr` set.
+	t.Setenv("BIRDY_BIRD_PATH", filepath.Join(t.TempDir(), "missing-bird"))
+
+	body := `{"operations":[
+		{"id":"a","command":"search","args":["x"]},
+		{"id":"b","command":"search","args":["y"]}
+	],"strategy":"round-robin"}`
+
+	rr := httptest.NewRecorder()
+	handleAPIMultiCommand("birdy").ServeHTTP(rr, multiCommandRequest(t, body))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%q", rr.Code, rr.Body.String())
+	}
+
+	var resp apiMultiCommandResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range resp.Results {
+		if r.OK {
+			t.Fatalf("expected all ops to fail at runner, %q got OK=true", r.ID)
+		}
+	}
+
+	loaded, err := state.Load()
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if loaded.LastUsedName != "alpha" {
+		t.Fatalf("rotation must not advance when no op reached the runner: LastUsedName=%q", loaded.LastUsedName)
+	}
+}
+
+func TestAPIMultiCommandLeastUsedDistributesAcrossBatch(t *testing.T) {
+	// Echo back which account ran. Two fresh accounts (use_count=0). With
+	// the per-batch in-memory usage update, a 2-op least-used batch should
+	// pick BOTH accounts. Without the fix, both ops pick the same account
+	// (the snapshot stays unchanged across iterations).
+	birdPath := writeFakeBirdScript(t, strings.Join([]string{
+		"#!/bin/sh",
+		`echo "$AUTH_TOKEN"`,
+	}, "\n"))
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeAccountsFixture(t, home, []map[string]any{
+		{"name": "alpha", "auth_token": "token-a", "ct0": "ct0-a", "use_count": 0},
+		{"name": "beta", "auth_token": "token-b", "ct0": "ct0-b", "use_count": 0},
+	})
+	t.Setenv("BIRDY_BIRD_PATH", birdPath)
+
+	body := `{"operations":[
+		{"id":"a","command":"search","args":["x"]},
+		{"id":"b","command":"search","args":["y"]}
+	],"strategy":"least-used"}`
+
+	rr := httptest.NewRecorder()
+	handleAPIMultiCommand("birdy").ServeHTTP(rr, multiCommandRequest(t, body))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%q", rr.Code, rr.Body.String())
+	}
+
+	var resp apiMultiCommandResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, r := range resp.Results {
+		if !r.OK {
+			t.Fatalf("op %q failed: %+v", r.ID, r)
+		}
+		seen[r.Account] = true
+	}
+	if len(seen) != 2 {
+		t.Fatalf("least-used should have distributed 2 ops across 2 fresh accounts; got accounts %v", seen)
 	}
 }
 
