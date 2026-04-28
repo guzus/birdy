@@ -61,6 +61,39 @@ func (rl *rateLimiter) allow(ip string) bool {
 	return true
 }
 
+// allowN reserves n slots atomically. Either all n fit within the window
+// budget (and are recorded) or none are. Used for batch endpoints so a
+// 16-op multi-command counts the same as 16 sequential single-op calls.
+func (rl *rateLimiter) allowN(ip string, n int) bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	if n <= 0 {
+		return true
+	}
+
+	now := time.Now()
+	cutoff := now.Add(-rl.window)
+
+	times := rl.requests[ip]
+	start := 0
+	for start < len(times) && times[start].Before(cutoff) {
+		start++
+	}
+	times = times[start:]
+
+	if len(times)+n > rl.limit {
+		rl.requests[ip] = times
+		return false
+	}
+
+	for i := 0; i < n; i++ {
+		times = append(times, now)
+	}
+	rl.requests[ip] = times
+	return true
+}
+
 func clientIP(r *http.Request) string {
 	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
 		if ip, _, err := net.SplitHostPort(strings.TrimSpace(strings.SplitN(fwd, ",", 2)[0])); err == nil {
@@ -117,6 +150,20 @@ func streamAPIChatModel(ctx context.Context, prompt, model, exePath string, emit
 	}
 	claude.Stream(ctx, prompt, model, exePath, emit)
 }
+
+// apiCommandConcurrency caps in-flight bird subprocesses spawned by the
+// hosted API endpoints. The 60 req/min/IP rate limit allows bursts of 60
+// concurrent requests in the worst case; without this cap each one fans
+// out a fresh bird (Node) process. Eight is enough for interactive web
+// use and small enough to keep the host responsive under burst.
+const apiCommandConcurrency = 8
+
+// apiSubprocessSem is a process-wide semaphore shared by /api/command and
+// /api/multi-command so the cap applies across endpoints, not per-handler
+// or per-batch. Without sharing, multiple concurrent /api/multi-command
+// requests would each construct their own per-batch semaphore and
+// collectively exceed the process cap.
+var apiSubprocessSem = make(chan struct{}, apiCommandConcurrency)
 
 var apiAllowedBirdCommands = map[string]struct{}{
 	"about":         {},
@@ -245,6 +292,17 @@ func handleAPICommand(inviteCode string) http.HandlerFunc {
 		}
 
 		start := time.Now()
+
+		// Cap concurrent bird subprocess spawns process-wide. Honor client
+		// disconnect so a queued client that gives up doesn't tie up an
+		// account or a slot.
+		select {
+		case apiSubprocessSem <- struct{}{}:
+			defer func() { <-apiSubprocessSem }()
+		case <-r.Context().Done():
+			writeJSON(w, 499, apiError{OK: false, Error: "client closed request"})
+			return
+		}
 
 		st, err := store.Open()
 		if err != nil {

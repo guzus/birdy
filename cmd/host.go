@@ -109,6 +109,7 @@ func buildHostedMux(inviteCode string, allowedOrigins map[string]struct{}, webDi
 		serveHostedTTY(w, r, inviteCode)
 	})
 	mux.Handle("/api/command", withHostedSecurityHeaders(handleAPICommand(inviteCode)))
+	mux.Handle("/api/multi-command", withHostedSecurityHeaders(handleAPIMultiCommand(inviteCode)))
 	mux.Handle("/api/chat", withHostedSecurityHeaders(handleAPIChat(inviteCode)))
 	mux.Handle("/", makeHostedWebHandler(webDir))
 	return mux
