@@ -206,16 +206,21 @@ func runMultiFetch(cmd *cobra.Command, _ []string) error {
 			defer func() { <-sem }()
 			opStart := time.Now()
 			outPath := filepath.Join(multiFetchOutputDir, t.Op.ID+".json")
-			exitCode, stdout, stderr, runErr := runner.RunCapture(t.Account, t.Op.Args)
+			// multi-fetch deliberately does not call st.RecordRateLimit on
+			// res.RateLimited. Picks for this batch were made up-front before
+			// the goroutine pool launched, so recording would only inform
+			// FUTURE birdy invocations — and those will see the 429 via
+			// passthrough/api/daemon paths when they next hit the account.
+			res, stdout, stderr, runErr := runner.RunCapture(t.Account, t.Op.Args)
 
-			fail := runErr != nil || exitCode != 0 || stdout == ""
+			fail := runErr != nil || res.ExitCode != 0 || stdout == ""
 			if fail {
 				if multiFetchEmptyOnFail {
 					_ = os.WriteFile(outPath, []byte("[]"), 0o644)
 				}
 				err := runErr
 				if err == nil {
-					err = fmt.Errorf("bird exit=%d stderr=%q", exitCode, truncate(stderr, 200))
+					err = fmt.Errorf("bird exit=%d stderr=%q", res.ExitCode, truncate(stderr, 200))
 				}
 				results[i] = opResult{
 					ID:       t.Op.ID,

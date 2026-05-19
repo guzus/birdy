@@ -173,7 +173,7 @@ func runDaemon(cmd *cobra.Command, _ []string) error {
 	}
 
 	srv, err := daemon.NewServer(daemon.Config{
-		Run:          daemon.DefaultRunner,
+		Run:          daemon.DefaultRunner(st),
 		PickAccount:  pickAccount,
 		AccountCount: st.Len,
 		Concurrency:  daemonConcurrencyFlag,

@@ -12,13 +12,15 @@ import (
 
 // Account holds credentials for a single bird CLI account.
 type Account struct {
-	Name      string    `json:"name"`
-	AuthToken string    `json:"auth_token"`
-	CT0       string    `json:"ct0"`
-	ReadOnly  bool      `json:"read_only,omitempty"`
-	AddedAt   time.Time `json:"added_at"`
-	LastUsed  time.Time `json:"last_used,omitempty"`
-	UseCount  int64     `json:"use_count"`
+	Name               string    `json:"name"`
+	AuthToken          string    `json:"auth_token"`
+	CT0                string    `json:"ct0"`
+	ReadOnly           bool      `json:"read_only,omitempty"`
+	AddedAt            time.Time `json:"added_at"`
+	LastUsed           time.Time `json:"last_used,omitempty"`
+	UseCount           int64     `json:"use_count"`
+	LastRateLimitedAt  time.Time `json:"last_rate_limited_at,omitempty"`
+	RateLimitCount     int64     `json:"rate_limit_count,omitempty"`
 }
 
 // Store manages multiple accounts persisted to disk.
@@ -271,6 +273,25 @@ func (s *Store) RecordUsage(name string) error {
 		if s.Accounts[i].Name == name {
 			s.Accounts[i].LastUsed = time.Now()
 			s.Accounts[i].UseCount++
+			return nil
+		}
+	}
+	return fmt.Errorf("account %q not found", name)
+}
+
+// RecordRateLimit stamps the most recent 429 and increments the per-account
+// rate-limit counter. Used by the quota-aware rotation strategy to avoid
+// repicking an account that just hit a limit, and by `birdy budget` to
+// show per-account quota status.
+func (s *Store) RecordRateLimit(name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	name = normalizeAccountName(name)
+	for i := range s.Accounts {
+		if s.Accounts[i].Name == name {
+			s.Accounts[i].LastRateLimitedAt = time.Now()
+			s.Accounts[i].RateLimitCount++
 			return nil
 		}
 	}

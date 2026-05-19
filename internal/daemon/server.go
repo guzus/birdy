@@ -299,9 +299,23 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// DefaultRunner is a convenience wrapper exposing runner.RunCapture as a
-// RunFunc. The cmd package wires this in.
-func DefaultRunner(account *store.Account, args []string) (int, string, string, error) {
-	return runner.RunCapture(account, args)
+// DefaultRunner returns a RunFunc backed by runner.RunCapture that also
+// persists per-account 429s into the given store so quota-aware
+// rotation works for daemon traffic. Pass nil to skip recording (only
+// useful for tests that don't care about quota state).
+//
+// The daemon's RunFunc shape predates runner.Result so we flatten it
+// back here. Recording happens before returning so cache.set in
+// handleRun observes a consistent post-call store.
+func DefaultRunner(st *store.Store) RunFunc {
+	return func(account *store.Account, args []string) (int, string, string, error) {
+		res, stdout, stderr, err := runner.RunCapture(account, args)
+		if res.RateLimited && st != nil && account != nil {
+			if rlErr := st.RecordRateLimit(account.Name); rlErr == nil {
+				_ = st.Save()
+			}
+		}
+		return res.ExitCode, stdout, stderr, err
+	}
 }
 
