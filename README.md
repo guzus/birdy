@@ -124,6 +124,32 @@ birdy sits in front of the `bird` CLI. When you run a bird command through birdy
 3. Forwards the command to `bird`
 4. Tracks usage per account for smart rotation
 
+## VPN routing (`--vpn`)
+
+X's bot detection blocks by IP, so rotating auth tokens across 5 accounts from the same machine still trips Cloudflare after ~30 lookups. `--vpn` routes each bird call through a SOCKS5 endpoint (NordVPN's service credentials work out of the box), with per-invocation server selection so you can rotate exits as well as accounts.
+
+```bash
+# One-time setup
+birdy vpn install-deps                              # installs Node 'undici' into ~/.cache/birdy
+birdy vpn set --user <NORDVPN_SERVICE_USERNAME> --pass <NORDVPN_SERVICE_PASSWORD>
+birdy vpn pool add us9876.nordvpn.com               # add as many as you want
+birdy vpn pool add jp14.nordvpn.com
+
+# Per-invocation
+birdy --vpn user-tweets @handle                     # random server from pool
+birdy --vpn-server us9876.nordvpn.com whoami        # pin specific exit
+birdy vpn test                                      # show the egress IP
+birdy vpn status                                    # config (password masked)
+```
+
+How it works under the hood:
+
+1. `--vpn` spins up an in-process HTTP CONNECT proxy on `127.0.0.1:<random>` that forwards to the chosen SOCKS5 endpoint.
+2. The bird subprocess gets `HTTPS_PROXY=http://127.0.0.1:<port>` + `NODE_OPTIONS=--require=<bootstrap.js>` + `BIRDY_UNDICI_PATH=<undici install dir>`.
+3. The bootstrap loads userspace undici (installed by `install-deps`), calls `setGlobalDispatcher(new ProxyAgent(HTTPS_PROXY))`, and **overwrites `globalThis.fetch` with the userspace undici's fetch**. The override is critical: Node 22+'s built-in `fetch()` uses an *internal* undici instance that ignores user-space `setGlobalDispatcher`. Without overwriting `globalThis.fetch`, the bootstrap loads but the proxy is silently bypassed (verified empirically on Node 26).
+
+NordVPN service credentials are different from your account login — find them in the NordVPN dashboard under **Services → NordVPN → Set up NordVPN manually**.
+
 ## Install
 
 ```bash

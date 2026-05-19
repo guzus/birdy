@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -9,6 +10,7 @@ import (
 	"github.com/guzus/birdy/internal/runner"
 	"github.com/guzus/birdy/internal/state"
 	"github.com/guzus/birdy/internal/store"
+	"github.com/guzus/birdy/internal/vpn"
 	"github.com/spf13/cobra"
 )
 
@@ -71,7 +73,24 @@ func runPassthrough(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(errOut, "[birdy] using account: %s\n", account.Name)
 	}
 
-	res, err := runner.Run(account, args)
+	// Spin up a per-invocation SOCKS5 bridge when --vpn is set, so this
+	// bird call goes out through a NordVPN exit IP. Bridge dies with
+	// defer; per-invocation control means each birdy call can pick a
+	// different exit by passing --vpn-server NAME or by random rotation
+	// from the configured pool.
+	runOpts := runner.Options{}
+	var bridge *vpn.Bridge
+	if vpnFlag || vpnServerFlag != "" {
+		b, env, err := startVPN(errOut)
+		if err != nil {
+			return err
+		}
+		bridge = b
+		runOpts.ExtraEnv = env
+		defer bridge.Stop()
+	}
+
+	res, err := runner.RunWith(account, args, runOpts)
 	if err != nil {
 		return err
 	}
@@ -98,9 +117,65 @@ func runPassthrough(cmd *cobra.Command, args []string) error {
 	}
 
 	if res.ExitCode != 0 {
+		// Stop the bridge explicitly before os.Exit, since os.Exit skips
+		// deferred cleanup. The OS would reclaim the listener socket on
+		// process exit anyway, but this is the tidy form.
+		if bridge != nil {
+			bridge.Stop()
+		}
 		os.Exit(res.ExitCode)
 	}
 	return nil
+}
+
+// startVPN loads the VPN config, picks a server, starts the local
+// CONNECT→SOCKS5 bridge, and returns the env vars to pass through to bird:
+//
+//	HTTPS_PROXY=http://127.0.0.1:<bridge-port>
+//	NODE_OPTIONS=--require=<path-to-bootstrap.js>
+//
+// The bootstrap.js calls undici.setGlobalDispatcher so bird's fetch()
+// routes through the bridge (Node fetch does NOT honor HTTPS_PROXY
+// natively as of Node 26).
+func startVPN(errOut io.Writer) (*vpn.Bridge, []string, error) {
+	cfg, err := vpn.Load()
+	if err != nil {
+		return nil, nil, fmt.Errorf("loading vpn config: %w", err)
+	}
+	if err := cfg.Validate(); err != nil {
+		return nil, nil, err
+	}
+	server, err := cfg.PickServer(vpnServerFlag)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !vpn.UndiciInstalled() {
+		return nil, nil, fmt.Errorf(
+			"VPN bootstrap requires undici; run: birdy vpn install-deps",
+		)
+	}
+	bridge, err := vpn.Start(server, cfg.Port, cfg.User, cfg.Password)
+	if err != nil {
+		return nil, nil, fmt.Errorf("starting vpn bridge: %w", err)
+	}
+	bootstrap, err := vpn.BootstrapPath()
+	if err != nil {
+		bridge.Stop()
+		return nil, nil, fmt.Errorf("writing vpn bootstrap: %w", err)
+	}
+	undiciDir, err := vpn.UndiciDir()
+	if err != nil {
+		bridge.Stop()
+		return nil, nil, fmt.Errorf("resolving undici path: %w", err)
+	}
+	if verboseFlag {
+		fmt.Fprintf(errOut, "[birdy] vpn: routing through %s:%d\n", server, cfg.Port)
+	}
+	return bridge, []string{
+		"HTTPS_PROXY=http://" + bridge.Addr(),
+		"NODE_OPTIONS=--require=" + bootstrap,
+		"BIRDY_UNDICI_PATH=" + undiciDir,
+	}, nil
 }
 
 func readOnlyModeEnabled() bool {
