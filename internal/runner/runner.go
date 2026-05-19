@@ -3,6 +3,7 @@ package runner
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,29 +13,67 @@ import (
 	"github.com/guzus/birdy/internal/store"
 )
 
-// Run executes the bird CLI with the given account's credentials and args.
-// It passes auth_token and ct0 as environment variables.
-func Run(account *store.Account, args []string) (int, error) {
-	exitCode, _, _, err := runWithIO(account, args, os.Stdin, os.Stdout, os.Stderr)
-	return exitCode, err
+// Result reports the outcome of a bird invocation.
+type Result struct {
+	ExitCode    int
+	RateLimited bool // bird's stderr contained an HTTP 429 marker
 }
 
-// RunCapture executes the bird CLI and captures stdout/stderr.
-func RunCapture(account *store.Account, args []string) (exitCode int, stdout, stderr string, err error) {
+// Run executes the bird CLI with the given account's credentials and args.
+// It passes auth_token and ct0 as environment variables and detects 429s
+// from bird's stderr so the caller can record per-account quota state.
+func Run(account *store.Account, args []string) (Result, error) {
+	return runWithIO(account, args, os.Stdin, os.Stdout, os.Stderr)
+}
+
+// RunCapture executes the bird CLI and captures stdout/stderr. The Result
+// reports whether bird's stderr contained an HTTP 429 marker.
+func RunCapture(account *store.Account, args []string) (res Result, stdout, stderr string, err error) {
 	var outBuf bytes.Buffer
 	var errBuf bytes.Buffer
-	exitCode, _, _, err = runWithIO(account, args, nil, &outBuf, &errBuf)
-	return exitCode, outBuf.String(), errBuf.String(), err
+	res, err = runWithIO(account, args, nil, &outBuf, &errBuf)
+	return res, outBuf.String(), errBuf.String(), err
 }
 
-func runWithIO(account *store.Account, args []string, stdin any, stdout any, stderr any) (exitCode int, out string, errOut string, err error) {
+// rateLimitScanner sniffs writes for bird's 429 markers. bird (as of 0.8.0)
+// formats failed HTTP responses as "HTTP 429: ..." on stderr after its
+// internal retry budget is exhausted (see
+// bird/dist/lib/twitter-client-timelines.js).
+type rateLimitScanner struct {
+	dst     io.Writer
+	matched bool
+}
+
+func (s *rateLimitScanner) Write(p []byte) (int, error) {
+	if !s.matched && bytes.Contains(p, []byte("HTTP 429")) {
+		s.matched = true
+	}
+	if s.dst == nil {
+		return len(p), nil
+	}
+	return s.dst.Write(p)
+}
+
+func adaptWriter(w any) io.Writer {
+	switch v := w.(type) {
+	case *os.File:
+		return v
+	case *bytes.Buffer:
+		return v
+	case io.Writer:
+		return v
+	}
+	return nil
+}
+
+func runWithIO(account *store.Account, args []string, stdin any, stdout any, stderr any) (Result, error) {
 	if account == nil {
-		return 1, "", "", fmt.Errorf("running bird: missing account")
+		return Result{ExitCode: 1}, fmt.Errorf("running bird: missing account")
 	}
 
 	birdBin, err := findBird()
 	if err != nil {
-		return 1, "", "", err
+		return Result{ExitCode: 1}, err
 	}
 
 	cmd := exec.Command(birdBin, args...)
@@ -42,32 +81,20 @@ func runWithIO(account *store.Account, args []string, stdin any, stdout any, std
 		if r, ok := stdin.(*os.File); ok {
 			cmd.Stdin = r
 		}
-		// For capture mode, stdin is nil.
 	}
-	if w, ok := stdout.(*os.File); ok {
-		cmd.Stdout = w
-	} else if w, ok := stdout.(*bytes.Buffer); ok {
-		cmd.Stdout = w
-	} else if w, ok := stdout.(interface{ Write([]byte) (int, error) }); ok {
-		cmd.Stdout = w
-	}
-	if w, ok := stderr.(*os.File); ok {
-		cmd.Stderr = w
-	} else if w, ok := stderr.(*bytes.Buffer); ok {
-		cmd.Stderr = w
-	} else if w, ok := stderr.(interface{ Write([]byte) (int, error) }); ok {
-		cmd.Stderr = w
-	}
+	cmd.Stdout = adaptWriter(stdout)
+	scan := &rateLimitScanner{dst: adaptWriter(stderr)}
+	cmd.Stderr = scan
 
 	cmd.Env = buildEnv(account)
 
 	if err := cmd.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
-			return exitErr.ExitCode(), "", "", nil
+			return Result{ExitCode: exitErr.ExitCode(), RateLimited: scan.matched}, nil
 		}
-		return 1, "", "", fmt.Errorf("running bird: %w", err)
+		return Result{ExitCode: 1, RateLimited: scan.matched}, fmt.Errorf("running bird: %w", err)
 	}
-	return 0, "", "", nil
+	return Result{ExitCode: 0, RateLimited: scan.matched}, nil
 }
 
 // findBird locates the bird binary.

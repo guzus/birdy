@@ -71,13 +71,21 @@ func runPassthrough(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(errOut, "[birdy] using account: %s\n", account.Name)
 	}
 
-	exitCode, err := runner.Run(account, args)
+	res, err := runner.Run(account, args)
 	if err != nil {
 		return err
 	}
 
 	if err := st.RecordUsage(account.Name); err != nil {
 		return err
+	}
+	if res.RateLimited {
+		if err := st.RecordRateLimit(account.Name); err != nil {
+			return err
+		}
+		if verboseFlag {
+			fmt.Fprintf(errOut, "[birdy] %s hit a rate limit (HTTP 429)\n", account.Name)
+		}
 	}
 	if err := st.Save(); err != nil {
 		return fmt.Errorf("saving account store: %w", err)
@@ -89,8 +97,8 @@ func runPassthrough(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	if exitCode != 0 {
-		os.Exit(exitCode)
+	if res.ExitCode != 0 {
+		os.Exit(res.ExitCode)
 	}
 	return nil
 }

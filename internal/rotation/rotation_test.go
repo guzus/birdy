@@ -17,6 +17,7 @@ func TestParseStrategy(t *testing.T) {
 		{"least-recently-used", LeastRecentlyUsed, false},
 		{"least-used", LeastUsed, false},
 		{"random", Random, false},
+		{"quota-aware", QuotaAware, false},
 		{"invalid", "", true},
 		{"", "", true},
 	}
@@ -147,7 +148,7 @@ func TestPickRandom(t *testing.T) {
 func TestPickSingleAccount(t *testing.T) {
 	accounts := []store.Account{{Name: "only"}}
 
-	strategies := []Strategy{RoundRobin, LeastRecentlyUsed, LeastUsed, Random}
+	strategies := []Strategy{RoundRobin, LeastRecentlyUsed, LeastUsed, Random, QuotaAware}
 	for _, s := range strategies {
 		t.Run(string(s), func(t *testing.T) {
 			a, err := Pick(accounts, s, "")
@@ -158,5 +159,60 @@ func TestPickSingleAccount(t *testing.T) {
 				t.Errorf("expected 'only', got %q", a.Name)
 			}
 		})
+	}
+}
+
+func TestPickQuotaAwarePrefersColdAccounts(t *testing.T) {
+	now := time.Now()
+	accounts := []store.Account{
+		{Name: "hot", UseCount: 1, LastRateLimitedAt: now.Add(-2 * time.Minute)},
+		{Name: "cold-heavy", UseCount: 100},
+		{Name: "cold-light", UseCount: 5},
+	}
+	a, err := Pick(accounts, QuotaAware, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if a.Name != "cold-light" {
+		t.Errorf("expected 'cold-light' (least used among cold), got %q", a.Name)
+	}
+}
+
+func TestPickQuotaAwareIgnoresOldRateLimit(t *testing.T) {
+	now := time.Now()
+	accounts := []store.Account{
+		// 20 minutes ago is past the 15-min cooldown — treat as cold.
+		{Name: "long-cooled", UseCount: 1, LastRateLimitedAt: now.Add(-20 * time.Minute)},
+		{Name: "heavy", UseCount: 100},
+	}
+	a, _ := Pick(accounts, QuotaAware, "")
+	if a.Name != "long-cooled" {
+		t.Errorf("expected 'long-cooled' (cooldown expired), got %q", a.Name)
+	}
+}
+
+func TestPickQuotaAwareAllHotPicksEarliestExpiry(t *testing.T) {
+	now := time.Now()
+	accounts := []store.Account{
+		// Every account is still in cooldown; pick the one that hit 429 longest ago.
+		{Name: "newest-429", LastRateLimitedAt: now.Add(-1 * time.Minute)},
+		{Name: "oldest-429", LastRateLimitedAt: now.Add(-14 * time.Minute)},
+		{Name: "mid-429", LastRateLimitedAt: now.Add(-5 * time.Minute)},
+	}
+	a, _ := Pick(accounts, QuotaAware, "")
+	if a.Name != "oldest-429" {
+		t.Errorf("expected 'oldest-429' (closest to ready), got %q", a.Name)
+	}
+}
+
+func TestPickQuotaAwareNeverHitFallsBackToLeastUsed(t *testing.T) {
+	accounts := []store.Account{
+		{Name: "heavy", UseCount: 50},
+		{Name: "light", UseCount: 3},
+		{Name: "untouched", UseCount: 0},
+	}
+	a, _ := Pick(accounts, QuotaAware, "")
+	if a.Name != "untouched" {
+		t.Errorf("expected 'untouched' (least used, all cold), got %q", a.Name)
 	}
 }

@@ -73,12 +73,15 @@ func TestRunCaptureReturnsExitCodeAndOutput(t *testing.T) {
 	t.Setenv("BIRDY_BIRD_PATH", birdPath)
 	account := &store.Account{Name: "alpha", AuthToken: "token-a", CT0: "ct0-a"}
 
-	exitCode, stdout, stderr, err := RunCapture(account, []string{"home"})
+	res, stdout, stderr, err := RunCapture(account, []string{"home"})
 	if err != nil {
 		t.Fatalf("RunCapture returned error: %v", err)
 	}
-	if exitCode != 7 {
-		t.Fatalf("expected exit code 7, got %d", exitCode)
+	if res.ExitCode != 7 {
+		t.Fatalf("expected exit code 7, got %d", res.ExitCode)
+	}
+	if res.RateLimited {
+		t.Fatalf("expected RateLimited=false on clean stderr")
 	}
 	if !strings.Contains(stdout, "stdout:token-a:ct0-a") {
 		t.Fatalf("expected stdout to include credentials, got %q", stdout)
@@ -89,12 +92,12 @@ func TestRunCaptureReturnsExitCodeAndOutput(t *testing.T) {
 }
 
 func TestRunCaptureRejectsNilAccount(t *testing.T) {
-	exitCode, stdout, stderr, err := RunCapture(nil, []string{"home"})
+	res, stdout, stderr, err := RunCapture(nil, []string{"home"})
 	if err == nil {
 		t.Fatal("expected nil account to return error")
 	}
-	if exitCode != 1 {
-		t.Fatalf("expected exit code 1, got %d", exitCode)
+	if res.ExitCode != 1 {
+		t.Fatalf("expected exit code 1, got %d", res.ExitCode)
 	}
 	if stdout != "" || stderr != "" {
 		t.Fatalf("expected no output on nil account error, got stdout=%q stderr=%q", stdout, stderr)
@@ -105,14 +108,65 @@ func TestRunCaptureRejectsNilAccount(t *testing.T) {
 }
 
 func TestRunRejectsNilAccount(t *testing.T) {
-	exitCode, err := Run(nil, []string{"home"})
+	res, err := Run(nil, []string{"home"})
 	if err == nil {
 		t.Fatal("expected nil account to return error")
 	}
-	if exitCode != 1 {
-		t.Fatalf("expected exit code 1, got %d", exitCode)
+	if res.ExitCode != 1 {
+		t.Fatalf("expected exit code 1, got %d", res.ExitCode)
 	}
 	if !strings.Contains(err.Error(), "missing account") {
 		t.Fatalf("expected missing account error, got %v", err)
+	}
+}
+
+func TestRunCaptureDetectsHTTP429(t *testing.T) {
+	birdPath := filepath.Join(t.TempDir(), "bird")
+	script := strings.Join([]string{
+		"#!/bin/sh",
+		"echo \"some output\"",
+		"echo \"✗ Failed to fetch tweets: HTTP 429: rate limit exceeded\" 1>&2",
+		"exit 1",
+	}, "\n")
+	if err := os.WriteFile(birdPath, []byte(script), 0755); err != nil {
+		t.Fatalf("write fake bird: %v", err)
+	}
+	t.Setenv("BIRDY_BIRD_PATH", birdPath)
+	account := &store.Account{Name: "alpha", AuthToken: "t", CT0: "c"}
+
+	res, _, stderr, err := RunCapture(account, []string{"user-tweets", "@x"})
+	if err != nil {
+		t.Fatalf("RunCapture returned error: %v", err)
+	}
+	if !res.RateLimited {
+		t.Fatalf("expected RateLimited=true on HTTP 429 in stderr, got false; stderr=%q", stderr)
+	}
+	if res.ExitCode != 1 {
+		t.Fatalf("expected exit code 1, got %d", res.ExitCode)
+	}
+}
+
+func TestRunCaptureDoesNotMatchHTTP429InStdout(t *testing.T) {
+	birdPath := filepath.Join(t.TempDir(), "bird")
+	// HTTP 429 only on stdout — should NOT flag as rate-limited.
+	// (Mention in JSON payload, error_messages array, etc.)
+	script := strings.Join([]string{
+		"#!/bin/sh",
+		"echo '{\"error\":\"HTTP 429: rate limit\"}'",
+		"echo \"normal stderr message\" 1>&2",
+		"exit 0",
+	}, "\n")
+	if err := os.WriteFile(birdPath, []byte(script), 0755); err != nil {
+		t.Fatalf("write fake bird: %v", err)
+	}
+	t.Setenv("BIRDY_BIRD_PATH", birdPath)
+	account := &store.Account{Name: "alpha", AuthToken: "t", CT0: "c"}
+
+	res, _, _, err := RunCapture(account, []string{"home"})
+	if err != nil {
+		t.Fatalf("RunCapture returned error: %v", err)
+	}
+	if res.RateLimited {
+		t.Fatalf("expected RateLimited=false when 429 is only on stdout")
 	}
 }

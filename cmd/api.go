@@ -363,14 +363,19 @@ func handleAPICommand(inviteCode string) http.HandlerFunc {
 			return
 		}
 
-		exitCode, stdout, stderr, runErr := runner.RunCapture(account, args)
+		res, stdout, stderr, runErr := runner.RunCapture(account, args)
 		if runErr != nil {
 			writeJSON(w, http.StatusInternalServerError, apiError{OK: false, Error: runErr.Error()})
 			return
 		}
 		if err := st.RecordUsage(account.Name); err != nil {
 			persistenceWarnings = append(persistenceWarnings, fmt.Sprintf("failed to record account usage for %q: %v", account.Name, err))
-		} else if err := st.Save(); err != nil {
+		} else if res.RateLimited {
+			if err := st.RecordRateLimit(account.Name); err != nil {
+				persistenceWarnings = append(persistenceWarnings, fmt.Sprintf("failed to record rate-limit for %q: %v", account.Name, err))
+			}
+		}
+		if err := st.Save(); err != nil {
 			persistenceWarnings = append(persistenceWarnings, fmt.Sprintf("failed to save account store: %v", err))
 		}
 		if rs != nil {
@@ -384,7 +389,7 @@ func handleAPICommand(inviteCode string) http.HandlerFunc {
 		writeJSON(w, http.StatusOK, apiCommandResponse{
 			OK:        true,
 			Account:   account.Name,
-			ExitCode:  exitCode,
+			ExitCode:  res.ExitCode,
 			Stdout:    stdout,
 			Stderr:    stderr,
 			DurationM: time.Since(start).Milliseconds(),

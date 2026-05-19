@@ -311,7 +311,7 @@ func handleAPIMultiCommand(inviteCode string) http.HandlerFunc {
 				}
 
 				opStart := time.Now()
-				exitCode, stdout, stderr, runErr := runner.RunCapture(t.Account, t.Args)
+				res, stdout, stderr, runErr := runner.RunCapture(t.Account, t.Args)
 				if runErr != nil {
 					results[i] = apiMultiOpResult{
 						ID:        t.ID,
@@ -322,15 +322,19 @@ func handleAPIMultiCommand(inviteCode string) http.HandlerFunc {
 					}
 					return
 				}
-				// Store.RecordUsage is mutex-locked internally so this is
-				// safe to call from multiple goroutines. Save() is deferred
-				// to a single call after wg.Wait() to avoid a fsync per op.
+				// Store.RecordUsage and RecordRateLimit are mutex-locked
+				// internally so they're safe to call from multiple
+				// goroutines. Save() is deferred to a single call after
+				// wg.Wait() to avoid a fsync per op.
 				_ = st.RecordUsage(t.Account.Name)
+				if res.RateLimited {
+					_ = st.RecordRateLimit(t.Account.Name)
+				}
 				results[i] = apiMultiOpResult{
 					ID:        t.ID,
 					OK:        true,
 					Account:   t.Account.Name,
-					ExitCode:  exitCode,
+					ExitCode:  res.ExitCode,
 					Stdout:    stdout,
 					Stderr:    stderr,
 					DurationM: time.Since(opStart).Milliseconds(),

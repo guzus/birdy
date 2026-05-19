@@ -300,8 +300,10 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 // DefaultRunner is a convenience wrapper exposing runner.RunCapture as a
-// RunFunc. The cmd package wires this in.
+// RunFunc. The cmd package wires this in. The daemon's RunFunc shape
+// predates the runner.Result struct so we flatten it back here.
 func DefaultRunner(account *store.Account, args []string) (int, string, string, error) {
-	return runner.RunCapture(account, args)
+	res, stdout, stderr, err := runner.RunCapture(account, args)
+	return res.ExitCode, stdout, stderr, err
 }
 

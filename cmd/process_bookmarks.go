@@ -228,12 +228,17 @@ func runProcessBookmarks(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	exitCode, stdout, stderr, err := runner.RunCapture(account, []string{"bookmarks", "--count", pbCount})
+	res, stdout, stderr, err := runner.RunCapture(account, []string{"bookmarks", "--count", pbCount})
 	if err != nil {
 		return fmt.Errorf("running bird bookmarks: %w", err)
 	}
-	if exitCode != 0 {
-		return fmt.Errorf("bird bookmarks failed (exit %d): %s", exitCode, stderr)
+	if res.RateLimited {
+		if rlErr := st.RecordRateLimit(account.Name); rlErr == nil {
+			_ = st.Save()
+		}
+	}
+	if res.ExitCode != 0 {
+		return fmt.Errorf("bird bookmarks failed (exit %d): %s", res.ExitCode, stderr)
 	}
 
 	bookmarks := parseBookmarkOutput(stdout)
