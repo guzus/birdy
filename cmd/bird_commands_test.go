@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -123,8 +124,36 @@ func TestApplyBirdyGlobalFlags_VerboseEquals(t *testing.T) {
 
 func TestApplyBirdyGlobalFlags_VerboseEqualsInvalid(t *testing.T) {
 	withFreshFlags(t)
-	if _, err := applyBirdyGlobalFlags([]string{"--verbose=maybe"}); err == nil {
+	_, err := applyBirdyGlobalFlags([]string{"--verbose=maybe"})
+	if err == nil {
 		t.Fatal("expected error for --verbose=maybe")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "--verbose") || !strings.Contains(msg, "maybe") {
+		t.Errorf("expected error message to mention --verbose and the bad value, got %q", msg)
+	}
+}
+
+func TestApplyBirdyGlobalFlags_EmptyValueRejected(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		flag string
+	}{
+		{"empty-account", []string{"--account", "", "user-tweets", "@h"}, "--account"},
+		{"empty-strategy", []string{"-s", "", "@h"}, "-s"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			withFreshFlags(t)
+			_, err := applyBirdyGlobalFlags(tc.args)
+			if err == nil {
+				t.Fatalf("expected error for %s with empty value", tc.flag)
+			}
+			if !strings.Contains(err.Error(), tc.flag) {
+				t.Errorf("expected error to mention %s, got %q", tc.flag, err.Error())
+			}
+		})
 	}
 }
 

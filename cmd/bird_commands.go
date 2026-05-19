@@ -98,12 +98,18 @@ func applyBirdyGlobalFlags(args []string) ([]string, error) {
 			if i+1 >= len(args) {
 				return nil, fmt.Errorf("%s requires a value", arg)
 			}
+			if args[i+1] == "" {
+				return nil, fmt.Errorf("%s requires a non-empty value", arg)
+			}
 			accountFlag = args[i+1]
 			i += 2
 			continue
 		case "--strategy", "-s":
 			if i+1 >= len(args) {
 				return nil, fmt.Errorf("%s requires a value", arg)
+			}
+			if args[i+1] == "" {
+				return nil, fmt.Errorf("%s requires a non-empty value", arg)
 			}
 			strategyFlag = args[i+1]
 			i += 2
