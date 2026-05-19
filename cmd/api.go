@@ -370,7 +370,8 @@ func handleAPICommand(inviteCode string) http.HandlerFunc {
 		}
 		if err := st.RecordUsage(account.Name); err != nil {
 			persistenceWarnings = append(persistenceWarnings, fmt.Sprintf("failed to record account usage for %q: %v", account.Name, err))
-		} else if res.RateLimited {
+		}
+		if res.RateLimited {
 			if err := st.RecordRateLimit(account.Name); err != nil {
 				persistenceWarnings = append(persistenceWarnings, fmt.Sprintf("failed to record rate-limit for %q: %v", account.Name, err))
 			}
