@@ -1,10 +1,30 @@
 package cmd
 
-import "github.com/spf13/cobra"
+import (
+	"fmt"
+	"strings"
+
+	"github.com/spf13/cobra"
+)
 
 // makeBirdCmd creates a lightweight cobra command that forwards to bird
-// via the existing passthrough logic. DisableFlagParsing ensures all
-// flags and args are passed through to bird untouched.
+// via the existing passthrough logic.
+//
+// We set DisableFlagParsing on bird subcommands because bird has its own
+// flags (--max-pages, --json, -n, etc) that cobra would otherwise try to
+// validate. The side-effect is that birdy's own global flags (--account/-a,
+// --strategy/-s, --verbose/-v) also bypass cobra's parsing when they appear
+// before the bird subcommand name — so we extract them manually before
+// forwarding the remaining args to runPassthrough.
+//
+// Examples that now work:
+//
+//	birdy --account alt4 user-tweets @handle      # use alt4 specifically
+//	birdy -a alt4 user-tweets @handle              # short form
+//	birdy --strategy least-used user-tweets @h     # alternate rotation strategy
+//	birdy -v user-tweets @handle                   # verbose
+//	birdy --account=alt4 user-tweets @handle       # equals-form
+//	birdy user-tweets -- --account weird           # after --, flags pass through
 func makeBirdCmd(use, short string) *cobra.Command {
 	return &cobra.Command{
 		Use:                use,
@@ -14,10 +34,108 @@ func makeBirdCmd(use, short string) *cobra.Command {
 		SilenceUsage:       true,
 		SilenceErrors:      true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			cleaned, err := applyBirdyGlobalFlags(args)
+			if err != nil {
+				return err
+			}
 			// Prepend the command name back — cobra consumed it.
-			return runPassthrough(cmd, append([]string{cmd.Name()}, args...))
+			return runPassthrough(cmd, append([]string{cmd.Name()}, cleaned...))
 		},
 	}
+}
+
+// applyBirdyGlobalFlags scans args for birdy's global flags (--account/-a,
+// --strategy/-s, --verbose/-v), sets the package-level variables, and
+// returns the remaining args with those flags stripped.
+//
+// Anything after a `--` separator is left untouched so users can pass
+// `--account` (or similar) through to bird if it ever adds such a flag.
+//
+// Returns an error if a flag is missing its value (e.g. trailing `--account`).
+func applyBirdyGlobalFlags(args []string) ([]string, error) {
+	cleaned := make([]string, 0, len(args))
+	i := 0
+	for i < len(args) {
+		arg := args[i]
+		// Pass everything after `--` through unchanged.
+		if arg == "--" {
+			cleaned = append(cleaned, args[i:]...)
+			break
+		}
+
+		// Handle --flag=value first (no need to peek next arg).
+		if eq := strings.IndexByte(arg, '='); eq > 0 {
+			name := arg[:eq]
+			value := arg[eq+1:]
+			switch name {
+			case "--account", "-a":
+				accountFlag = value
+				i++
+				continue
+			case "--strategy", "-s":
+				strategyFlag = value
+				i++
+				continue
+			case "--verbose", "-v":
+				// --verbose=true / --verbose=false / --verbose=1 ...
+				accepted, ok := parseBoolFlag(value)
+				if !ok {
+					return nil, fmt.Errorf("invalid value for %s: %q", name, value)
+				}
+				verboseFlag = accepted
+				i++
+				continue
+			}
+			// Not one of ours — pass through.
+			cleaned = append(cleaned, arg)
+			i++
+			continue
+		}
+
+		// Space-separated --flag value forms.
+		switch arg {
+		case "--account", "-a":
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf("%s requires a value", arg)
+			}
+			if args[i+1] == "" {
+				return nil, fmt.Errorf("%s requires a non-empty value", arg)
+			}
+			accountFlag = args[i+1]
+			i += 2
+			continue
+		case "--strategy", "-s":
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf("%s requires a value", arg)
+			}
+			if args[i+1] == "" {
+				return nil, fmt.Errorf("%s requires a non-empty value", arg)
+			}
+			strategyFlag = args[i+1]
+			i += 2
+			continue
+		case "--verbose", "-v":
+			verboseFlag = true
+			i++
+			continue
+		}
+
+		cleaned = append(cleaned, arg)
+		i++
+	}
+	return cleaned, nil
+}
+
+// parseBoolFlag mirrors cobra's bool flag value parser for the subset of
+// strings we expect (true/false/1/0/yes/no/on/off, case-insensitive).
+func parseBoolFlag(s string) (bool, bool) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "true", "1", "yes", "on":
+		return true, true
+	case "false", "0", "no", "off":
+		return false, true
+	}
+	return false, false
 }
 
 func init() {
