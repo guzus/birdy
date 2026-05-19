@@ -8,9 +8,11 @@ import (
 )
 
 var (
-	strategyFlag string
-	accountFlag  string
-	verboseFlag  bool
+	strategyFlag  string
+	accountFlag   string
+	verboseFlag   bool
+	vpnFlag       bool
+	vpnServerFlag string
 )
 
 var rootCmd = &cobra.Command{
@@ -45,6 +47,10 @@ func init() {
 		"use a specific account by name (skip rotation)")
 	rootCmd.PersistentFlags().BoolVarP(&verboseFlag, "verbose", "v", false,
 		"show which account is being used")
+	rootCmd.PersistentFlags().BoolVar(&vpnFlag, "vpn", false,
+		"route bird through the configured SOCKS5 VPN (see: birdy vpn)")
+	rootCmd.PersistentFlags().StringVar(&vpnServerFlag, "vpn-server", "",
+		"pin to a specific SOCKS5 server hostname (implies --vpn)")
 }
 
 // Execute runs the root command.

@@ -19,19 +19,39 @@ type Result struct {
 	RateLimited bool // bird's stderr contained an HTTP 429 marker
 }
 
+// Options carries optional knobs for a bird invocation. Mutually-
+// exclusive callers (Run vs RunCapture) share the same struct so adding
+// new options doesn't double the API surface.
+type Options struct {
+	// ExtraEnv is appended to the subprocess environment, after the
+	// AUTH_TOKEN/CT0 vars derived from the account. Used for VPN
+	// routing (HTTPS_PROXY + NODE_OPTIONS).
+	ExtraEnv []string
+}
+
 // Run executes the bird CLI with the given account's credentials and args.
 // It passes auth_token and ct0 as environment variables and detects 429s
 // from bird's stderr so the caller can record per-account quota state.
 func Run(account *store.Account, args []string) (Result, error) {
-	return runWithIO(account, args, os.Stdin, os.Stdout, os.Stderr)
+	return RunWith(account, args, Options{})
+}
+
+// RunWith is Run plus extra subprocess options (currently just ExtraEnv).
+func RunWith(account *store.Account, args []string, opts Options) (Result, error) {
+	return runWithIO(account, args, opts, os.Stdin, os.Stdout, os.Stderr)
 }
 
 // RunCapture executes the bird CLI and captures stdout/stderr. The Result
 // reports whether bird's stderr contained an HTTP 429 marker.
 func RunCapture(account *store.Account, args []string) (res Result, stdout, stderr string, err error) {
+	return RunCaptureWith(account, args, Options{})
+}
+
+// RunCaptureWith is RunCapture plus extra subprocess options.
+func RunCaptureWith(account *store.Account, args []string, opts Options) (res Result, stdout, stderr string, err error) {
 	var outBuf bytes.Buffer
 	var errBuf bytes.Buffer
-	res, err = runWithIO(account, args, nil, &outBuf, &errBuf)
+	res, err = runWithIO(account, args, opts, nil, &outBuf, &errBuf)
 	return res, outBuf.String(), errBuf.String(), err
 }
 
@@ -66,7 +86,7 @@ func adaptWriter(w any) io.Writer {
 	return nil
 }
 
-func runWithIO(account *store.Account, args []string, stdin any, stdout any, stderr any) (Result, error) {
+func runWithIO(account *store.Account, args []string, opts Options, stdin any, stdout any, stderr any) (Result, error) {
 	if account == nil {
 		return Result{ExitCode: 1}, fmt.Errorf("running bird: missing account")
 	}
@@ -87,6 +107,9 @@ func runWithIO(account *store.Account, args []string, stdin any, stdout any, std
 	cmd.Stderr = scan
 
 	cmd.Env = buildEnv(account)
+	if len(opts.ExtraEnv) > 0 {
+		cmd.Env = append(cmd.Env, opts.ExtraEnv...)
+	}
 
 	if err := cmd.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
