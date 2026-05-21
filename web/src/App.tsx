@@ -29,6 +29,8 @@ type Conversation = {
   updatedAt: number;
 };
 
+type RunningKind = 'chat' | 'scan';
+
 function makeConvId() {
   return `conv-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -622,14 +624,17 @@ export function App() {
     return convs.length > 0 ? convs[0].id : null;
   });
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [scanning, setScanning] = useState(false);
-  const [scanTools, setScanTools] = useState<string[]>([]);
   const [prompt, setPrompt] = useState('');
-  const [genBusy, setGenBusy] = useState(false);
+  const [runningByConv, setRunningByConv] = useState<Record<string, RunningKind>>({});
+  const [scanToolsByConv, setScanToolsByConv] = useState<Record<string, string[]>>({});
 
   const activeConv = conversations.find(c => c.id === activeConvId) ?? null;
   const cards = activeConv?.cards ?? [];
   const chatItems = activeConv?.chatItems ?? [];
+  const activeRunning = activeConvId ? runningByConv[activeConvId] : undefined;
+  const scanning = activeRunning === 'scan';
+  const genBusy = activeRunning === 'chat';
+  const scanTools = activeConvId ? (scanToolsByConv[activeConvId] ?? []) : [];
 
   const updateConv = useCallback((id: string, fn: (c: Conversation) => Conversation) => {
     setConversations(prev => prev.map(c => c.id === id ? fn(c) : c));
@@ -646,14 +651,48 @@ export function App() {
     return newConv.id;
   }, [activeConvId]);
 
-  const streamAbortRef = useRef<AbortController | null>(null);
-  const streamRunRef = useRef(0);
+  const streamAbortRefs = useRef(new Map<string, AbortController>());
   const didAutoAuthRef = useRef(false);
   const feedRef = useRef<HTMLDivElement>(null);
-  const chatItemsRef = useRef(chatItems);
-  chatItemsRef.current = chatItems;
-  const queuedPromptRef = useRef<string | null>(null);
-  const doSendRef = useRef<((ask: string) => void) | undefined>(undefined);
+  const queuedPromptRef = useRef<{ convId: string; prompt: string } | null>(null);
+  const doSendRef = useRef<((ask: string, convId?: string) => void) | undefined>(undefined);
+
+  const setConvRunning = useCallback((id: string, kind: RunningKind) => {
+    setRunningByConv(prev => ({ ...prev, [id]: kind }));
+  }, []);
+
+  const clearConvRunning = useCallback((id: string) => {
+    setRunningByConv(prev => {
+      if (!prev[id]) return prev;
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+  }, []);
+
+  const clearConvScanTools = useCallback((id: string) => {
+    setScanToolsByConv(prev => {
+      if (!prev[id]) return prev;
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+  }, []);
+
+  const finishConvStream = useCallback((id: string, controller: AbortController) => {
+    if (streamAbortRefs.current.get(id) !== controller) return;
+    streamAbortRefs.current.delete(id);
+    clearConvRunning(id);
+    clearConvScanTools(id);
+  }, [clearConvRunning, clearConvScanTools]);
+
+  const abortConvStream = useCallback((id: string) => {
+    const controller = streamAbortRefs.current.get(id);
+    controller?.abort();
+    streamAbortRefs.current.delete(id);
+    clearConvRunning(id);
+    clearConvScanTools(id);
+  }, [clearConvRunning, clearConvScanTools]);
 
   useEffect(() => {
     inviteCodeRef.current = inviteCode;
@@ -764,13 +803,12 @@ export function App() {
   const runScan = useCallback(async () => {
     if (scanning || genBusy) return;
     const convId = ensureConv();
-    setScanning(true);
-    setScanTools([]);
+    abortConvStream(convId);
+    setConvRunning(convId, 'scan');
+    clearConvScanTools(convId);
 
     const controller = new AbortController();
-    streamAbortRef.current?.abort();
-    streamAbortRef.current = controller;
-    const runID = ++streamRunRef.current;
+    streamAbortRefs.current.set(convId, controller);
 
     let accumulated = '';
 
@@ -782,63 +820,57 @@ export function App() {
       await streamChat(SCAN_PROMPT, {
         signal: controller.signal,
         onToken: (text) => {
-          if (streamRunRef.current !== runID) return;
+          if (controller.signal.aborted) return;
           accumulated += text;
         },
         onSnapshot: (text) => {
-          if (streamRunRef.current !== runID) return;
+          if (controller.signal.aborted) return;
           accumulated = text;
         },
         onTool: (command) => {
-          if (streamRunRef.current !== runID) return;
-          setScanTools((prev) => (prev.includes(command) ? prev : [...prev, command]));
+          if (controller.signal.aborted) return;
+          setScanToolsByConv((prev) => {
+            const tools = prev[convId] ?? [];
+            if (tools.includes(command)) return prev;
+            return { ...prev, [convId]: [...tools, command] };
+          });
         },
         onDone: (fullText) => {
-          if (streamRunRef.current !== runID) return;
+          if (controller.signal.aborted) return;
           applyCards(parseCardsFromMarkdown(fullText));
-          setScanning(false);
-          setScanTools([]);
+          finishConvStream(convId, controller);
         },
         onError: () => {
-          if (streamRunRef.current !== runID) return;
+          if (controller.signal.aborted) return;
           if (accumulated) applyCards(parseCardsFromMarkdown(accumulated));
-          setScanning(false);
-          setScanTools([]);
+          finishConvStream(convId, controller);
         },
       });
     } catch (err) {
       if (controller.signal.aborted) return;
-      if (streamRunRef.current !== runID) return;
       if (accumulated) applyCards(parseCardsFromMarkdown(accumulated));
-      setScanning(false);
-      setScanTools([]);
+      finishConvStream(convId, controller);
     } finally {
-      if (streamRunRef.current === runID) setScanning(false);
-      if (streamAbortRef.current === controller) streamAbortRef.current = null;
+      finishConvStream(convId, controller);
     }
-  }, [scanning, genBusy, streamChat, ensureConv, updateConv]);
+  }, [scanning, genBusy, streamChat, ensureConv, updateConv, abortConvStream, setConvRunning, clearConvScanTools, finishConvStream]);
 
   const cancelScan = useCallback(() => {
-    streamAbortRef.current?.abort();
-    streamAbortRef.current = null;
-    setScanning(false);
-    setScanTools([]);
-  }, []);
+    if (!activeConvId) return;
+    abortConvStream(activeConvId);
+  }, [activeConvId, abortConvStream]);
 
   const cancelChat = useCallback(() => {
-    streamAbortRef.current?.abort();
-    streamAbortRef.current = null;
-    setGenBusy(false);
-    if (activeConvId) {
-      updateConv(activeConvId, c => ({
+    if (!activeConvId) return;
+    abortConvStream(activeConvId);
+    updateConv(activeConvId, c => ({
         ...c,
         chatItems: c.chatItems.map(item =>
           item.loading ? { ...item, loading: false, text: item.text || 'Cancelled.' } : item,
         ),
         updatedAt: Date.now(),
-      }));
-    }
-  }, [activeConvId, updateConv]);
+    }));
+  }, [activeConvId, updateConv, abortConvStream]);
 
   const verifyInviteCode = useCallback(
     async (rawCode?: string) => {
@@ -893,8 +925,8 @@ export function App() {
 
   useEffect(() => {
     return () => {
-      streamAbortRef.current?.abort();
-      streamAbortRef.current = null;
+      streamAbortRefs.current.forEach(controller => controller.abort());
+      streamAbortRefs.current.clear();
     };
   }, []);
 
@@ -902,7 +934,8 @@ export function App() {
     async (card: AlphaCard) => {
       if (genBusy || scanning) return;
       const convId = ensureConv();
-      setGenBusy(true);
+      abortConvStream(convId);
+      setConvRunning(convId, 'chat');
 
       const userItem: FeedItem & { kind: 'chat' } = {
         kind: 'chat', id: `u-${Date.now()}`, role: 'user',
@@ -920,9 +953,7 @@ export function App() {
       }));
 
       const controller = new AbortController();
-      streamAbortRef.current?.abort();
-      streamAbortRef.current = controller;
-      const runID = ++streamRunRef.current;
+      streamAbortRefs.current.set(convId, controller);
 
       const mapItem = (fn: (item: FeedItem & { kind: 'chat' }) => FeedItem & { kind: 'chat' }) =>
         updateConv(convId, c => ({ ...c, chatItems: c.chatItems.map(i => i.id === assistantId ? fn(i) : i), updatedAt: Date.now() }));
@@ -932,26 +963,25 @@ export function App() {
       try {
         await streamChat(deepDivePrompt, {
           signal: controller.signal,
-          onToken: (text) => { if (streamRunRef.current !== runID) return; mapItem(i => ({ ...i, text: i.text + text })); },
-          onSnapshot: (text) => { if (streamRunRef.current !== runID) return; mapItem(i => ({ ...i, text })); },
+          onToken: (text) => { if (controller.signal.aborted) return; mapItem(i => ({ ...i, text: i.text + text })); },
+          onSnapshot: (text) => { if (controller.signal.aborted) return; mapItem(i => ({ ...i, text })); },
           onTool: () => {},
-          onDone: () => { if (streamRunRef.current !== runID) return; mapItem(i => ({ ...i, loading: false })); },
-          onError: (err) => { if (streamRunRef.current !== runID) return; mapItem(i => ({ ...i, text: sanitizeError(err), loading: false })); },
+          onDone: () => { if (controller.signal.aborted) return; mapItem(i => ({ ...i, loading: false })); finishConvStream(convId, controller); },
+          onError: (err) => { if (controller.signal.aborted) return; mapItem(i => ({ ...i, text: sanitizeError(err), loading: false })); finishConvStream(convId, controller); },
         });
       } catch (err) {
         if (controller.signal.aborted) return;
-        if (streamRunRef.current !== runID) return;
         mapItem(i => ({ ...i, text: sanitizeError(err instanceof Error ? err.message : 'Request failed'), loading: false }));
+        finishConvStream(convId, controller);
       } finally {
-        if (streamRunRef.current === runID) setGenBusy(false);
-        if (streamAbortRef.current === controller) streamAbortRef.current = null;
+        finishConvStream(convId, controller);
       }
     },
-    [genBusy, scanning, streamChat, ensureConv, updateConv],
+    [genBusy, scanning, streamChat, ensureConv, updateConv, abortConvStream, setConvRunning, finishConvStream],
   );
 
-  const buildChatPrompt = useCallback((newMessage: string): string => {
-    const history = chatItemsRef.current
+  const buildChatPrompt = useCallback((newMessage: string, convId: string): string => {
+    const history = (conversations.find(c => c.id === convId)?.chatItems ?? [])
       .filter((item) => item.text && !item.loading)
       .slice(-10);
     if (history.length === 0) return newMessage;
@@ -959,23 +989,22 @@ export function App() {
       `${item.role === 'user' ? 'User' : 'Assistant'}: ${item.text}`,
     ).join('\n\n');
     return `Conversation so far:\n${lines}\n\nUser: ${newMessage}\n\nContinue the conversation. Respond to the latest message using the context above.`;
-  }, []);
+  }, [conversations]);
 
-  const sendMessage = useCallback(async (overridePrompt?: string) => {
+  const sendMessage = useCallback(async (overridePrompt?: string, targetConvId?: string) => {
     const ask = (overridePrompt ?? prompt).trim();
     if (!ask) return;
 
-    if (genBusy || scanning) {
-      queuedPromptRef.current = ask;
+    const convId = targetConvId ?? ensureConv();
+    if (runningByConv[convId]) {
+      queuedPromptRef.current = { convId, prompt: ask };
       if (!overridePrompt) setPrompt('');
       return;
     }
-
-    const convId = ensureConv();
-    setGenBusy(true);
+    setConvRunning(convId, 'chat');
     if (!overridePrompt) setPrompt('');
 
-    const contextPrompt = buildChatPrompt(ask);
+    const contextPrompt = buildChatPrompt(ask, convId);
 
     const userItem: FeedItem & { kind: 'chat' } = {
       kind: 'chat', id: `u-${Date.now()}`, role: 'user', text: ask, loading: false,
@@ -995,38 +1024,35 @@ export function App() {
       updateConv(convId, c => ({ ...c, chatItems: c.chatItems.map(i => i.id === assistantId ? fn(i) : i), updatedAt: Date.now() }));
 
     const controller = new AbortController();
-    streamAbortRef.current?.abort();
-    streamAbortRef.current = controller;
-    const runID = ++streamRunRef.current;
+    streamAbortRefs.current.set(convId, controller);
 
     try {
       await streamChat(contextPrompt, {
         signal: controller.signal,
-        onToken: (text) => { if (streamRunRef.current !== runID) return; mapItem(i => ({ ...i, text: i.text + text })); },
-        onSnapshot: (text) => { if (streamRunRef.current !== runID) return; mapItem(i => ({ ...i, text })); },
+        onToken: (text) => { if (controller.signal.aborted) return; mapItem(i => ({ ...i, text: i.text + text })); },
+        onSnapshot: (text) => { if (controller.signal.aborted) return; mapItem(i => ({ ...i, text })); },
         onTool: () => {},
-        onDone: () => { if (streamRunRef.current !== runID) return; mapItem(i => ({ ...i, loading: false })); },
-        onError: (err) => { if (streamRunRef.current !== runID) return; mapItem(i => ({ ...i, text: sanitizeError(err), loading: false })); },
+        onDone: () => { if (controller.signal.aborted) return; mapItem(i => ({ ...i, loading: false })); finishConvStream(convId, controller); },
+        onError: (err) => { if (controller.signal.aborted) return; mapItem(i => ({ ...i, text: sanitizeError(err), loading: false })); finishConvStream(convId, controller); },
       });
     } catch (err) {
       if (controller.signal.aborted) return;
-      if (streamRunRef.current !== runID) return;
       mapItem(i => ({ ...i, text: sanitizeError(err instanceof Error ? err.message : 'Request failed'), loading: false }));
+      finishConvStream(convId, controller);
     } finally {
-      if (streamRunRef.current === runID) setGenBusy(false);
-      if (streamAbortRef.current === controller) streamAbortRef.current = null;
+      finishConvStream(convId, controller);
     }
-  }, [prompt, genBusy, scanning, streamChat, buildChatPrompt, ensureConv, updateConv]);
+  }, [prompt, streamChat, buildChatPrompt, ensureConv, updateConv, runningByConv, setConvRunning, finishConvStream]);
 
-  doSendRef.current = (ask: string) => void sendMessage(ask);
+  doSendRef.current = (ask: string, convId?: string) => void sendMessage(ask, convId);
 
   useEffect(() => {
-    if (genBusy || scanning) return;
     const queued = queuedPromptRef.current;
     if (!queued) return;
+    if (runningByConv[queued.convId]) return;
     queuedPromptRef.current = null;
-    doSendRef.current?.(queued);
-  }, [genBusy, scanning]);
+    doSendRef.current?.(queued.prompt, queued.convId);
+  }, [runningByConv]);
 
   useEffect(() => {
     if (feedRef.current) {
@@ -1035,12 +1061,6 @@ export function App() {
   }, [cards, chatItems, scanning]);
 
   const handleNewChat = useCallback(() => {
-    streamAbortRef.current?.abort();
-    streamAbortRef.current = null;
-    setScanning(false);
-    setScanTools([]);
-    setGenBusy(false);
-    queuedPromptRef.current = null;
     const newConv: Conversation = {
       id: makeConvId(), title: 'New chat', chatItems: [], cards: [],
       createdAt: Date.now(), updatedAt: Date.now(),
@@ -1051,17 +1071,13 @@ export function App() {
   }, []);
 
   const switchConv = useCallback((id: string) => {
-    streamAbortRef.current?.abort();
-    streamAbortRef.current = null;
-    setScanning(false);
-    setScanTools([]);
-    setGenBusy(false);
-    queuedPromptRef.current = null;
     setActiveConvId(id);
     setSidebarOpen(false);
   }, []);
 
   const deleteConv = useCallback((id: string) => {
+    abortConvStream(id);
+    if (queuedPromptRef.current?.convId === id) queuedPromptRef.current = null;
     setConversations(prev => {
       const next = prev.filter(c => c.id !== id);
       if (id === activeConvId) {
@@ -1069,7 +1085,7 @@ export function App() {
       }
       return next;
     });
-  }, [activeConvId]);
+  }, [activeConvId, abortConvStream]);
 
   if (!authed) {
     return (
