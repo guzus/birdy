@@ -29,6 +29,8 @@ export const FALLBACK_QUERY_IDS = {
     Following: 'BEkNpEt5pNETESoqMsTEGA',
     Followers: 'kuFUYP9eV1FPoEy4N-pi7w',
     Likes: 'JR2gceKucIKcVNB_9JkhsA',
+    Favoriters: 'Vm_Xdlz2IgZYOuNZyXv6CQ',
+    Retweeters: 'qtic8qdylD9Q5DtNrF00qg',
     BookmarkFolderTimeline: 'KJIQpsvxrTfRIlbaRIySHQ',
     ListOwnerships: 'wQcOSjSQ8NtgxIwvYl1lMg',
     ListMemberships: 'BlEXXdARdSeL_0KyKHHvvg',

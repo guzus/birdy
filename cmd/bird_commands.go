@@ -174,6 +174,7 @@ func init() {
 
 	birdCmds := []struct{ use, short string }{
 		{"about", "Get account information for a user"},
+		{"activity", "Get tweet activity users and quote posts"},
 		{"bookmarks", "Get your bookmarked tweets"},
 		{"check", "Check credential availability"},
 		{"follow", "Follow a user"},
