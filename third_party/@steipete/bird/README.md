@@ -66,6 +66,10 @@ bird unbookmark https://x.com/user/status/1234567890123456789
 # Likes
 bird likes -n 5
 
+# Tweet activity
+bird activity 1234567890123456789 --types likes,reposts --json
+bird activity https://x.com/user/status/1234567890123456789 --types quotes --max-pages 2 --json
+
 # News and trending topics (AI-curated from Explore tabs)
 bird news --ai-only -n 10
 bird news --sports -n 5
@@ -174,6 +178,7 @@ Fields:
 - `bird <tweet-id-or-url> [--json]` — shorthand for `read` when only a URL or ID is provided.
 - `bird replies <tweet-id-or-url> [--all] [--max-pages n] [--cursor string] [--delay ms] [--json]` — list replies to a tweet.
 - `bird thread <tweet-id-or-url> [--all] [--max-pages n] [--cursor string] [--delay ms] [--json]` — show the full conversation thread.
+- `bird activity <tweet-id-or-url> [--types likes,reposts,quotes] [-n count] [--all] [--max-pages n] [--cursor string] [--delay ms] [--json] [--json-full]` — fetch users who liked/reposted a tweet and quote posts for it; `--cursor` requires a single selected activity type, and `--max-pages` implies paged fetching.
 - `bird search "<query>" [-n count] [--all] [--max-pages n] [--cursor string] [--json]` — search for tweets matching a query; `--max-pages` requires `--all` or `--cursor`.
 - `bird mentions [-n count] [--user @handle] [--json]` — find tweets mentioning a user (defaults to the authenticated user).
 - `bird user-tweets <@handle> [-n count] [--cursor string] [--max-pages n] [--delay ms] [--json]` — get tweets from a user's profile timeline.
@@ -265,7 +270,7 @@ Environment shortcuts:
 
 ## Output
 
-- `--json` prints raw tweet objects for read/replies/thread/search/mentions/user-tweets/bookmarks/likes.
+- `--json` prints raw tweet objects for read/replies/thread/search/mentions/user-tweets/bookmarks/likes, and structured activity objects for `activity`.
 - When using `--json` with pagination (`--all`, `--cursor`, `--max-pages`, or for `user-tweets` when `-n > 20`), output is `{ tweets, nextCursor }`.
 - `read` returns full text for Notes and Articles when present.
 - Use `--plain` for stable, script-friendly output (no emoji, no color).
@@ -301,6 +306,19 @@ When using `--json` with `following`/`followers`, user objects include:
 | `isBlueVerified` | boolean? | Blue verified flag |
  | `profileImageUrl` | string? | Profile image URL |
  | `createdAt` | string? | Account creation timestamp |
+
+When using `--json` with `activity`, output is:
+
+```ts
+{
+  tweetId: string;
+  likes: { users: TwitterUser[]; nextCursor: string | null };
+  reposts: { users: TwitterUser[]; nextCursor: string | null };
+  quotes: { tweets: TweetData[]; nextCursor: string | null };
+}
+```
+
+Unselected activity types are returned as empty arrays with `nextCursor: null`. Use `--types` to limit the request. Use `--json-full` to include raw API response data in quote tweet objects.
 
 When using `--json` with `news`/`trending`, news objects include:
 
