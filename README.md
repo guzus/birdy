@@ -204,6 +204,7 @@ birdy read 1234567890
 birdy search "golang"
 birdy home
 birdy mentions
+birdy activity 1234567890 --types likes,reposts --json
 
 # See which account was used with --verbose
 birdy -v home

@@ -24,6 +24,8 @@ export declare const FALLBACK_QUERY_IDS: {
     readonly Following: "BEkNpEt5pNETESoqMsTEGA";
     readonly Followers: "kuFUYP9eV1FPoEy4N-pi7w";
     readonly Likes: "JR2gceKucIKcVNB_9JkhsA";
+    readonly Favoriters: "Vm_Xdlz2IgZYOuNZyXv6CQ";
+    readonly Retweeters: "qtic8qdylD9Q5DtNrF00qg";
     readonly BookmarkFolderTimeline: "KJIQpsvxrTfRIlbaRIySHQ";
     readonly ListOwnerships: "wQcOSjSQ8NtgxIwvYl1lMg";
     readonly ListMemberships: "BlEXXdARdSeL_0KyKHHvvg";

@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- `activity` command to fetch tweet favoriters, retweeters, and quote posts with `--types`, pagination, and JSON output.
+
 ## 0.8.0 — 2026-01-19
 
 ### Added
