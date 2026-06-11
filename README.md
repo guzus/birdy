@@ -219,12 +219,12 @@ birdy status
 birdy account list
 ```
 
-## Commonly Followed Accounts
+## Following Overlap
 
 Find accounts followed by at least N accounts from a seed set:
 
 ```bash
-birdy common-following elonmusk sama --min 2
+birdy following-overlap elonmusk sama --min 2
 ```
 
 The default output is tab-separated:
