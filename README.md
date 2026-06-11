@@ -219,6 +219,22 @@ birdy status
 birdy account list
 ```
 
+## Commonly Followed Accounts
+
+Find accounts followed by at least N accounts from a seed set:
+
+```bash
+birdy common-following elonmusk sama --min 2
+```
+
+The default output is tab-separated:
+
+```text
+2	@example	Example Account	1000000 followers	elonmusk,sama
+```
+
+Use `--json` for scripts, `--max-pages N` for a bounded sample, and `--page-size N` to tune pagination. By default, birdy fetches all following pages for each seed account and rotates through configured birdy accounts just like normal forwarded bird commands.
+
 ## Account management
 
 ```bash
