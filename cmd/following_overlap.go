@@ -14,7 +14,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-type commonFollowingUser struct {
+type followingOverlapUser struct {
 	ID              string `json:"id"`
 	Username        string `json:"username"`
 	Name            string `json:"name,omitempty"`
@@ -26,7 +26,7 @@ type commonFollowingUser struct {
 	CreatedAt       string `json:"createdAt,omitempty"`
 }
 
-type commonFollowingTweet struct {
+type followingOverlapTweet struct {
 	AuthorID string `json:"authorId"`
 	Author   struct {
 		Username string `json:"username"`
@@ -34,13 +34,13 @@ type commonFollowingTweet struct {
 	} `json:"author"`
 }
 
-type commonFollowingResult struct {
-	commonFollowingUser
+type followingOverlapResult struct {
+	followingOverlapUser
 	Count      int      `json:"count"`
 	FollowedBy []string `json:"followedBy"`
 }
 
-type commonFollowingBirdRunner struct {
+type followingOverlapBirdRunner struct {
 	st      *store.Store
 	rs      *state.State
 	strat   rotation.Strategy
@@ -48,45 +48,45 @@ type commonFollowingBirdRunner struct {
 }
 
 var (
-	commonFollowingMin      int
-	commonFollowingPageSize int
-	commonFollowingAll      bool
-	commonFollowingMaxPages int
-	commonFollowingJSON     bool
+	followingOverlapMin      int
+	followingOverlapPageSize int
+	followingOverlapAll      bool
+	followingOverlapMaxPages int
+	followingOverlapJSON     bool
 )
 
-func newCommonFollowingCmd() *cobra.Command {
+func newFollowingOverlapCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "common-following [handles...]",
-		Aliases: []string{"common-follows"},
-		Short:   "Find accounts commonly followed by at least N seed accounts",
+		Use:     "following-overlap [handles...]",
+		Aliases: []string{"common-following", "common-follows"},
+		Short:   "Find following-list overlap across seed accounts",
 		GroupID: "birdy",
-		Long: `common-following finds high-signal accounts by fetching each seed
+		Long: `following-overlap finds high-signal accounts by fetching each seed
 account's following list, counting target accounts, and returning accounts
-followed by at least --min seeds.`,
+that appear in at least --min seed following lists.`,
 		Args: cobra.MinimumNArgs(2),
-		RunE: runCommonFollowing,
+		RunE: runFollowingOverlap,
 	}
-	cmd.Flags().IntVar(&commonFollowingMin, "min", 2, "minimum number of seed accounts that must follow a target")
-	cmd.Flags().IntVar(&commonFollowingPageSize, "page-size", 200, "users to request per following page")
-	cmd.Flags().BoolVar(&commonFollowingAll, "all", true, "fetch all following pages for each seed")
-	cmd.Flags().IntVar(&commonFollowingMaxPages, "max-pages", 0, "stop after N pages per seed when --all is true")
-	cmd.Flags().BoolVar(&commonFollowingJSON, "json", false, "output JSON")
+	cmd.Flags().IntVar(&followingOverlapMin, "min", 2, "minimum number of seed accounts that must follow a target")
+	cmd.Flags().IntVar(&followingOverlapPageSize, "page-size", 200, "users to request per following page")
+	cmd.Flags().BoolVar(&followingOverlapAll, "all", true, "fetch all following pages for each seed")
+	cmd.Flags().IntVar(&followingOverlapMaxPages, "max-pages", 0, "stop after N pages per seed when --all is true")
+	cmd.Flags().BoolVar(&followingOverlapJSON, "json", false, "output JSON")
 	return cmd
 }
 
 func init() {
-	rootCmd.AddCommand(newCommonFollowingCmd())
+	rootCmd.AddCommand(newFollowingOverlapCmd())
 }
 
-func runCommonFollowing(cmd *cobra.Command, args []string) error {
-	if commonFollowingMin < 1 {
+func runFollowingOverlap(cmd *cobra.Command, args []string) error {
+	if followingOverlapMin < 1 {
 		return fmt.Errorf("--min must be at least 1")
 	}
-	if commonFollowingPageSize < 1 {
+	if followingOverlapPageSize < 1 {
 		return fmt.Errorf("--page-size must be at least 1")
 	}
-	if commonFollowingMaxPages < 0 {
+	if followingOverlapMaxPages < 0 {
 		return fmt.Errorf("--max-pages cannot be negative")
 	}
 
@@ -122,22 +122,22 @@ func runCommonFollowing(cmd *cobra.Command, args []string) error {
 		defer bridge.Stop()
 	}
 
-	br := &commonFollowingBirdRunner{
+	br := &followingOverlapBirdRunner{
 		st:      st,
 		rs:      rs,
 		strat:   strat,
 		runOpts: runOpts,
 	}
 
-	seeds := normalizeCommonFollowingSeeds(args)
+	seeds := normalizeFollowingOverlapSeeds(args)
 	if len(seeds) < 2 {
 		return fmt.Errorf("at least two distinct seed accounts are required")
 	}
-	if commonFollowingMin > len(seeds) {
+	if followingOverlapMin > len(seeds) {
 		return fmt.Errorf("--min cannot be greater than the number of distinct seed accounts")
 	}
 
-	byTarget := make(map[string]*commonFollowingResult)
+	byTarget := make(map[string]*followingOverlapResult)
 	seenSeedTarget := make(map[string]map[string]bool, len(seeds))
 
 	for _, seed := range seeds {
@@ -160,7 +160,7 @@ func runCommonFollowing(cmd *cobra.Command, args []string) error {
 			entry := byTarget[user.ID]
 			if entry == nil {
 				u := user
-				entry = &commonFollowingResult{commonFollowingUser: u}
+				entry = &followingOverlapResult{followingOverlapUser: u}
 				byTarget[user.ID] = entry
 			}
 			entry.Count++
@@ -168,9 +168,9 @@ func runCommonFollowing(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	results := make([]commonFollowingResult, 0, len(byTarget))
+	results := make([]followingOverlapResult, 0, len(byTarget))
 	for _, entry := range byTarget {
-		if entry.Count >= commonFollowingMin {
+		if entry.Count >= followingOverlapMin {
 			sort.Strings(entry.FollowedBy)
 			results = append(results, *entry)
 		}
@@ -190,7 +190,7 @@ func runCommonFollowing(cmd *cobra.Command, args []string) error {
 	}
 
 	out := cmd.OutOrStdout()
-	if commonFollowingJSON {
+	if followingOverlapJSON {
 		enc := json.NewEncoder(out)
 		enc.SetIndent("", "  ")
 		return enc.Encode(results)
@@ -207,7 +207,7 @@ func runCommonFollowing(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func normalizeCommonFollowingSeeds(args []string) []string {
+func normalizeFollowingOverlapSeeds(args []string) []string {
 	seen := make(map[string]bool, len(args))
 	seeds := make([]string, 0, len(args))
 	for _, arg := range args {
@@ -221,12 +221,12 @@ func normalizeCommonFollowingSeeds(args []string) []string {
 	return seeds
 }
 
-func (r *commonFollowingBirdRunner) resolveUserID(handle string) (string, error) {
+func (r *followingOverlapBirdRunner) resolveUserID(handle string) (string, error) {
 	stdout, stderr, err := r.run([]string{"user-tweets", handle, "-n", "1", "--json", "--plain"})
 	if err != nil {
 		return "", errWithStderr(err, stderr)
 	}
-	var tweets []commonFollowingTweet
+	var tweets []followingOverlapTweet
 	if err := json.Unmarshal([]byte(stdout), &tweets); err != nil {
 		return "", fmt.Errorf("parsing user-tweets JSON: %w", err)
 	}
@@ -238,22 +238,22 @@ func (r *commonFollowingBirdRunner) resolveUserID(handle string) (string, error)
 	return "", fmt.Errorf("could not determine user ID from user-tweets output")
 }
 
-func (r *commonFollowingBirdRunner) fetchFollowing(userID string) ([]commonFollowingUser, error) {
-	args := []string{"following", "--user", userID, "-n", fmt.Sprintf("%d", commonFollowingPageSize), "--json", "--plain"}
-	if commonFollowingAll {
+func (r *followingOverlapBirdRunner) fetchFollowing(userID string) ([]followingOverlapUser, error) {
+	args := []string{"following", "--user", userID, "-n", fmt.Sprintf("%d", followingOverlapPageSize), "--json", "--plain"}
+	if followingOverlapAll {
 		args = append(args, "--all")
-		if commonFollowingMaxPages > 0 {
-			args = append(args, "--max-pages", fmt.Sprintf("%d", commonFollowingMaxPages))
+		if followingOverlapMaxPages > 0 {
+			args = append(args, "--max-pages", fmt.Sprintf("%d", followingOverlapMaxPages))
 		}
 	}
 	stdout, stderr, err := r.run(args)
 	if err != nil {
 		return nil, errWithStderr(err, stderr)
 	}
-	return parseCommonFollowingUsers([]byte(stdout))
+	return parseFollowingOverlapUsers([]byte(stdout))
 }
 
-func (r *commonFollowingBirdRunner) run(args []string) (string, string, error) {
+func (r *followingOverlapBirdRunner) run(args []string) (string, string, error) {
 	account, err := r.pickAccount()
 	if err != nil {
 		return "", "", err
@@ -279,7 +279,7 @@ func (r *commonFollowingBirdRunner) run(args []string) (string, string, error) {
 	return stdout, stderr, nil
 }
 
-func (r *commonFollowingBirdRunner) pickAccount() (*store.Account, error) {
+func (r *followingOverlapBirdRunner) pickAccount() (*store.Account, error) {
 	if accountFlag != "" {
 		return r.st.Get(accountFlag)
 	}
@@ -291,7 +291,7 @@ func (r *commonFollowingBirdRunner) pickAccount() (*store.Account, error) {
 	return account, nil
 }
 
-func (r *commonFollowingBirdRunner) saveState() error {
+func (r *followingOverlapBirdRunner) saveState() error {
 	if err := r.st.Save(); err != nil {
 		return fmt.Errorf("saving account store: %w", err)
 	}
@@ -303,13 +303,13 @@ func (r *commonFollowingBirdRunner) saveState() error {
 	return nil
 }
 
-func parseCommonFollowingUsers(data []byte) ([]commonFollowingUser, error) {
-	var users []commonFollowingUser
+func parseFollowingOverlapUsers(data []byte) ([]followingOverlapUser, error) {
+	var users []followingOverlapUser
 	if err := json.Unmarshal(data, &users); err == nil {
 		return users, nil
 	}
 	var paged struct {
-		Users []commonFollowingUser `json:"users"`
+		Users []followingOverlapUser `json:"users"`
 	}
 	if err := json.Unmarshal(data, &paged); err != nil {
 		return nil, fmt.Errorf("parsing following JSON: %w", err)

@@ -9,8 +9,8 @@ import (
 	"testing"
 )
 
-func TestParseCommonFollowingUsersAcceptsArrayAndPagedObject(t *testing.T) {
-	arrayUsers, err := parseCommonFollowingUsers([]byte(`[{"id":"1","username":"alpha"}]`))
+func TestParseFollowingOverlapUsersAcceptsArrayAndPagedObject(t *testing.T) {
+	arrayUsers, err := parseFollowingOverlapUsers([]byte(`[{"id":"1","username":"alpha"}]`))
 	if err != nil {
 		t.Fatalf("parse array: %v", err)
 	}
@@ -18,7 +18,7 @@ func TestParseCommonFollowingUsersAcceptsArrayAndPagedObject(t *testing.T) {
 		t.Fatalf("unexpected array parse result: %+v", arrayUsers)
 	}
 
-	pagedUsers, err := parseCommonFollowingUsers([]byte(`{"users":[{"id":"2","username":"beta"}],"nextCursor":"x"}`))
+	pagedUsers, err := parseFollowingOverlapUsers([]byte(`{"users":[{"id":"2","username":"beta"}],"nextCursor":"x"}`))
 	if err != nil {
 		t.Fatalf("parse paged object: %v", err)
 	}
@@ -27,7 +27,7 @@ func TestParseCommonFollowingUsersAcceptsArrayAndPagedObject(t *testing.T) {
 	}
 }
 
-func TestCommonFollowingAggregatesByMinimumFollowers(t *testing.T) {
+func TestFollowingOverlapAggregatesByMinimumFollowers(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("BIRDY_ACCOUNTS", `[{"name":"ci","auth_token":"token","ct0":"ct0"}]`)
@@ -71,21 +71,21 @@ exit 9
 	}
 	t.Setenv("BIRDY_BIRD_PATH", birdPath)
 
-	prevMin, prevPageSize, prevAll, prevMaxPages, prevJSON := commonFollowingMin, commonFollowingPageSize, commonFollowingAll, commonFollowingMaxPages, commonFollowingJSON
+	prevMin, prevPageSize, prevAll, prevMaxPages, prevJSON := followingOverlapMin, followingOverlapPageSize, followingOverlapAll, followingOverlapMaxPages, followingOverlapJSON
 	prevAccount, prevStrategy := accountFlag, strategyFlag
 	defer func() {
-		commonFollowingMin = prevMin
-		commonFollowingPageSize = prevPageSize
-		commonFollowingAll = prevAll
-		commonFollowingMaxPages = prevMaxPages
-		commonFollowingJSON = prevJSON
+		followingOverlapMin = prevMin
+		followingOverlapPageSize = prevPageSize
+		followingOverlapAll = prevAll
+		followingOverlapMaxPages = prevMaxPages
+		followingOverlapJSON = prevJSON
 		accountFlag = prevAccount
 		strategyFlag = prevStrategy
 	}()
 	accountFlag = ""
 	strategyFlag = "round-robin"
 
-	cmd := newCommonFollowingCmd()
+	cmd := newFollowingOverlapCmd()
 	for name, value := range map[string]string{
 		"min":       "2",
 		"page-size": "50",
@@ -102,10 +102,10 @@ exit 9
 	cmd.SetOut(&out)
 	cmd.SetErr(&errOut)
 	if err := cmd.RunE(cmd, []string{"@Alpha", "beta", "gamma"}); err != nil {
-		t.Fatalf("run common-following: %v; stderr=%q", err, errOut.String())
+		t.Fatalf("run following-overlap: %v; stderr=%q", err, errOut.String())
 	}
 
-	var got []commonFollowingResult
+	var got []followingOverlapResult
 	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
 		t.Fatalf("unmarshal output: %v\n%s", err, out.String())
 	}
