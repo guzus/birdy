@@ -9,10 +9,18 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/guzus/birdy/internal/state"
 	"github.com/guzus/birdy/internal/store"
 )
+
+func init() {
+	// Handler tests assert auth, validation, rotation, and runner behavior.
+	// Keep package-global throttles from leaking state across `go test -count=N`.
+	commandLimiter = newRateLimiter(1_000_000, time.Minute)
+	chatLimiter = newRateLimiter(1_000_000, time.Minute)
+}
 
 type noFlushRecorder struct {
 	header http.Header

@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if echo \"$TOOL_INPUT\" | grep -q '\\.go\"'; then gofmt -w $(echo \"$TOOL_INPUT\" | grep -o '\"[^\"]*\\.go\"' | tr -d '\"') 2>/dev/null; fi"
+          }
+        ]
+      }
+    ]
+  }
+}

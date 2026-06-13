@@ -215,8 +215,7 @@ func TestAPIMultiCommandUnauthorized(t *testing.T) {
 
 func TestAPIMultiCommandRunsConcurrently(t *testing.T) {
 	// Each fake bird call sleeps 200ms. With 4 ops at concurrency=4 the
-	// wall time should be roughly one op duration, not 4x. Generous
-	// threshold (700ms) keeps the test stable on slow CI.
+	// wall time should be much lower than the aggregate subprocess time.
 	birdPath := writeFakeBirdScript(t, strings.Join([]string{
 		"#!/bin/sh",
 		"sleep 0.2",
@@ -245,9 +244,6 @@ func TestAPIMultiCommandRunsConcurrently(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d body=%q", rr.Code, rr.Body.String())
 	}
-	if elapsed > 700*time.Millisecond {
-		t.Fatalf("expected concurrent execution to complete within 700ms, got %v", elapsed)
-	}
 
 	var resp apiMultiCommandResponse
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
@@ -260,6 +256,16 @@ func TestAPIMultiCommandRunsConcurrently(t *testing.T) {
 		if !r.OK {
 			t.Fatalf("op %q failed: %+v", r.ID, r)
 		}
+	}
+	var aggregate time.Duration
+	for _, r := range resp.Results {
+		aggregate += time.Duration(r.DurationM) * time.Millisecond
+	}
+	if aggregate <= 0 {
+		t.Fatalf("expected operation durations to be recorded: %+v", resp.Results)
+	}
+	if elapsed >= aggregate*3/4 {
+		t.Fatalf("expected concurrent execution; wall time %v was too close to aggregate op time %v", elapsed, aggregate)
 	}
 }
 
@@ -367,4 +373,3 @@ func TestAPIMultiCommandBatchedRateLimit(t *testing.T) {
 		t.Fatal("expected next batch to be rejected (5+1 > 5)")
 	}
 }
-

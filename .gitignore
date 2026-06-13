@@ -12,6 +12,7 @@
 *.test
 *.out
 coverage.txt
+tmp/
 
 # Dependency
 vendor/
@@ -36,3 +37,4 @@ Thumbs.db
 web/node_modules/
 web/dist/
 web/.vite/
+.gstack/

@@ -108,6 +108,240 @@ Summary paragraph here.
 
 Include 3-6 sections total. Focus on actionable alpha, not noise. If a topic has no meaningful signal, skip it.`;
 
+type TrackerAccount = {
+  handle: string;
+  name: string;
+  bio: string;
+  following: string;
+  followers: string;
+  joined: string;
+  avatar: string;
+  banner: string;
+  accent: string;
+};
+
+type FollowSignal = {
+  id: string;
+  follower: TrackerAccount;
+  followed: TrackerAccount;
+  confidence: 'hypothesis' | 'confirmed';
+  detectedAt: string;
+  thesis: string;
+  tags: string[];
+};
+
+const trackerQueue = ['@sama', '@karpathy', '@levelsio', '@rauchg', '@amasad'];
+
+const trackerSignals: FollowSignal[] = [
+  {
+    id: 'signal-elon-kilo',
+    confidence: 'hypothesis',
+    detectedAt: '2026-05-25 01:04',
+    thesis: 'Elon Musk follows Kilo, an open-source AI coding platform, possibly for its agentic engineering workflow and local tooling angle.',
+    tags: ['AI coding', 'open source', 'developer tools'],
+    follower: {
+      handle: '@elonmusk',
+      name: 'Elon Musk',
+      bio: 'Founder, builder, product signal amplifier.',
+      following: '1.3K',
+      followers: '240.0M',
+      joined: 'June, 2009',
+      avatar: 'EM',
+      banner: 'LAUNCH',
+      accent: '#111111',
+    },
+    followed: {
+      handle: '@kilocode',
+      name: 'Kilo',
+      bio: 'Open source AI coding platform for agentic engineering teams.',
+      following: '200',
+      followers: '20.0K',
+      joined: 'March, 2025',
+      avatar: 'K',
+      banner: 'AI for everything',
+      accent: '#fff84a',
+    },
+  },
+  {
+    id: 'signal-sama-browser',
+    confidence: 'confirmed',
+    detectedAt: '2026-05-24 22:18',
+    thesis: 'A frontier-lab leader followed a small browser automation project after several engineering threads gained traction.',
+    tags: ['agents', 'browser', 'automation'],
+    follower: {
+      handle: '@sama',
+      name: 'Sam Altman',
+      bio: 'AI lab operator tracking fast-moving software primitives.',
+      following: '3.4K',
+      followers: '5.1M',
+      joined: 'July, 2009',
+      avatar: 'SA',
+      banner: 'LAB',
+      accent: '#0f766e',
+    },
+    followed: {
+      handle: '@browserbasehq',
+      name: 'Browserbase',
+      bio: 'Cloud browsers for AI agents and automation workloads.',
+      following: '480',
+      followers: '54.2K',
+      joined: 'May, 2023',
+      avatar: 'BB',
+      banner: 'BROWSER AGENTS',
+      accent: '#1d4ed8',
+    },
+  },
+];
+
+function TrackerAccountCard({ account, align = 'left' }: { account: TrackerAccount; align?: 'left' | 'right' }) {
+  return (
+    <section className="min-w-0 bg-white text-[#111]">
+      <div
+        className="h-20 sm:h-24 border-b border-black/10 flex items-center px-4"
+        style={{ background: account.accent }}
+      >
+        <div className={`w-full text-[10px] sm:text-xs font-mono font-bold uppercase tracking-[0.12em] ${account.accent === '#fff84a' ? 'text-black' : 'text-white'} ${align === 'right' ? 'text-right' : ''}`}>
+          {account.banner}
+        </div>
+      </div>
+      <div className="px-4 pb-4">
+        <div className="-mt-10 mb-3">
+          <div className={`w-16 h-16 sm:w-20 sm:h-20 rounded-md border-4 border-white shadow-sm flex items-center justify-center font-black text-xl ${account.accent === '#fff84a' ? 'bg-[#fff84a] text-black' : 'bg-slate-900 text-white'}`}>
+            {account.avatar}
+          </div>
+        </div>
+        <div className="font-mono text-[11px] text-[#666]">{account.handle}</div>
+        <h3 className="m-0 text-xl sm:text-2xl font-bold leading-none">{account.name}</h3>
+        <div className="mt-1 flex items-center gap-1.5 text-[11px] text-[#4b86d9]">
+          <span className="w-2 h-2 rounded-full bg-[#3b82f6]" />
+          <span>Premium</span>
+        </div>
+        <div className="mt-4 grid grid-cols-2 gap-3 max-w-[180px]">
+          <div>
+            <div className="font-mono text-sm font-bold leading-none">{account.following}</div>
+            <div className="text-[10px] text-[#777]">Following</div>
+          </div>
+          <div>
+            <div className="font-mono text-sm font-bold leading-none">{account.followers}</div>
+            <div className="text-[10px] text-[#777]">Followers</div>
+          </div>
+        </div>
+        <p className="mt-4 mb-8 text-[11px] sm:text-xs leading-snug text-[#333] min-h-[40px]">{account.bio}</p>
+        <div className="text-[10px] text-[#777]">Joined: {account.joined}</div>
+      </div>
+    </section>
+  );
+}
+
+function FollowSignalCard({ signal }: { signal: FollowSignal }) {
+  return (
+    <article className="overflow-hidden rounded-lg border border-black bg-white shadow-sm">
+      <div className="bg-[#1f9d55] text-white text-center font-mono text-[11px] font-bold tracking-[0.18em] uppercase py-2">
+        New follow
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-[1fr_2px_1fr]">
+        <TrackerAccountCard account={signal.follower} />
+        <div className="hidden sm:block bg-black" />
+        <TrackerAccountCard account={signal.followed} align="right" />
+      </div>
+      <div className="bg-black text-white px-4 py-2 flex items-center justify-between gap-3 text-[10px] font-mono">
+        <span>Network signal detected</span>
+        <span className="text-white/70">{signal.detectedAt}</span>
+        <span className="hidden sm:inline text-white/70">powered by birdy</span>
+      </div>
+    </article>
+  );
+}
+
+function TrackerDemo() {
+  const primarySignal = trackerSignals[0];
+  return (
+    <div className="min-h-full bg-[#f6f7f8] text-[#111]">
+      <main className="mx-auto max-w-[1120px] px-4 py-5 sm:px-6 sm:py-8">
+        <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_320px]">
+          <section className="min-w-0">
+            <div className="rounded-lg border border-black/10 bg-white px-4 py-4 sm:px-6 sm:py-5">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-[#081826] text-white flex items-center justify-center font-black text-sm">B</div>
+                <div>
+                  <div className="font-semibold leading-tight">@AI followgraph <span className="rounded bg-[#178f36] px-1 py-0.5 text-[10px] text-white align-middle">ON</span></div>
+                  <div className="text-xs text-[#667085]">Monitoring high-signal follows across AI builders</div>
+                </div>
+              </div>
+              <div className="mt-5 space-y-4 text-[15px] sm:text-lg leading-relaxed">
+                <p className="m-0">NEW <span className="text-[#0a84ff]">{primarySignal.follower.handle}</span> has started following <span className="text-[#0a84ff]">{primarySignal.followed.handle}</span></p>
+                <p className="m-0">Pure hypothesis, not confirmed: {primarySignal.thesis}</p>
+                <p className="m-0">Comment AI leaders below that we should add to our monitor queue.</p>
+              </div>
+              <div className="mt-4 flex flex-wrap gap-2">
+                {primarySignal.tags.map((tag) => (
+                  <span key={tag} className="rounded-full bg-[#eef2f7] px-3 py-1 text-xs text-[#344054]">{tag}</span>
+                ))}
+              </div>
+            </div>
+
+            <div className="mt-4">
+              <FollowSignalCard signal={primarySignal} />
+            </div>
+          </section>
+
+          <aside className="space-y-4">
+            <section className="rounded-lg border border-black/10 bg-white p-4">
+              <div className="flex items-center justify-between">
+                <h2 className="m-0 text-sm font-semibold">Monitor queue</h2>
+                <span className="font-mono text-[11px] text-[#667085]">{trackerQueue.length} targets</span>
+              </div>
+              <div className="mt-3 flex flex-col gap-2">
+                {trackerQueue.map((handle, index) => (
+                  <div key={handle} className="flex items-center justify-between rounded-md border border-black/10 px-3 py-2">
+                    <span className="font-mono text-sm">{handle}</span>
+                    <span className="text-[11px] text-[#667085]">{index === 0 ? 'hot' : 'watching'}</span>
+                  </div>
+                ))}
+              </div>
+            </section>
+
+            <section className="rounded-lg border border-black/10 bg-white p-4">
+              <h2 className="m-0 text-sm font-semibold">Recent signals</h2>
+              <div className="mt-3 flex flex-col gap-3">
+                {trackerSignals.map((signal) => (
+                  <div key={signal.id} className="border-b border-black/10 pb-3 last:border-b-0 last:pb-0">
+                    <div className="font-mono text-[11px] uppercase text-[#667085]">{signal.confidence}</div>
+                    <div className="mt-1 text-sm font-medium">{signal.follower.handle} {'->'} {signal.followed.handle}</div>
+                    <div className="mt-1 text-xs leading-relaxed text-[#667085]">{signal.thesis}</div>
+                  </div>
+                ))}
+              </div>
+            </section>
+
+            <section className="rounded-lg border border-black/10 bg-[#081826] p-4 text-white">
+              <h2 className="m-0 text-sm font-semibold">Tracker contract</h2>
+              <dl className="mt-3 grid grid-cols-2 gap-3 text-xs">
+                <div>
+                  <dt className="text-white/50">Poll</dt>
+                  <dd className="m-0 font-mono">15m</dd>
+                </div>
+                <div>
+                  <dt className="text-white/50">Alert</dt>
+                  <dd className="m-0 font-mono">new edge</dd>
+                </div>
+                <div>
+                  <dt className="text-white/50">State</dt>
+                  <dd className="m-0 font-mono">dedupe</dd>
+                </div>
+                <div>
+                  <dt className="text-white/50">Output</dt>
+                  <dd className="m-0 font-mono">tweet card</dd>
+                </div>
+              </dl>
+            </section>
+          </aside>
+        </div>
+      </main>
+    </div>
+  );
+}
+
 function readInviteCodeCookie() {
   const cookies = document.cookie ? document.cookie.split('; ') : [];
   const key = `${inviteCodeKey}=`;
@@ -608,6 +842,7 @@ function ChatBubble({ item }: { item: FeedItem & { kind: 'chat' } }) {
 }
 
 export function App() {
+  const showTrackerDemo = new URLSearchParams(window.location.search).get('demo') === 'tracker';
   const [inviteCode, setInviteCode] = useState(() => {
     const local = window.localStorage.getItem(inviteCodeKey) || '';
     return local || readInviteCodeCookie();
@@ -1086,6 +1321,10 @@ export function App() {
       return next;
     });
   }, [activeConvId, abortConvStream]);
+
+  if (showTrackerDemo) {
+    return <TrackerDemo />;
+  }
 
   if (!authed) {
     return (
