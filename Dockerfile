@@ -20,7 +20,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o
 
 FROM node:22-bookworm-slim
 
-ARG CLAUDE_CODE_VERSION=2.1.39
+ARG CLAUDE_CODE_VERSION=2.1.207
 ARG BIRD_VERSION=0.8.0
 RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" "@steipete/bird@${BIRD_VERSION}" \
     && npm cache clean --force
