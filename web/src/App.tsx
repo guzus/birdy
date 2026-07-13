@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
+import { parseMarkdownBlocks } from './markdown';
 
 const inviteCodeKey = 'birdy_host_invite_code';
 const conversationsKey = 'birdy_conversations';
@@ -68,14 +69,6 @@ function loadConversations(): Conversation[] {
   } catch {}
   return [];
 }
-
-type MarkdownBlock =
-  | { kind: 'heading'; level: 1 | 2 | 3 | 4; text: string }
-  | { kind: 'paragraph'; lines: string[] }
-  | { kind: 'ul'; items: string[] }
-  | { kind: 'ol'; items: string[] }
-  | { kind: 'code'; code: string }
-  | { kind: 'rule' };
 
 const categoryMeta: Record<CardCategory, { label: string }> = {
   CRYPTO: { label: 'Crypto' },
@@ -427,103 +420,6 @@ function timeAgo(date: Date): string {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
-function isMarkdownRule(line: string): boolean {
-  return /^ {0,3}([-*_])(?:\s*\1){2,}\s*$/.test(line);
-}
-
-function isMarkdownBoundary(line: string): boolean {
-  const trimmed = line.trim();
-  if (!trimmed) return true;
-  if (/^#{1,4}\s+/.test(trimmed)) return true;
-  if (/^```/.test(trimmed)) return true;
-  if (/^[-*•]\s+/.test(trimmed)) return true;
-  if (/^\d+\.\s+/.test(trimmed)) return true;
-  return isMarkdownRule(trimmed);
-}
-
-function parseMarkdownBlocks(markdown: string): MarkdownBlock[] {
-  const normalized = markdown.replace(/\r\n?/g, '\n').trim();
-  if (!normalized) return [];
-
-  const lines = normalized.split('\n');
-  const blocks: MarkdownBlock[] = [];
-
-  for (let i = 0; i < lines.length; ) {
-    const line = lines[i];
-    const trimmed = line.trim();
-
-    if (!trimmed) {
-      i++;
-      continue;
-    }
-
-    if (/^```/.test(trimmed)) {
-      const codeLines: string[] = [];
-      i++;
-      while (i < lines.length && !/^```/.test(lines[i].trim())) {
-        codeLines.push(lines[i]);
-        i++;
-      }
-      if (i < lines.length) i++;
-      blocks.push({ kind: 'code', code: codeLines.join('\n') });
-      continue;
-    }
-
-    const headingMatch = trimmed.match(/^(#{1,4})\s+(.+)$/);
-    if (headingMatch) {
-      blocks.push({
-        kind: 'heading',
-        level: headingMatch[1].length as 1 | 2 | 3 | 4,
-        text: headingMatch[2].trim(),
-      });
-      i++;
-      continue;
-    }
-
-    if (isMarkdownRule(trimmed)) {
-      blocks.push({ kind: 'rule' });
-      i++;
-      continue;
-    }
-
-    if (/^[-*•]\s+/.test(trimmed)) {
-      const items: string[] = [];
-      while (i < lines.length) {
-        const match = lines[i].trim().match(/^[-*•]\s+(.+)$/);
-        if (!match) break;
-        items.push(match[1].trim());
-        i++;
-      }
-      blocks.push({ kind: 'ul', items });
-      continue;
-    }
-
-    if (/^\d+\.\s+/.test(trimmed)) {
-      const items: string[] = [];
-      while (i < lines.length) {
-        const match = lines[i].trim().match(/^\d+\.\s+(.+)$/);
-        if (!match) break;
-        items.push(match[1].trim());
-        i++;
-      }
-      blocks.push({ kind: 'ol', items });
-      continue;
-    }
-
-    const paragraphLines: string[] = [];
-    while (i < lines.length) {
-      const current = lines[i];
-      if (!current.trim()) break;
-      if (paragraphLines.length > 0 && isMarkdownBoundary(current)) break;
-      paragraphLines.push(current.trim());
-      i++;
-    }
-    blocks.push({ kind: 'paragraph', lines: paragraphLines });
-  }
-
-  return blocks;
-}
-
 function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
   const nodes: ReactNode[] = [];
   let rest = text;
@@ -580,7 +476,7 @@ function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
   return nodes;
 }
 
-function MarkdownMessage({ text }: { text: string }) {
+export function MarkdownMessage({ text }: { text: string }) {
   const blocks = parseMarkdownBlocks(text);
   if (blocks.length === 0) return <span>No response.</span>;
 
@@ -633,6 +529,44 @@ function MarkdownMessage({ text }: { text: string }) {
                 <li key={`${key}-item-${itemIdx}`}>{renderInlineMarkdown(item, `${key}-item-${itemIdx}`)}</li>
               ))}
             </ol>
+          );
+        }
+
+        if (block.kind === 'table') {
+          return (
+            <div key={key} className="w-full overflow-x-auto rounded-lg border border-border">
+              <table className="w-max min-w-full border-collapse text-left text-sm">
+                <thead className="bg-bg-2 text-text">
+                  <tr>
+                    {block.headers.map((header, columnIdx) => (
+                      <th
+                        key={`${key}-header-${columnIdx}`}
+                        scope="col"
+                        className="whitespace-nowrap border-b border-border px-3 py-2 font-semibold"
+                        style={{ textAlign: block.alignments[columnIdx] ?? undefined }}
+                      >
+                        {renderInlineMarkdown(header, `${key}-header-${columnIdx}`)}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {block.rows.map((row, rowIdx) => (
+                    <tr key={`${key}-row-${rowIdx}`} className="border-b border-border/50 last:border-b-0">
+                      {row.map((cell, columnIdx) => (
+                        <td
+                          key={`${key}-row-${rowIdx}-cell-${columnIdx}`}
+                          className="px-3 py-2 align-top"
+                          style={{ textAlign: block.alignments[columnIdx] ?? undefined }}
+                        >
+                          {renderInlineMarkdown(cell, `${key}-row-${rowIdx}-cell-${columnIdx}`)}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           );
         }
 
