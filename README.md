@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/birdy-logo.svg" alt="birdy logo" width="240">
+</p>
+
 # birdy
 
 Multi-account proxy for the [bird](https://github.com/steipete/bird) CLI. Store multiple X/Twitter auth tokens and automatically rotate between accounts to reduce rate-limit risk.

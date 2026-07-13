@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 343 346" role="img">
+  <title>Birdy original bird logo</title>
+  <desc>A smooth vector recreation of the supplied blue bird logo.</desc>
+
+  <!-- Original body, beak, head, and long swept tail. -->
+  <path
+    fill="#2CAADD"
+    fill-rule="evenodd"
+    d="M20 111c22-3 41-11 50-21 14-14 29-10 45 4 21 18 46 24 72 18 50-12 96-52 131-90 4-4 7-2 7 4 2 24-8 44-29 62-30 23-52 49-61 86-4 19-11 32-25 40-26 13-57 15-84 5-35-13-57-37-68-65-10-24-22-36-38-43ZM90 94a9 12 0 1 0 0 24 9 12 0 1 0 0-24Z"
+  />
+
+  <!-- Original two legs. -->
+  <g fill="none" stroke="#2CAADD" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M177 218l13 49h22"/>
+    <path d="M214 197l17 87h20"/>
+
+    <!-- Left foot and toes. -->
+    <path d="M191 267c-14 3-22 15-24 31"/>
+    <path d="M194 269c-10 8-15 20-16 33"/>
+    <path d="M198 271c-7 10-9 23-7 36"/>
+
+    <!-- Right foot and toes. -->
+    <path d="M232 284c-14 4-22 18-25 37"/>
+    <path d="M237 285c-10 10-14 25-14 40"/>
+    <path d="M242 286c-7 13-9 28-7 43"/>
+  </g>
+</svg>
