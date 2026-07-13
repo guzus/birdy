@@ -481,7 +481,7 @@ export function MarkdownMessage({ text }: { text: string }) {
   if (blocks.length === 0) return <span>No response.</span>;
 
   return (
-    <div className="flex flex-col gap-3 text-sm leading-relaxed text-text-muted break-words">
+    <div className="flex flex-col gap-3 text-sm leading-normal text-text-muted break-words">
       {blocks.map((block, blockIdx) => {
         const key = `md-${blockIdx}`;
 
@@ -581,6 +581,15 @@ export function MarkdownMessage({ text }: { text: string }) {
         return <hr key={key} className="border-0 border-t border-border my-1" />;
       })}
     </div>
+  );
+}
+
+function BirdyWordmark() {
+  return (
+    <h1 className="m-0 flex items-center gap-2 text-lg font-semibold tracking-tight text-text">
+      <img src="/birdy-logo.svg" alt="" aria-hidden="true" className="h-7 w-7 shrink-0 object-contain" />
+      <span>birdy</span>
+    </h1>
   );
 }
 
@@ -1264,7 +1273,7 @@ export function App() {
     return (
       <div className="h-full max-w-[640px] mx-auto grid grid-rows-[auto_minmax(0,1fr)] p-3 sm:p-4 gap-0">
         <header className="flex items-center justify-between py-3 border-b border-border">
-          <h1 className="m-0 text-lg font-semibold tracking-tight text-text">birdy</h1>
+          <BirdyWordmark />
           <span className="text-[11px] text-text-dim">
             {authBusy ? 'checking...' : ''}
           </span>
@@ -1336,7 +1345,7 @@ export function App() {
             >
               &#9776;
             </button>
-            <h1 className="m-0 text-lg font-semibold tracking-tight text-text">birdy</h1>
+            <BirdyWordmark />
           </div>
           <div className="flex items-center gap-4"></div>
         </header>
