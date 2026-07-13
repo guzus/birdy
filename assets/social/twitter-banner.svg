@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1500 500" role="img">
+  <title>Birdy X profile banner</title>
+  <rect width="1500" height="500" fill="#0F172A"/>
+
+  <!-- Three account routes stay subtle and safely outside the wordmark. -->
+  <g fill="none" stroke-linecap="round" opacity=".22">
+    <path d="M-80 132h515c170 0 250 55 375 102" stroke="#2563EB" stroke-width="18"/>
+    <path d="M-80 250h890" stroke="#2CAADD" stroke-width="18"/>
+    <path d="M-80 368h515c170 0 250-55 375-102" stroke="#635BFF" stroke-width="18"/>
+  </g>
+
+  <!-- Keep route artwork out of the copy zone. -->
+  <rect x="400" y="105" width="470" height="225" rx="28" fill="#0F172A"/>
+
+  <!-- Left padding protects against the profile-photo overlap on X profiles. -->
+  <image href="birdy-word.svg" x="430" y="125" width="284" height="130"/>
+  <image href="birdy-tagline.svg" x="434" y="274" width="304" height="26"/>
+
+  <!-- Approved bird mark, kept inside the vertical crop-safe band. -->
+  <g transform="translate(1070 86) scale(.9)">
+    <path
+      fill="#2CAADD"
+      fill-rule="evenodd"
+      d="M20 111c22-3 41-11 50-21 14-14 29-10 45 4 21 18 46 24 72 18 50-12 96-52 131-90 4-4 7-2 7 4 2 24-8 44-29 62-30 23-52 49-61 86-4 19-11 32-25 40-26 13-57 15-84 5-35-13-57-37-68-65-10-24-22-36-38-43ZM90 94a9 12 0 1 0 0 24 9 12 0 1 0 0-24Z"
+    />
+    <g fill="none" stroke="#2CAADD" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M177 218l13 49h22"/>
+      <path d="M214 197l17 87h20"/>
+      <path d="M191 267c-14 3-22 15-24 31M194 269c-10 8-15 20-16 33M198 271c-7 10-9 23-7 36"/>
+      <path d="M232 284c-14 4-22 18-25 37M237 285c-10 10-14 25-14 40M242 286c-7 13-9 28-7 43"/>
+    </g>
+  </g>
+</svg>
