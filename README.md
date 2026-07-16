@@ -130,8 +130,9 @@ The command, sandbox, and E2B request timeouts can be overridden with
 `BIRDY_E2B_COMMAND_TIMEOUT_MS`, `BIRDY_E2B_SANDBOX_TIMEOUT_MS`, and
 `BIRDY_E2B_REQUEST_TIMEOUT_MS`. The sandbox timeout must cover command startup,
 execution, and cleanup. The two E2B request handshakes, command timeout, and
-cleanup timeout must also fit inside the web API's hard six-minute deadline;
-invalid combinations fail before creating a sandbox.
+cleanup timeout must also fit inside the remaining web request deadline, which
+the Go host passes to the runner internally; invalid combinations fail before
+creating a sandbox.
 
 ### 4. Deploy and open
 

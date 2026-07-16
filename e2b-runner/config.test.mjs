@@ -2,16 +2,20 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  cancelSafetyBufferMs,
   claudeCommand,
+  defaultCancelGraceMs,
   defaultCleanupTimeoutMs,
   defaultCommandTimeoutMs,
   defaultRequestTimeoutMs,
   defaultSandboxTimeoutMs,
+  deadlineSafetyBufferMs,
   forwardedEnvs,
-  hostedHTTPTimeoutMs,
-  hostedSafetyBufferMs,
+  internalBudgetEnvName,
+  internalCancelGraceEnvName,
   readConfig,
   sandboxSafetyBufferMs,
+  standaloneHTTPTimeoutMs,
   writeChunk,
 } from './config.mjs';
 
@@ -22,6 +26,8 @@ test('forwards only Claude and birdy runtime variables', () => {
     BIRDY_HOST_INVITE_CODE: 'invite-secret',
     E2B_API_KEY: 'e2b-secret',
     HOME: '/host/home',
+    [internalBudgetEnvName]: '359000',
+    [internalCancelGraceEnvName]: '10000',
   });
 
   assert.deepEqual(envs, {
@@ -40,10 +46,12 @@ test('uses long-running defaults with a sandbox cleanup buffer', () => {
   assert.equal(config.sandboxTimeoutMs, defaultSandboxTimeoutMs);
   assert.equal(config.requestTimeoutMs, defaultRequestTimeoutMs);
   assert.equal(config.cleanupTimeoutMs, defaultCleanupTimeoutMs);
+  assert.equal(config.cancelGraceMs, defaultCancelGraceMs);
+  assert.equal(config.callerBudgetMs, standaloneHTTPTimeoutMs);
   assert.ok(config.commandTimeoutMs > 60_000);
   assert.ok(
     (2 * config.requestTimeoutMs) + config.commandTimeoutMs + config.cleanupTimeoutMs
-      <= hostedHTTPTimeoutMs - hostedSafetyBufferMs,
+      < standaloneHTTPTimeoutMs - deadlineSafetyBufferMs,
   );
   assert.ok(
     config.sandboxTimeoutMs
@@ -52,7 +60,7 @@ test('uses long-running defaults with a sandbox cleanup buffer', () => {
   );
 });
 
-test('rejects configuration that overruns the hosted HTTP deadline', () => {
+test('rejects configuration that overruns the caller deadline', () => {
   assert.throws(
     () => readConfig({
       BIRDY_E2B_TEMPLATE: 'bird-box-v1',
@@ -60,8 +68,40 @@ test('rejects configuration that overruns the hosted HTTP deadline', () => {
       BIRDY_E2B_COMMAND_TIMEOUT_MS: '283000',
       BIRDY_E2B_REQUEST_TIMEOUT_MS: '30000',
       BIRDY_E2B_SANDBOX_TIMEOUT_MS: '420000',
+      [internalBudgetEnvName]: '359000',
     }),
-    /hosted HTTP deadline/,
+    /caller deadline/,
+  );
+});
+
+test('uses a caller-provided budget and rejects a shorter context', () => {
+  const config = readConfig({
+    BIRDY_E2B_TEMPLATE: 'bird-box-v1',
+    E2B_API_KEY: 'e2b-secret',
+    [internalBudgetEnvName]: '359000',
+  });
+  assert.equal(config.callerBudgetMs, 359000);
+
+  assert.throws(
+    () => readConfig({
+      BIRDY_E2B_TEMPLATE: 'bird-box-v1',
+      E2B_API_KEY: 'e2b-secret',
+      [internalBudgetEnvName]: '350000',
+    }),
+    /caller deadline/,
+  );
+});
+
+test('requires creation and cleanup to fit inside the host cancellation grace', () => {
+  assert.throws(
+    () => readConfig({
+      BIRDY_E2B_TEMPLATE: 'bird-box-v1',
+      E2B_API_KEY: 'e2b-secret',
+      [internalCancelGraceEnvName]: String(
+        defaultRequestTimeoutMs + defaultCleanupTimeoutMs + cancelSafetyBufferMs,
+      ),
+    }),
+    /fit within the host cancellation grace/,
   );
 });
 

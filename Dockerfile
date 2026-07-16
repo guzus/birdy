@@ -34,7 +34,7 @@ RUN cd /app/e2b-runner \
 
 COPY --from=builder /out/birdy /usr/local/bin/birdy
 COPY --from=webbuilder /web/dist /app/web/dist
-COPY e2b-runner/config.mjs e2b-runner/claude.mjs /app/e2b-runner/
+COPY e2b-runner/config.mjs e2b-runner/lifecycle.mjs e2b-runner/claude.mjs /app/e2b-runner/
 COPY scripts/entrypoint-railway.sh /usr/local/bin/entrypoint-railway
 
 RUN /usr/local/bin/birdy version >/dev/null \

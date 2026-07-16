@@ -18,7 +18,7 @@ test:
 	go test ./... -count=1
 
 test-e2b:
-	node --test e2b-runner/config.test.mjs
+	npm test --prefix e2b-runner
 
 test-race:
 	go test -race ./tui ./cmd ./internal/birdbox ./internal/claude ./internal/state ./internal/store -count=1

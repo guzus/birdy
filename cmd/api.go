@@ -143,6 +143,8 @@ const hostedPrivacyPrefix = `[SYSTEM RULE — PRIVACY: You are running in public
 
 `
 
+const hostedChatTimeout = 6 * time.Minute
+
 func streamAPIChatModel(ctx context.Context, prompt, model, exePath string, emit func(claude.Event)) {
 	prompt = hostedPrivacyPrefix + prompt
 	if codex.IsSelected(model) {
@@ -436,7 +438,7 @@ func handleAPIChat(inviteCode string) http.HandlerFunc {
 			model = "sonnet"
 		}
 
-		ctx, cancel := context.WithTimeout(r.Context(), 6*time.Minute)
+		ctx, cancel := context.WithTimeout(r.Context(), hostedChatTimeout)
 		defer cancel()
 
 		exePath, err := os.Executable()

@@ -5,11 +5,58 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/guzus/birdy/internal/claude"
 )
+
+func TestEnvironmentForContextUsesAuthoritativeDeadlineAndGrace(t *testing.T) {
+	t.Setenv(internalBudgetEnv, "1")
+	t.Setenv(internalGraceEnv, "1")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	env, err := environmentForContext(ctx)
+	if err != nil {
+		t.Fatalf("environmentForContext: %v", err)
+	}
+	budget, budgetCount := environmentValue(env, internalBudgetEnv)
+	grace, graceCount := environmentValue(env, internalGraceEnv)
+	if budgetCount != 1 || graceCount != 1 {
+		t.Fatalf("expected one internal value each, budget=%d grace=%d", budgetCount, graceCount)
+	}
+	budgetMs, err := strconv.ParseInt(budget, 10, 64)
+	if err != nil || budgetMs <= 0 || budgetMs > 2000 {
+		t.Fatalf("unexpected deadline budget %q", budget)
+	}
+	if grace != strconv.FormatInt(runnerCleanupGrace.Milliseconds(), 10) {
+		t.Fatalf("unexpected cancellation grace %q", grace)
+	}
+}
+
+func TestEnvironmentForContextRejectsExpiredDeadline(t *testing.T) {
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	if _, err := environmentForContext(ctx); err == nil {
+		t.Fatal("expected expired deadline error")
+	}
+}
+
+func environmentValue(env []string, name string) (string, int) {
+	prefix := name + "="
+	var value string
+	count := 0
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			value = strings.TrimPrefix(entry, prefix)
+			count++
+		}
+	}
+	return value, count
+}
 
 func TestEnabledUsesTemplateAsOptIn(t *testing.T) {
 	t.Setenv(templateEnv, "")

@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test config.test.mjs"
+    "test": "node --test config.test.mjs lifecycle.test.mjs"
   },
   "dependencies": {
     "e2b": "2.34.0"

@@ -9,9 +9,14 @@ const forwardedEnvironmentNames = [
 ];
 
 // Budget two control-plane handshakes (sandbox creation and command start),
-// command execution, and cleanup inside the hosted API's six-minute deadline.
-export const hostedHTTPTimeoutMs = 360_000;
-export const hostedSafetyBufferMs = 10_000;
+// command execution, and cleanup inside the caller-provided deadline. The
+// six-minute value is only a fallback for running this helper standalone.
+export const internalBudgetEnvName = 'BIRDY_INTERNAL_BIRD_BOX_BUDGET_MS';
+export const internalCancelGraceEnvName = 'BIRDY_INTERNAL_BIRD_BOX_CANCEL_GRACE_MS';
+export const standaloneHTTPTimeoutMs = 360_000;
+export const defaultCancelGraceMs = 45_000;
+export const cancelSafetyBufferMs = 5_000;
+export const deadlineSafetyBufferMs = 10_000;
 export const sandboxSafetyBufferMs = 2_000;
 export const defaultCleanupTimeoutMs = 8_000;
 export const defaultCommandTimeoutMs = 280_000;
@@ -50,10 +55,24 @@ export function readConfig(env = process.env) {
     defaultRequestTimeoutMs,
   );
   const cleanupTimeoutMs = defaultCleanupTimeoutMs;
+  const callerBudgetMs = readPositiveInteger(
+    env,
+    internalBudgetEnvName,
+    standaloneHTTPTimeoutMs,
+  );
+  const cancelGraceMs = readPositiveInteger(
+    env,
+    internalCancelGraceEnvName,
+    defaultCancelGraceMs,
+  );
+
+  if (requestTimeoutMs + cleanupTimeoutMs + cancelSafetyBufferMs >= cancelGraceMs) {
+    throw new Error('E2B create, cleanup, and scheduling margin must fit within the host cancellation grace');
+  }
 
   const hostedBudgetMs = (2 * requestTimeoutMs) + commandTimeoutMs + cleanupTimeoutMs;
-  if (hostedBudgetMs > hostedHTTPTimeoutMs - hostedSafetyBufferMs) {
-    throw new Error('E2B timeout budget must fit within the 360000ms hosted HTTP deadline');
+  if (hostedBudgetMs + deadlineSafetyBufferMs >= callerBudgetMs) {
+    throw new Error('E2B timeout budget must fit within the caller deadline with cleanup headroom');
   }
 
   const sandboxBudgetMs = requestTimeoutMs + commandTimeoutMs + cleanupTimeoutMs
@@ -68,6 +87,8 @@ export function readConfig(env = process.env) {
     sandboxTimeoutMs,
     requestTimeoutMs,
     cleanupTimeoutMs,
+    callerBudgetMs,
+    cancelGraceMs,
   };
 }
 

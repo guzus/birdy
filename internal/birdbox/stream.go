@@ -17,8 +17,12 @@ const (
 	apiKeyEnv          = "E2B_API_KEY"
 	runnerPathEnv      = "BIRDY_E2B_RUNNER_PATH"
 	nodePathEnv        = "BIRDY_E2B_NODE_PATH"
+	internalBudgetEnv  = "BIRDY_INTERNAL_BIRD_BOX_BUDGET_MS"
+	internalGraceEnv   = "BIRDY_INTERNAL_BIRD_BOX_CANCEL_GRACE_MS"
 	sandboxBirdyCmd    = "birdy --strategy random"
-	runnerCleanupGrace = 10 * time.Second
+	// Covers the default 30s E2B create request, 8s sandbox deletion request,
+	// and the runner's 5s scheduling margin before Go hard-kills the helper.
+	runnerCleanupGrace = 45 * time.Second
 )
 
 // Enabled reports whether the hosted bird-box runtime has been configured.
@@ -51,6 +55,13 @@ func Stream(ctx context.Context, prompt, model string, emit func(claude.Event)) 
 	// avoids every chat request starting with the first configured account.
 	args := claude.BuildArgs(prompt, model, sandboxBirdyCmd)
 	cmd := exec.CommandContext(ctx, nodePath, append([]string{runnerPath}, args...)...)
+	runnerEnv, err := environmentForContext(ctx)
+	if err != nil {
+		emit(claude.Event{Type: claude.EventError, Error: err.Error()})
+		emit(claude.Event{Type: claude.EventDone})
+		return
+	}
+	cmd.Env = runnerEnv
 	cmd.Cancel = func() error {
 		if cmd.Process == nil {
 			return nil
@@ -61,4 +72,38 @@ func Stream(ctx context.Context, prompt, model string, emit func(claude.Event)) 
 	// Go escalates to terminating the local helper process.
 	cmd.WaitDelay = runnerCleanupGrace
 	claude.StreamCommand(ctx, cmd, emit)
+}
+
+func environmentForContext(ctx context.Context) ([]string, error) {
+	env := withoutEnvironment(os.Environ(), internalBudgetEnv, internalGraceEnv)
+	env = append(env, fmt.Sprintf("%s=%d", internalGraceEnv, runnerCleanupGrace.Milliseconds()))
+	if deadline, ok := ctx.Deadline(); ok {
+		budgetMs := time.Until(deadline).Milliseconds()
+		if budgetMs <= 0 {
+			return nil, fmt.Errorf("bird-box request deadline has expired")
+		}
+		env = append(env, fmt.Sprintf("%s=%d", internalBudgetEnv, budgetMs))
+	}
+	return env, nil
+}
+
+func withoutEnvironment(env []string, names ...string) []string {
+	prefixes := make([]string, len(names))
+	for i, name := range names {
+		prefixes[i] = name + "="
+	}
+	filtered := make([]string, 0, len(env))
+	for _, entry := range env {
+		internal := false
+		for _, prefix := range prefixes {
+			if strings.HasPrefix(entry, prefix) {
+				internal = true
+				break
+			}
+		}
+		if !internal {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered
 }
