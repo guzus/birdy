@@ -31,9 +31,116 @@ The TUI features:
 - **Account management** — Add, remove, and view accounts with `tab`
 - **Chat history** — Conversations are saved as markdown in `~/.config/birdy/chats/` (set `BIRDY_TUI_HIDE_HISTORY=1` to disable)
 
-## Hosted Web TUI
+## Birdy Web
 
-Run birdy as a browser-accessible terminal session:
+Birdy Web is the invite-gated React interface served by `birdy host`. It is
+built for X-hitchhiking agents: a user asks for a timeline scan, research, or a
+deep dive, and Claude works inside a disposable Bird Box sandbox. The sandbox
+receives the configured X session set, and birdy randomly selects one account
+for each command.
+
+The hosted instance is available at [birdy.guzus.xyz](https://birdy.guzus.xyz).
+Access is invite-only; DM [@uncanny_guzus](https://x.com/uncanny_guzus) on X to
+request an invite code.
+
+<p align="center">
+  <img src="assets/bird-box-logo.png" alt="Bird Box logo" width="180">
+  <br>
+  <em>Bird Box — a sandbox for X-hitchhiking agents.</em>
+</p>
+
+The web app provides:
+
+- **Timeline scans** — Claude explores home, search, and news feeds, then turns
+  the results into source-linked alpha cards.
+- **Streaming chat and Deep Dive** — `/api/chat` streams model text and birdy
+  tool calls to the browser over server-sent events (SSE).
+- **Browser-local persistence** — chat/card history is saved in that browser's
+  `localStorage`; prompts and responses still pass through the birdy host, E2B,
+  and the configured model provider during a request.
+- **Invite-gated access** — the browser sends the configured invite code on
+  API requests. Treat it as a full service credential: it grants X data access,
+  the PTY TUI, and—unless read-only mode is enabled—mutating commands. Serve the
+  host over TLS, set `BIRDY_READ_ONLY=1` for public research deployments, and
+  rotate the code immediately after exposure.
+
+The lower-level `/ws` route remains available to clients that want a
+PTY-backed `birdy tui` session. It is separate from the React app at `/`.
+
+### Run locally
+
+Build the web client, then start the Go host:
+
+```bash
+(cd web && bun install && bun run build)
+BIRDY_HOST_INVITE_CODE=local-dev go run . host --addr 127.0.0.1:8787
+```
+
+Open `http://127.0.0.1:8787` and enter `local-dev`. Add at least one birdy
+account first, and have Claude Code installed/authenticated for local AI chat.
+When `BIRDY_E2B_TEMPLATE` and `E2B_API_KEY` are set, Claude chat is routed to
+Bird Box instead of running Claude Code on the host.
+
+### Request flow
+
+```mermaid
+flowchart LR
+    Browser["Birdy Web in the browser"] -->|"invite code + JSON"| Host["birdy host"]
+    Host -->|"/api/command"| Local["host birdy + bird"]
+    Host -->|"/api/chat SSE"| Box["fresh E2B Bird Box"]
+    Box --> Claude["Claude Code"]
+    Claude -->|"birdy --strategy random"| X["X / Twitter"]
+    Host -->|"/ws"| TUI["PTY birdy tui"]
+```
+
+Claude models use Bird Box when it is configured. Codex model selections remain
+host-local. Each Bird Box receives only the allowlisted runtime variables,
+including the complete `BIRDY_ACCOUNTS` value, and streams its result through
+the host. The host requests deletion after completion, failure, disconnect, or
+timeout; the sandbox TTL is the cleanup backstop if deletion cannot reach E2B.
+
+### HTTP API
+
+The static app at `/` and `/healthz` are public. API operations authenticate
+with `X-Invite-Code: <code>` or `Authorization: Bearer <code>`. `/ws` upgrades
+first, then requires the invite code in its initial auth message. JSON bodies
+are decoded strictly and unknown fields are rejected. JSON API failures use
+`{"ok":false,"error":"..."}`; method-not-allowed responses have an empty body.
+
+| Endpoint | Request | Response |
+| --- | --- | --- |
+| `GET /healthz` | none | `200 ok` |
+| `POST /api/command` | `{"command":"search","args":["agents"]}` | JSON with `ok`, `account`, `exit_code`, `stdout`, `stderr`, and `duration_ms` |
+| `POST /api/multi-command` | `{"operations":[{"id":"one","command":"news"}]}` | Ordered per-operation results; maximum 16 operations |
+| `POST /api/chat` | `{"prompt":"Scan for AI agent news","model":"sonnet"}` | Zero or more `snapshot`, `token`, `tool_use`, or `error` SSE events; terminal `done` |
+| `GET /ws` | WebSocket auth message, then terminal input/resize messages | PTY-backed TUI stream |
+
+Example read-only calls:
+
+```bash
+curl -sS https://your-birdy-host.example/api/command \
+  -H 'Content-Type: application/json' \
+  -H 'X-Invite-Code: replace-with-invite-code' \
+  -d '{"command":"search","args":["e2b agents"]}'
+
+curl -N https://your-birdy-host.example/api/chat \
+  -H 'Content-Type: application/json' \
+  -H 'X-Invite-Code: replace-with-invite-code' \
+  -d '{"prompt":"Find the strongest AI-agent signals today","model":"sonnet"}'
+```
+
+Command traffic is limited to 60 operations per minute per IP; a batch is
+charged once per operation. Chat is limited to 20 requests per minute per IP.
+At most eight bird subprocesses run concurrently across command endpoints.
+For commands, HTTP `200` means the process ran; inspect `exit_code` for command
+success. For chat, HTTP `200` can still contain an SSE `error` before `done`.
+Write commands are **not idempotent**: never automatically retry `tweet`,
+`reply`, `follow`, `unfollow`, or `unbookmark`. Set `BIRDY_READ_ONLY=1` for a
+public research deployment.
+
+### Host command
+
+Run birdy as a browser-accessible service:
 
 ```bash
 birdy host --addr 0.0.0.0:8787
@@ -45,13 +152,12 @@ birdy will print the local URL:
 http://127.0.0.1:8787
 ```
 
-Users must enter an invite code to connect.
+Users must enter an invite code to use the APIs or PTY TUI.
 
 Notes:
-- The host runs the same `birdy tui` session in a web terminal.
 - Set invite code with `--invite-code` or `BIRDY_HOST_INVITE_CODE`.
 - For public deployments, set `BIRDY_READ_ONLY=1`.
-- This is a shared session: everyone who knows the invite code can see/control the same TUI.
+- Set `BIRDY_HOST_ALLOWED_ORIGINS` when exposing the WebSocket TUI publicly.
 
 ## Deploy on Railway
 
@@ -64,7 +170,17 @@ This repo now includes a Railway-ready container setup:
 
 Create a Railway service from this repo. Railway will detect and build the `Dockerfile`.
 
-### 2. Build the bird-box template
+### 2. Use or build the Bird Box template
+
+The maintained template is public. From another E2B team, use its full
+namespaced production reference:
+
+```bash
+BIRDY_E2B_TEMPLATE=binggis-default-team/bird-box:production
+```
+
+Publishing exposes only the software image; callers still supply their own E2B,
+model-provider, and X credentials at runtime.
 
 The repository includes a source-controlled E2B template builder. It
 cross-compiles birdy for Linux, starts from E2B's default base image, installs a
@@ -102,7 +218,8 @@ BIRDY_READ_ONLY=1
 # Optional: lock websocket origins to specific public domains
 # BIRDY_HOST_ALLOWED_ORIGINS=https://your-domain.example,https://<railway-domain>
 
-# Optional: hide/disable local chat history UI + persistence (recommended for public deploys)
+# Optional: hide/disable PTY TUI chat history. Birdy Web conversations remain
+# in each browser's localStorage.
 BIRDY_TUI_HIDE_HISTORY=1
 
 # Required: X/Twitter accounts as JSON (single line)
@@ -133,7 +250,7 @@ This preserves:
 - `~/.config/birdy/state.json`
 - `~/.config/birdy/chats/`
 
-### bird-box container contract
+### Bird Box container contract
 
 bird-box is birdy's isolated Claude execution feature, backed by E2B.
 `BIRDY_E2B_TEMPLATE` must identify a custom E2B template with `birdy`, `claude`,
@@ -168,7 +285,8 @@ https://<your-service-domain>
 
 ### Railway notes
 
-- Keep this service at `1` replica (session is shared and stateful).
+- Keep this service at `1` replica so account rotation and persisted rate-limit
+  state remain coherent. Browser conversations remain client-side.
 - The container uses Node 22 + Claude Code CLI + bundled bird CLI.
 - Rotate `BIRDY_HOST_INVITE_CODE` if it leaks.
 
