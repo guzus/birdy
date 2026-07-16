@@ -170,7 +170,17 @@ This repo now includes a Railway-ready container setup:
 
 Create a Railway service from this repo. Railway will detect and build the `Dockerfile`.
 
-### 2. Build the bird-box template
+### 2. Use or build the Bird Box template
+
+The maintained template is public. From another E2B team, use its full
+namespaced production reference:
+
+```bash
+BIRDY_E2B_TEMPLATE=binggis-default-team/bird-box:production
+```
+
+Publishing exposes only the software image; callers still supply their own E2B,
+model-provider, and X credentials at runtime.
 
 The repository includes a source-controlled E2B template builder. It
 cross-compiles birdy for Linux, starts from E2B's default base image, installs a
