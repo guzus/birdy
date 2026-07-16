@@ -9,8 +9,24 @@ if [ -z "${INVITE_CODE}" ]; then
   exit 1
 fi
 
+if [ -z "${BIRDY_E2B_TEMPLATE:-}" ]; then
+  echo "BIRDY_E2B_TEMPLATE is required (use a custom template with birdy and Claude Code preinstalled)" >&2
+  exit 1
+fi
+
+if [ -z "${E2B_API_KEY:-}" ]; then
+  echo "E2B_API_KEY is required" >&2
+  exit 1
+fi
+
+if [ -z "${BIRDY_ACCOUNTS:-}" ]; then
+  echo "BIRDY_ACCOUNTS is required so the E2B sandbox can run birdy" >&2
+  exit 1
+fi
+
 if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ -z "${ANTHROPIC_API_KEY:-}" ] && [ -z "${ANTHROPIC_AUTH_TOKEN:-}" ]; then
-  echo "warning: no Claude auth env var set (CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN)" >&2
+  echo "Claude authentication is required (set CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY, or ANTHROPIC_AUTH_TOKEN)" >&2
+  exit 1
 fi
 
 mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/birdy"

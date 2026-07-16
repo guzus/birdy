@@ -15,6 +15,7 @@ import (
 
 	"github.com/guzus/birdy/internal/claude"
 	"github.com/guzus/birdy/internal/codex"
+	e2bruntime "github.com/guzus/birdy/internal/e2b"
 	"github.com/guzus/birdy/internal/rotation"
 	"github.com/guzus/birdy/internal/runner"
 	"github.com/guzus/birdy/internal/state"
@@ -146,6 +147,10 @@ func streamAPIChatModel(ctx context.Context, prompt, model, exePath string, emit
 	prompt = hostedPrivacyPrefix + prompt
 	if codex.IsSelected(model) {
 		codex.Stream(ctx, prompt, model, exePath, emit)
+		return
+	}
+	if e2bruntime.Enabled() {
+		e2bruntime.Stream(ctx, prompt, model, emit)
 		return
 	}
 	claude.Stream(ctx, prompt, model, exePath, emit)

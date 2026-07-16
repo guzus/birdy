@@ -165,7 +165,13 @@ func BuildArgs(prompt, model, birdyCmd string) []string {
 func Stream(ctx context.Context, prompt, model, birdyCmd string, emit func(Event)) {
 	args := BuildArgs(prompt, model, birdyCmd)
 	cmd := exec.CommandContext(ctx, "claude", args...)
+	StreamCommand(ctx, cmd, emit)
+}
 
+// StreamCommand parses Claude Code stream-json output from cmd. Callers can
+// use this to preserve birdy's event contract while running Claude through a
+// remote execution transport.
+func StreamCommand(ctx context.Context, cmd *exec.Cmd, emit func(Event)) {
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		emit(Event{Type: EventError, Error: fmt.Sprintf("failed to create pipe: %v", err)})
@@ -224,6 +230,22 @@ func Stream(ctx context.Context, prompt, model, birdyCmd string, emit func(Event
 
 	var toolInput strings.Builder
 	inToolBlock := false
+	emittedError := false
+	emitProcessError := func(scanErr, waitErr error) {
+		if ctx.Err() != nil || (scanErr == nil && waitErr == nil) || emittedError {
+			return
+		}
+		errMsg := strings.TrimSpace(stderrBuf.String())
+		if errMsg == "" {
+			if scanErr != nil {
+				errMsg = fmt.Sprintf("failed to read claude output: %v", scanErr)
+			} else {
+				errMsg = fmt.Sprintf("claude process failed: %v", waitErr)
+			}
+		}
+		emit(Event{Type: EventError, Error: errMsg})
+		emittedError = true
+	}
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -326,19 +348,22 @@ func Stream(ctx context.Context, prompt, model, birdyCmd string, emit func(Event
 				flushPendingSnapshot()
 				flushPendingToken()
 				emit(Event{Type: EventError, Error: event.Result})
+				emittedError = true
 			} else if event.Result != "" && event.Result != prevText {
 				emitSnapshot(event.Result, true)
 			}
 			flushPendingSnapshot()
 			flushPendingToken()
-			_ = cmd.Wait()
+			waitErr := cmd.Wait()
+			emitProcessError(nil, waitErr)
 			emit(Event{Type: EventDone})
 			return
 
 		case "message_stop":
 			flushPendingSnapshot()
 			flushPendingToken()
-			_ = cmd.Wait()
+			waitErr := cmd.Wait()
+			emitProcessError(nil, waitErr)
 			emit(Event{Type: EventDone})
 			return
 		}
@@ -346,9 +371,15 @@ func Stream(ctx context.Context, prompt, model, birdyCmd string, emit func(Event
 
 	flushPendingSnapshot()
 	flushPendingToken()
-	_ = cmd.Wait()
+	scanErr := scanner.Err()
+	waitErr := cmd.Wait()
 
 	if ctx.Err() != nil {
+		emit(Event{Type: EventDone})
+		return
+	}
+	emitProcessError(scanErr, waitErr)
+	if emittedError {
 		emit(Event{Type: EventDone})
 		return
 	}
@@ -358,6 +389,7 @@ func Stream(ctx context.Context, prompt, model, birdyCmd string, emit func(Event
 			errMsg = strings.TrimSpace(stderrBuf.String())
 		}
 		emit(Event{Type: EventError, Error: errMsg})
+		emittedError = true
 		emit(Event{Type: EventDone})
 		return
 	}

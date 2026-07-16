@@ -85,6 +85,9 @@ func TestAPIChatRoutesCodexModelToCodexCLI(t *testing.T) {
 	}
 
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("BIRDY_E2B_TEMPLATE", "birdy-claude-test")
+	t.Setenv("E2B_API_KEY", "e2b-test-key")
+	t.Setenv("BIRDY_E2B_NODE_PATH", filepath.Join(binDir, "must-not-run-e2b"))
 
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/api/chat", bytes.NewBufferString(`{"prompt":"hello","model":"codex"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -106,8 +109,69 @@ func TestAPIChatRoutesCodexModelToCodexCLI(t *testing.T) {
 	}
 }
 
+func TestAPIChatRoutesClaudeThroughE2BRunner(t *testing.T) {
+	binDir := t.TempDir()
+
+	nodeScript := filepath.Join(binDir, "fake-node")
+	nodeContent := strings.Join([]string{
+		"#!/bin/sh",
+		"printf '%s\\n' \"$@\" > \"$CAPTURE_PATH\"",
+		"cat <<'EOF'",
+		"{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"from e2b\"}]}}",
+		"{\"type\":\"result\",\"result\":\"ok\"}",
+		"EOF",
+	}, "\n")
+	if err := os.WriteFile(nodeScript, []byte(nodeContent), 0755); err != nil {
+		t.Fatalf("write fake node: %v", err)
+	}
+
+	claudeScript := filepath.Join(binDir, "claude")
+	if err := os.WriteFile(claudeScript, []byte("#!/bin/sh\necho 'local claude should not run'\n"), 0755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
+	}
+
+	capturePath := filepath.Join(t.TempDir(), "args.txt")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("BIRDY_E2B_TEMPLATE", "birdy-claude-test")
+	t.Setenv("E2B_API_KEY", "e2b-test-key")
+	t.Setenv("BIRDY_E2B_NODE_PATH", nodeScript)
+	t.Setenv("BIRDY_E2B_RUNNER_PATH", "/app/e2b-runner/claude.mjs")
+	t.Setenv("CAPTURE_PATH", capturePath)
+
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/api/chat", bytes.NewBufferString(`{"prompt":"hello"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Invite-Code", "birdy")
+
+	rr := httptest.NewRecorder()
+	handleAPIChat("birdy").ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%q", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, `"text":"from e2b"`) {
+		t.Fatalf("expected E2B response in SSE body, got %q", body)
+	}
+	if strings.Contains(body, "local claude should not run") {
+		t.Fatalf("expected local Claude not to run, got %q", body)
+	}
+
+	captured, err := os.ReadFile(capturePath)
+	if err != nil {
+		t.Fatalf("read captured E2B runner args: %v", err)
+	}
+	args := string(captured)
+	if !strings.Contains(args, "/app/e2b-runner/claude.mjs") {
+		t.Fatalf("expected configured runner path, got %q", args)
+	}
+	if !strings.Contains(args, "Bash(birdy --strategy random *),Skill(birdy)") {
+		t.Fatalf("expected random remote birdy strategy, got %q", args)
+	}
+}
+
 func TestAPIChatDefaultRoutesToClaudeCLI(t *testing.T) {
 	binDir := t.TempDir()
+	t.Setenv("BIRDY_E2B_TEMPLATE", "")
 
 	claudeScript := filepath.Join(binDir, "claude")
 	claudeContent := strings.Join([]string{
