@@ -12,3 +12,4 @@ coverage.txt
 web/node_modules/
 web/dist/
 web/.vite/
+e2b-runner/node_modules/

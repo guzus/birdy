@@ -1,0 +1,12 @@
+{
+  "name": "birdy-e2b-runner",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "template:build": "node build-template.mjs",
+    "test": "node --test config.test.mjs lifecycle.test.mjs template.test.mjs template-lifecycle.test.mjs"
+  },
+  "dependencies": {
+    "e2b": "2.34.0"
+  }
+}

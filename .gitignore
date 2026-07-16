@@ -16,6 +16,7 @@ tmp/
 
 # Dependency
 vendor/
+e2b-runner/node_modules/
 
 # IDE
 .idea/

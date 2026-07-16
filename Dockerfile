@@ -27,8 +27,14 @@ RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" "@steipete
 
 WORKDIR /app
 
+COPY e2b-runner/package.json e2b-runner/package-lock.json /app/e2b-runner/
+RUN cd /app/e2b-runner \
+    && npm ci --omit=dev --ignore-scripts \
+    && npm cache clean --force
+
 COPY --from=builder /out/birdy /usr/local/bin/birdy
 COPY --from=webbuilder /web/dist /app/web/dist
+COPY e2b-runner/config.mjs e2b-runner/lifecycle.mjs e2b-runner/claude.mjs /app/e2b-runner/
 COPY scripts/entrypoint-railway.sh /usr/local/bin/entrypoint-railway
 
 RUN /usr/local/bin/birdy version >/dev/null \
@@ -39,6 +45,7 @@ RUN /usr/local/bin/birdy version >/dev/null \
 ENV HOME=/data
 ENV XDG_CONFIG_HOME=/data/.config
 ENV BIRDY_BIRD_PATH=/usr/local/lib/node_modules/@steipete/bird/dist/cli.js
+ENV BIRDY_E2B_RUNNER_PATH=/app/e2b-runner/claude.mjs
 ENV NODE_ENV=production
 
 EXPOSE 8787

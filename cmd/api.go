@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/guzus/birdy/internal/birdbox"
 	"github.com/guzus/birdy/internal/claude"
 	"github.com/guzus/birdy/internal/codex"
 	"github.com/guzus/birdy/internal/rotation"
@@ -142,10 +143,16 @@ const hostedPrivacyPrefix = `[SYSTEM RULE — PRIVACY: You are running in public
 
 `
 
+const hostedChatTimeout = 6 * time.Minute
+
 func streamAPIChatModel(ctx context.Context, prompt, model, exePath string, emit func(claude.Event)) {
 	prompt = hostedPrivacyPrefix + prompt
 	if codex.IsSelected(model) {
 		codex.Stream(ctx, prompt, model, exePath, emit)
+		return
+	}
+	if birdbox.Enabled() {
+		birdbox.Stream(ctx, prompt, model, emit)
 		return
 	}
 	claude.Stream(ctx, prompt, model, exePath, emit)
@@ -431,7 +438,7 @@ func handleAPIChat(inviteCode string) http.HandlerFunc {
 			model = "sonnet"
 		}
 
-		ctx, cancel := context.WithTimeout(r.Context(), 6*time.Minute)
+		ctx, cancel := context.WithTimeout(r.Context(), hostedChatTimeout)
 		defer cancel()
 
 		exePath, err := os.Executable()
