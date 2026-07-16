@@ -39,6 +39,10 @@ deep dive, and Claude works inside a disposable Bird Box sandbox. The sandbox
 receives the configured X session set, and birdy randomly selects one account
 for each command.
 
+The hosted instance is available at [birdy.guzus.xyz](https://birdy.guzus.xyz).
+Access is invite-only; DM [@uncanny_guzus](https://x.com/uncanny_guzus) on X to
+request an invite code.
+
 <p align="center">
   <img src="assets/bird-box-logo.png" alt="Bird Box logo" width="180">
   <br>
