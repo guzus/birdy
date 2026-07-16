@@ -53,7 +53,7 @@ func Stream(ctx context.Context, prompt, model string, emit func(claude.Event)) 
 
 	// A fresh bird-box has no durable birdy rotation state. Random selection
 	// avoids every chat request starting with the first configured account.
-	args := claude.BuildArgs(prompt, model, sandboxBirdyCmd)
+	args := claude.BuildArgs(prompt, model, sandboxBirdyCmd, claude.ToolPermissions{WebSearch: true})
 	cmd := exec.CommandContext(ctx, nodePath, append([]string{runnerPath}, args...)...)
 	runnerEnv, err := environmentForContext(ctx)
 	if err != nil {

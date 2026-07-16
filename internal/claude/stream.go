@@ -149,21 +149,31 @@ When the user asks you to "dive deeper", "explore", or "browse" their timeline:
 - You can chain multiple commands without asking — explore autonomously and report back`, cmd)
 }
 
-func BuildArgs(prompt, model, birdyCmd string) []string {
+// ToolPermissions configures opt-in Claude tools beyond birdy's baseline.
+type ToolPermissions struct {
+	WebSearch bool
+}
+
+func BuildArgs(prompt, model, birdyCmd string, permissions ToolPermissions) []string {
+	allowedTools := fmt.Sprintf("Bash(%s *),Skill(birdy)", birdyCmd)
+	if permissions.WebSearch {
+		allowedTools += ",WebSearch"
+	}
+
 	return []string{
 		"-p", prompt,
 		"--model", model,
 		"--output-format", "stream-json",
 		"--verbose",
 		"--max-turns", "25",
-		"--allowedTools", fmt.Sprintf("Bash(%s *),Skill(birdy)", birdyCmd),
+		"--allowedTools", allowedTools,
 		"--append-system-prompt", BuildSystemPrompt(birdyCmd),
 	}
 }
 
 // Stream runs the claude CLI and emits events as they arrive.
 func Stream(ctx context.Context, prompt, model, birdyCmd string, emit func(Event)) {
-	args := BuildArgs(prompt, model, birdyCmd)
+	args := BuildArgs(prompt, model, birdyCmd, ToolPermissions{})
 	cmd := exec.CommandContext(ctx, "claude", args...)
 	StreamCommand(ctx, cmd, emit)
 }
