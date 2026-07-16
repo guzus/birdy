@@ -63,6 +63,8 @@ test('bakes Birdy and pinned agent CLIs into the E2B base image', () => {
   assert.match(dockerfile, /^FROM e2bdev\/base$/m);
   assert.match(dockerfile, new RegExp(`node-v${nodeVersion}-linux-x64`));
   assert.match(dockerfile, /sha256sum -c/);
+  assert.match(dockerfile, /rm -rf \/usr\/local\/lib\/node_modules\/npm/);
+  assert.match(dockerfile, /rm -f \/usr\/local\/bin\/node \/usr\/local\/bin\/npm/);
   assert.match(dockerfile, /COPY birdy \/usr\/local\/bin\/birdy/);
   assert.match(dockerfile, /@anthropic-ai\/claude-code@2\.1\.207/);
   assert.match(dockerfile, /@steipete\/bird@0\.8\.0/);

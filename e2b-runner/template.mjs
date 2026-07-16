@@ -59,6 +59,8 @@ export function createBirdBoxTemplate(binaryContextPath) {
       'test "$(dpkg --print-architecture)" = amd64',
       `curl -fsSLo /tmp/${nodeArchive} https://nodejs.org/dist/v${nodeVersion}/${nodeArchive}`,
       `echo "${nodeArchiveSHA256}  /tmp/${nodeArchive}" | sha256sum -c -`,
+      'rm -rf /usr/local/lib/node_modules/npm',
+      'rm -f /usr/local/bin/node /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack',
       `tar -xJf /tmp/${nodeArchive} -C /usr/local --strip-components=1 --no-same-owner`,
       `rm /tmp/${nodeArchive}`,
       `test "$(node --version)" = v${nodeVersion}`,
