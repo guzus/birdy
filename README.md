@@ -64,7 +64,31 @@ This repo now includes a Railway-ready container setup:
 
 Create a Railway service from this repo. Railway will detect and build the `Dockerfile`.
 
-### 2. Add required variables
+### 2. Build the bird-box template
+
+The repository includes a source-controlled E2B template builder. It
+cross-compiles birdy for Linux, starts from E2B's default base image, installs a
+checksummed Node 22.23.1 runtime, and bakes in the pinned Claude Code and bird
+CLIs. Go and Node.js must be available on the build host, and the builder
+refuses a dirty worktree by default so the binary remains traceable to a commit.
+
+```bash
+npm ci --prefix e2b-runner
+E2B_API_KEY=e2b_replace-with-api-key \
+  npm --prefix e2b-runner run template:build
+```
+
+The builder creates a new immutable build, launches it for a smoke test, and
+moves the `bird-box:production` tag only after `birdy`, `claude`, and `bird`
+all work on `PATH` as E2B's non-root sandbox user. Set
+`BIRDY_E2B_TEMPLATE_NAME` or `BIRDY_E2B_PROMOTION_TAG` to override those two
+names.
+
+`bird-box:production` is a movable release pointer. For strict rollback and
+repeatability, set Railway's `BIRDY_E2B_TEMPLATE` to the immutable build target
+printed by the builder (`bird-box:<build_id>`).
+
+### 3. Add required variables
 
 Set these in Railway Variables:
 
@@ -96,7 +120,7 @@ CLAUDE_CODE_OAUTH_TOKEN=replace-with-claude-code-oauth-token
 # ANTHROPIC_AUTH_TOKEN=replace-with-anthropic-auth-token
 ```
 
-### 3. Add persistent volume
+### 4. Add persistent volume
 
 Mount a Railway volume at:
 
@@ -112,10 +136,10 @@ This preserves:
 ### bird-box container contract
 
 bird-box is birdy's isolated Claude execution feature, backed by E2B.
-`BIRDY_E2B_TEMPLATE` must identify a custom E2B template with both `birdy` and
-`claude` already on `PATH`. Use `bird-box:<build_id>` for an immutable pin, or a
-movable version tag such as `bird-box:production`. The web host does not install
-either binary inside a running container.
+`BIRDY_E2B_TEMPLATE` must identify a custom E2B template with `birdy`, `claude`,
+and the underlying `bird` CLI already on `PATH`. Use `bird-box:<build_id>` for
+an immutable pin, or a movable version tag such as `bird-box:production`. The
+web host does not install these binaries or Node.js inside a running container.
 
 Each Claude chat request gets a fresh bird-box container. The host forwards only
 Claude authentication plus `BIRDY_ACCOUNTS` and `BIRDY_READ_ONLY`; the E2B API
@@ -134,7 +158,7 @@ cleanup timeout must also fit inside the remaining web request deadline, which
 the Go host passes to the runner internally; invalid combinations fail before
 creating a sandbox.
 
-### 4. Deploy and open
+### 5. Deploy and open
 
 After deploy, open your Railway public URL and enter your invite code:
 
