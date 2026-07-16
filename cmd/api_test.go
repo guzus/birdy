@@ -164,8 +164,8 @@ func TestAPIChatRoutesClaudeThroughE2BRunner(t *testing.T) {
 	if !strings.Contains(args, "/app/e2b-runner/claude.mjs") {
 		t.Fatalf("expected configured runner path, got %q", args)
 	}
-	if !strings.Contains(args, "Bash(birdy --strategy random *),Skill(birdy)") {
-		t.Fatalf("expected random remote birdy strategy, got %q", args)
+	if !strings.Contains(args, "Bash(bird-box --strategy random *),Skill(birdy)") {
+		t.Fatalf("expected bird-box with random remote birdy strategy, got %q", args)
 	}
 }
 

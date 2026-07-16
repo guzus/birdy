@@ -111,8 +111,9 @@ This preserves:
 
 ### E2B template contract
 
-`BIRDY_E2B_TEMPLATE` must identify a custom E2B template with both `birdy` and
-`claude` already on `PATH`. Use `birdy-claude:<build_id>` for an immutable pin,
+`BIRDY_E2B_TEMPLATE` must identify a custom E2B template with the birdy CLI
+installed as `bird-box` and `claude` already on `PATH`. Use
+`birdy-claude:<build_id>` for an immutable pin,
 or a movable version tag such as `birdy-claude:production`. The web host does
 not install either binary inside a running sandbox.
 
@@ -123,7 +124,7 @@ SSE endpoint. The host immediately requests sandbox deletion after completion,
 failure, disconnect, or timeout; the default seven-minute sandbox TTL is the
 cleanup backstop if that request cannot reach E2B. Since rotation state is
 ephemeral,
-sandboxed Claude uses `birdy --strategy random` instead of restarting
+sandboxed Claude uses `bird-box --strategy random` instead of restarting
 round-robin at the first account.
 
 The command, sandbox, and E2B request timeouts can be overridden with

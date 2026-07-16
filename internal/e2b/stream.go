@@ -17,6 +17,7 @@ const (
 	apiKeyEnv          = "E2B_API_KEY"
 	runnerPathEnv      = "BIRDY_E2B_RUNNER_PATH"
 	nodePathEnv        = "BIRDY_E2B_NODE_PATH"
+	sandboxBirdyCmd    = "bird-box --strategy random"
 	runnerCleanupGrace = 10 * time.Second
 )
 
@@ -48,7 +49,9 @@ func Stream(ctx context.Context, prompt, model string, emit func(claude.Event)) 
 
 	// A fresh sandbox has no durable birdy rotation state. Random selection
 	// avoids every chat request starting with the first configured account.
-	args := claude.BuildArgs(prompt, model, "birdy --strategy random")
+	// The E2B image exposes the baked birdy CLI as bird-box so it is distinct
+	// from any host-side birdy installation.
+	args := claude.BuildArgs(prompt, model, sandboxBirdyCmd)
 	cmd := exec.CommandContext(ctx, nodePath, append([]string{runnerPath}, args...)...)
 	cmd.Cancel = func() error {
 		if cmd.Process == nil {
