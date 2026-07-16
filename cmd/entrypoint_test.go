@@ -32,7 +32,7 @@ func TestRailwayEntrypointRequiresRemoteExecutionConfiguration(t *testing.T) {
 			name: "E2B API key",
 			env: []string{
 				"BIRDY_HOST_INVITE_CODE=invite",
-				"BIRDY_E2B_TEMPLATE=birdy-claude:production",
+				"BIRDY_E2B_TEMPLATE=bird-box:production",
 			},
 			wantErr: "E2B_API_KEY is required",
 		},
@@ -40,7 +40,7 @@ func TestRailwayEntrypointRequiresRemoteExecutionConfiguration(t *testing.T) {
 			name: "birdy accounts",
 			env: []string{
 				"BIRDY_HOST_INVITE_CODE=invite",
-				"BIRDY_E2B_TEMPLATE=birdy-claude:production",
+				"BIRDY_E2B_TEMPLATE=bird-box:production",
 				"E2B_API_KEY=e2b-test-key",
 			},
 			wantErr: "BIRDY_ACCOUNTS is required",
@@ -49,7 +49,7 @@ func TestRailwayEntrypointRequiresRemoteExecutionConfiguration(t *testing.T) {
 			name: "Claude authentication",
 			env: []string{
 				"BIRDY_HOST_INVITE_CODE=invite",
-				"BIRDY_E2B_TEMPLATE=birdy-claude:production",
+				"BIRDY_E2B_TEMPLATE=bird-box:production",
 				"E2B_API_KEY=e2b-test-key",
 				`BIRDY_ACCOUNTS=[{"name":"test","auth_token":"token","ct0":"ct0"}]`,
 			},

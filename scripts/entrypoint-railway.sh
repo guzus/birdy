@@ -10,7 +10,7 @@ if [ -z "${INVITE_CODE}" ]; then
 fi
 
 if [ -z "${BIRDY_E2B_TEMPLATE:-}" ]; then
-  echo "BIRDY_E2B_TEMPLATE is required (use a custom template with birdy and Claude Code preinstalled)" >&2
+  echo "BIRDY_E2B_TEMPLATE is required for bird-box (use a custom E2B template with birdy and Claude Code preinstalled)" >&2
   exit 1
 fi
 
@@ -20,7 +20,7 @@ if [ -z "${E2B_API_KEY:-}" ]; then
 fi
 
 if [ -z "${BIRDY_ACCOUNTS:-}" ]; then
-  echo "BIRDY_ACCOUNTS is required so the E2B sandbox can run birdy" >&2
+  echo "BIRDY_ACCOUNTS is required so bird-box can run birdy" >&2
   exit 1
 fi
 

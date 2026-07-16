@@ -85,7 +85,7 @@ func TestAPIChatRoutesCodexModelToCodexCLI(t *testing.T) {
 	}
 
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("BIRDY_E2B_TEMPLATE", "birdy-claude-test")
+	t.Setenv("BIRDY_E2B_TEMPLATE", "bird-box-test")
 	t.Setenv("E2B_API_KEY", "e2b-test-key")
 	t.Setenv("BIRDY_E2B_NODE_PATH", filepath.Join(binDir, "must-not-run-e2b"))
 
@@ -109,7 +109,7 @@ func TestAPIChatRoutesCodexModelToCodexCLI(t *testing.T) {
 	}
 }
 
-func TestAPIChatRoutesClaudeThroughE2BRunner(t *testing.T) {
+func TestAPIChatRoutesClaudeThroughBirdBox(t *testing.T) {
 	binDir := t.TempDir()
 
 	nodeScript := filepath.Join(binDir, "fake-node")
@@ -117,7 +117,7 @@ func TestAPIChatRoutesClaudeThroughE2BRunner(t *testing.T) {
 		"#!/bin/sh",
 		"printf '%s\\n' \"$@\" > \"$CAPTURE_PATH\"",
 		"cat <<'EOF'",
-		"{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"from e2b\"}]}}",
+		"{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"from bird-box\"}]}}",
 		"{\"type\":\"result\",\"result\":\"ok\"}",
 		"EOF",
 	}, "\n")
@@ -132,7 +132,7 @@ func TestAPIChatRoutesClaudeThroughE2BRunner(t *testing.T) {
 
 	capturePath := filepath.Join(t.TempDir(), "args.txt")
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("BIRDY_E2B_TEMPLATE", "birdy-claude-test")
+	t.Setenv("BIRDY_E2B_TEMPLATE", "bird-box-test")
 	t.Setenv("E2B_API_KEY", "e2b-test-key")
 	t.Setenv("BIRDY_E2B_NODE_PATH", nodeScript)
 	t.Setenv("BIRDY_E2B_RUNNER_PATH", "/app/e2b-runner/claude.mjs")
@@ -149,8 +149,8 @@ func TestAPIChatRoutesClaudeThroughE2BRunner(t *testing.T) {
 		t.Fatalf("expected 200, got %d body=%q", rr.Code, rr.Body.String())
 	}
 	body := rr.Body.String()
-	if !strings.Contains(body, `"text":"from e2b"`) {
-		t.Fatalf("expected E2B response in SSE body, got %q", body)
+	if !strings.Contains(body, `"text":"from bird-box"`) {
+		t.Fatalf("expected bird-box response in SSE body, got %q", body)
 	}
 	if strings.Contains(body, "local claude should not run") {
 		t.Fatalf("expected local Claude not to run, got %q", body)
@@ -158,14 +158,14 @@ func TestAPIChatRoutesClaudeThroughE2BRunner(t *testing.T) {
 
 	captured, err := os.ReadFile(capturePath)
 	if err != nil {
-		t.Fatalf("read captured E2B runner args: %v", err)
+		t.Fatalf("read captured bird-box runner args: %v", err)
 	}
 	args := string(captured)
 	if !strings.Contains(args, "/app/e2b-runner/claude.mjs") {
 		t.Fatalf("expected configured runner path, got %q", args)
 	}
-	if !strings.Contains(args, "Bash(bird-box --strategy random *),Skill(birdy)") {
-		t.Fatalf("expected bird-box with random remote birdy strategy, got %q", args)
+	if !strings.Contains(args, "Bash(birdy --strategy random *),Skill(birdy)") {
+		t.Fatalf("expected random birdy strategy inside bird-box, got %q", args)
 	}
 }
 

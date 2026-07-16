@@ -84,9 +84,9 @@ BIRDY_TUI_HIDE_HISTORY=1
 # Required: X/Twitter accounts as JSON (single line)
 BIRDY_ACCOUNTS=[{"name":"main","auth_token":"x_auth_token_here","ct0":"x_ct0_here"}]
 
-# Required: remote Claude execution on E2B
+# Required: bird-box remote Claude execution (powered by E2B)
 E2B_API_KEY=e2b_replace-with-api-key
-BIRDY_E2B_TEMPLATE=birdy-claude:production
+BIRDY_E2B_TEMPLATE=bird-box:production
 
 # Required for AI chat (pick one auth method)
 CLAUDE_CODE_OAUTH_TOKEN=replace-with-claude-code-oauth-token
@@ -109,23 +109,22 @@ This preserves:
 - `~/.config/birdy/state.json`
 - `~/.config/birdy/chats/`
 
-### E2B template contract
+### bird-box container contract
 
-`BIRDY_E2B_TEMPLATE` must identify a custom E2B template with the birdy CLI
-installed as `bird-box` and `claude` already on `PATH`. Use
-`birdy-claude:<build_id>` for an immutable pin,
-or a movable version tag such as `birdy-claude:production`. The web host does
-not install either binary inside a running sandbox.
+bird-box is birdy's isolated Claude execution feature, backed by E2B.
+`BIRDY_E2B_TEMPLATE` must identify a custom E2B template with both `birdy` and
+`claude` already on `PATH`. Use `bird-box:<build_id>` for an immutable pin, or a
+movable version tag such as `bird-box:production`. The web host does not install
+either binary inside a running container.
 
-Each Claude chat request gets a fresh sandbox. The host forwards only Claude
-authentication plus `BIRDY_ACCOUNTS` and `BIRDY_READ_ONLY`; the E2B API key and
-birdy invite code never enter the sandbox. Output streams through the existing
-SSE endpoint. The host immediately requests sandbox deletion after completion,
-failure, disconnect, or timeout; the default seven-minute sandbox TTL is the
-cleanup backstop if that request cannot reach E2B. Since rotation state is
-ephemeral,
-sandboxed Claude uses `bird-box --strategy random` instead of restarting
-round-robin at the first account.
+Each Claude chat request gets a fresh bird-box container. The host forwards only
+Claude authentication plus `BIRDY_ACCOUNTS` and `BIRDY_READ_ONLY`; the E2B API
+key and birdy invite code never enter the sandbox. Output streams through the
+existing SSE endpoint. The host immediately requests sandbox deletion after
+completion, failure, disconnect, or timeout; the default seven-minute sandbox
+TTL is the cleanup backstop if that request cannot reach E2B. Since rotation
+state is ephemeral, Claude inside bird-box uses `birdy --strategy random`
+instead of restarting round-robin at the first account.
 
 The command, sandbox, and E2B request timeouts can be overridden with
 `BIRDY_E2B_COMMAND_TIMEOUT_MS`, `BIRDY_E2B_SANDBOX_TIMEOUT_MS`, and

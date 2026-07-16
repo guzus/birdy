@@ -32,7 +32,7 @@ test('forwards only Claude and birdy runtime variables', () => {
 
 test('uses long-running defaults with a sandbox cleanup buffer', () => {
   const config = readConfig({
-    BIRDY_E2B_TEMPLATE: 'birdy-claude-v1',
+    BIRDY_E2B_TEMPLATE: 'bird-box-v1',
     E2B_API_KEY: 'e2b-secret',
   });
 
@@ -55,7 +55,7 @@ test('uses long-running defaults with a sandbox cleanup buffer', () => {
 test('rejects configuration that overruns the hosted HTTP deadline', () => {
   assert.throws(
     () => readConfig({
-      BIRDY_E2B_TEMPLATE: 'birdy-claude-v1',
+      BIRDY_E2B_TEMPLATE: 'bird-box-v1',
       E2B_API_KEY: 'e2b-secret',
       BIRDY_E2B_COMMAND_TIMEOUT_MS: '283000',
       BIRDY_E2B_REQUEST_TIMEOUT_MS: '30000',
@@ -68,7 +68,7 @@ test('rejects configuration that overruns the hosted HTTP deadline', () => {
 test('rejects a sandbox timeout without command and cleanup headroom', () => {
   assert.throws(
     () => readConfig({
-      BIRDY_E2B_TEMPLATE: 'birdy-claude-v1',
+      BIRDY_E2B_TEMPLATE: 'bird-box-v1',
       E2B_API_KEY: 'e2b-secret',
       BIRDY_E2B_COMMAND_TIMEOUT_MS: '280000',
       BIRDY_E2B_REQUEST_TIMEOUT_MS: '30000',

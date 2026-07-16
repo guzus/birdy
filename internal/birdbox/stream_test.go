@@ -1,4 +1,4 @@
-package e2b
+package birdbox
 
 import (
 	"context"
@@ -15,17 +15,17 @@ func TestEnabledUsesTemplateAsOptIn(t *testing.T) {
 	t.Setenv(templateEnv, "")
 	t.Setenv(apiKeyEnv, "e2b-test-key")
 	if Enabled() {
-		t.Fatal("expected API key alone not to enable E2B")
+		t.Fatal("expected API key alone not to enable bird-box")
 	}
 
-	t.Setenv(templateEnv, "birdy-claude-test")
+	t.Setenv(templateEnv, "bird-box-test")
 	if !Enabled() {
-		t.Fatal("expected configured template to enable E2B")
+		t.Fatal("expected configured template to enable bird-box")
 	}
 }
 
 func TestStreamRequiresAPIKey(t *testing.T) {
-	t.Setenv(templateEnv, "birdy-claude-test")
+	t.Setenv(templateEnv, "bird-box-test")
 	t.Setenv(apiKeyEnv, "")
 
 	var events []claude.Event
@@ -58,7 +58,7 @@ func TestStreamCancellationGivesRunnerSIGTERMGrace(t *testing.T) {
 		t.Fatalf("write fake runner: %v", err)
 	}
 
-	t.Setenv(templateEnv, "birdy-claude-test")
+	t.Setenv(templateEnv, "bird-box-test")
 	t.Setenv(apiKeyEnv, "e2b-test-key")
 	t.Setenv(nodePathEnv, runnerPath)
 	t.Setenv(runnerPathEnv, "/unused/claude.mjs")

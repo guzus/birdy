@@ -21,7 +21,7 @@ test-e2b:
 	node --test e2b-runner/config.test.mjs
 
 test-race:
-	go test -race ./tui ./cmd ./internal/claude ./internal/e2b ./internal/state ./internal/store -count=1
+	go test -race ./tui ./cmd ./internal/birdbox ./internal/claude ./internal/state ./internal/store -count=1
 
 vet:
 	go vet ./...
