@@ -11,6 +11,36 @@ import (
 
 const streamHelperEnv = "BIRDY_STREAM_HELPER"
 
+func TestBuildArgsUsesExactDefaultToolPermissions(t *testing.T) {
+	args := BuildArgs("hello", "sonnet", "birdy", ToolPermissions{})
+
+	if got := argumentValue(t, args, "--allowedTools"); got != "Bash(birdy *),Skill(birdy)" {
+		t.Fatalf("unexpected default allowed tools %q", got)
+	}
+}
+
+func TestBuildArgsAddsOnlyWebSearchWhenPermitted(t *testing.T) {
+	args := BuildArgs("hello", "sonnet", "birdy --strategy random", ToolPermissions{WebSearch: true})
+
+	if got := argumentValue(t, args, "--allowedTools"); got != "Bash(birdy --strategy random *),Skill(birdy),WebSearch" {
+		t.Fatalf("unexpected bird-box allowed tools %q", got)
+	}
+}
+
+func argumentValue(t *testing.T, args []string, name string) string {
+	t.Helper()
+	for i, arg := range args {
+		if arg == name {
+			if i+1 == len(args) {
+				t.Fatalf("%s has no value in %#v", name, args)
+			}
+			return args[i+1]
+		}
+	}
+	t.Fatalf("%s not found in %#v", name, args)
+	return ""
+}
+
 func TestStreamCommandReportsFailureAfterPartialOutput(t *testing.T) {
 	events := runStreamHelper(t, "partial-failure")
 

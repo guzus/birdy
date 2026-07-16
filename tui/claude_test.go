@@ -200,6 +200,9 @@ func TestBuildClaudeArgsUsesProvidedCommand(t *testing.T) {
 	if !containsStr(joined, "Bash(custom-birdy-cmd *),Skill(birdy)") {
 		t.Error("expected allowed tools to use provided command")
 	}
+	if containsStr(joined, "WebSearch") {
+		t.Error("expected local TUI not to grant web search")
+	}
 	if !containsStr(joined, "custom-birdy-cmd home") {
 		t.Error("expected system prompt to use provided command")
 	}
