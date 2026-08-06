@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"github.com/guzus/birdy/internal/state"
 	"github.com/guzus/birdy/internal/store"
 	"github.com/guzus/birdy/internal/vpn"
+	"github.com/guzus/birdy/internal/xapi"
 	"github.com/spf13/cobra"
 )
 
@@ -71,6 +73,31 @@ func runPassthrough(cmd *cobra.Command, args []string) error {
 
 	if verboseFlag {
 		fmt.Fprintf(errOut, "[birdy] using account: %s\n", account.Name)
+	}
+
+	// Serve the command in-process when birdy implements it. Falling through to
+	// bird keeps commands that have not been ported working, and --bird forces
+	// the bird path for anything.
+	command := args[0]
+	if !useBird() && nativeSupports(command) && nativeAcceptsFlags(args[1:]) {
+		if verboseFlag {
+			fmt.Fprintf(errOut, "[birdy] engine: native (go)\n")
+		}
+		ctx := cmd.Context()
+		if ctx == nil {
+			// cobra leaves Context nil unless the caller used ExecuteContext.
+			ctx = context.Background()
+		}
+		err := runNative(ctx, account, command, args[1:], cmd.OutOrStdout())
+		rateLimited := xapi.IsRateLimited(err)
+		if rateLimited && verboseFlag {
+			fmt.Fprintf(errOut, "[birdy] %s hit a rate limit (HTTP 429)\n", account.Name)
+		}
+		recordNativeUsage(errOut, st, rs, account, rateLimited)
+		return err
+	}
+	if verboseFlag {
+		fmt.Fprintf(errOut, "[birdy] engine: bird (node)\n")
 	}
 
 	// Spin up a per-invocation SOCKS5 bridge when --vpn is set, so this

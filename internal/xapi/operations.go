@@ -73,12 +73,16 @@ func (c *Client) Search(ctx context.Context, query string, count int) ([]Tweet, 
 	if query == "" {
 		return nil, fmt.Errorf("x api: empty search query")
 	}
-	return c.timeline(ctx, opSearch, map[string]any{
+	tweets, err := c.timeline(ctx, opSearch, map[string]any{
 		"rawQuery":    query,
 		"count":       clampCount(count),
 		"querySource": "typed_query",
 		"product":     "Latest",
 	})
+	if err != nil {
+		return nil, err
+	}
+	return limitTweets(tweets, count), nil
 }
 
 // Home returns the authenticated account's home timeline. When latest is true it
@@ -88,13 +92,17 @@ func (c *Client) Home(ctx context.Context, count int, latest bool) ([]Tweet, err
 	if latest {
 		op = opHomeLatestTimeline
 	}
-	return c.timeline(ctx, op, map[string]any{
+	tweets, err := c.timeline(ctx, op, map[string]any{
 		"count":                  clampCount(count),
 		"includePromotedContent": true,
 		"latestControlAvailable": true,
 		"requestContext":         "launch",
 		"withCommunity":          true,
 	})
+	if err != nil {
+		return nil, err
+	}
+	return limitTweets(tweets, count), nil
 }
 
 // UserTweets returns a user's recent tweets. handle may include a leading @.
@@ -103,13 +111,17 @@ func (c *Client) UserTweets(ctx context.Context, handle string, count int) ([]Tw
 	if err != nil {
 		return nil, err
 	}
-	return c.timeline(ctx, opUserTweets, map[string]any{
+	tweets, err := c.timeline(ctx, opUserTweets, map[string]any{
 		"userId":                                 user.ID,
 		"count":                                  clampCount(count),
 		"includePromotedContent":                 true,
 		"withQuickPromoteEligibilityTweetFields": true,
 		"withVoice":                              true,
 	})
+	if err != nil {
+		return nil, err
+	}
+	return limitTweets(tweets, count), nil
 }
 
 // Likes returns tweets a user has liked. Most accounts hide likes from others,
@@ -119,24 +131,32 @@ func (c *Client) Likes(ctx context.Context, handle string, count int) ([]Tweet, 
 	if err != nil {
 		return nil, err
 	}
-	return c.timeline(ctx, opLikes, map[string]any{
+	tweets, err := c.timeline(ctx, opLikes, map[string]any{
 		"userId":                 user.ID,
 		"count":                  clampCount(count),
 		"includePromotedContent": false,
 		"withClientEventToken":   false,
 		"withVoice":              true,
 	})
+	if err != nil {
+		return nil, err
+	}
+	return limitTweets(tweets, count), nil
 }
 
 // Bookmarks returns the authenticated account's bookmarked tweets.
 func (c *Client) Bookmarks(ctx context.Context, count int) ([]Tweet, error) {
-	return c.timeline(ctx, opBookmarks, map[string]any{
+	tweets, err := c.timeline(ctx, opBookmarks, map[string]any{
 		"count":                    clampCount(count),
 		"includePromotedContent":   false,
 		"withDownvotePerspective":  false,
 		"withReactionsMetadata":    false,
 		"withReactionsPerspective": false,
 	})
+	if err != nil {
+		return nil, err
+	}
+	return limitTweets(tweets, count), nil
 }
 
 // ListTimeline returns tweets from a list by its numeric id.
@@ -145,11 +165,15 @@ func (c *Client) ListTimeline(ctx context.Context, listID string, count int) ([]
 	if listID == "" {
 		return nil, fmt.Errorf("x api: empty list id")
 	}
-	return c.timeline(ctx, opListTimeline, map[string]any{
+	tweets, err := c.timeline(ctx, opListTimeline, map[string]any{
 		"listId":                 listID,
 		"count":                  clampCount(count),
 		"includePromotedContent": false,
 	})
+	if err != nil {
+		return nil, err
+	}
+	return limitTweets(tweets, count), nil
 }
 
 // Replies returns the replies to a tweet: everything in its conversation that
@@ -174,6 +198,17 @@ func (c *Client) Replies(ctx context.Context, tweetID string) ([]Tweet, error) {
 		replies = append(replies, t)
 	}
 	return replies, nil
+}
+
+// limitTweets truncates to the caller's requested count. X treats the count
+// variable as a page-size hint and routinely returns more (pinned tweets,
+// conversation modules, promoted entries), so the limit has to be applied here
+// or `-n 2` silently returns everything.
+func limitTweets(tweets []Tweet, count int) []Tweet {
+	if count <= 0 || len(tweets) <= count {
+		return tweets
+	}
+	return tweets[:count]
 }
 
 // clampCount keeps page sizes within what X accepts.

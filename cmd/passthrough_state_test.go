@@ -36,8 +36,14 @@ func TestRunPassthroughDoesNotPersistUsageOnRunnerError(t *testing.T) {
 
 	prevStrategy, prevAccount, prevVerbose := strategyFlag, accountFlag, verboseFlag
 	strategyFlag, accountFlag, verboseFlag = "round-robin", "", false
+	// These assertions are about the bird passthrough's bookkeeping. `home` is
+	// served natively now, so pin the engine to bird or the test would exercise
+	// the wrong path (and hit the network).
+	prevBird := birdFlag
+	birdFlag = true
 	defer func() {
 		strategyFlag, accountFlag, verboseFlag = prevStrategy, prevAccount, prevVerbose
+		birdFlag = prevBird
 	}()
 
 	err := runPassthrough(rootCmd, []string{"home"})
@@ -81,8 +87,14 @@ func TestRunPassthroughPersistsUsageAfterSuccessfulRun(t *testing.T) {
 
 	prevStrategy, prevAccount, prevVerbose := strategyFlag, accountFlag, verboseFlag
 	strategyFlag, accountFlag, verboseFlag = "round-robin", "", false
+	// These assertions are about the bird passthrough's bookkeeping. `home` is
+	// served natively now, so pin the engine to bird or the test would exercise
+	// the wrong path (and hit the network).
+	prevBird := birdFlag
+	birdFlag = true
 	defer func() {
 		strategyFlag, accountFlag, verboseFlag = prevStrategy, prevAccount, prevVerbose
+		birdFlag = prevBird
 	}()
 
 	if err := runPassthrough(rootCmd, []string{"home"}); err != nil {
@@ -134,7 +146,11 @@ func TestRunPassthroughSpecificAccountSkipsRotationStateOnSuccess(t *testing.T) 
 
 	prevStrategy, prevAccount, prevVerbose := strategyFlag, accountFlag, verboseFlag
 	strategyFlag, accountFlag, verboseFlag = "round-robin", "alpha", false
+	// Asserts bird-path bookkeeping; `home` is native now, so pin the engine.
+	prevBird := birdFlag
+	birdFlag = true
 	defer func() {
+		birdFlag = prevBird
 		strategyFlag, accountFlag, verboseFlag = prevStrategy, prevAccount, prevVerbose
 	}()
 
@@ -160,7 +176,11 @@ func TestRunPassthroughRejectsWriteCommandForExplicitReadOnlyAccount(t *testing.
 
 	prevStrategy, prevAccount, prevVerbose := strategyFlag, accountFlag, verboseFlag
 	strategyFlag, accountFlag, verboseFlag = "round-robin", "alpha", false
+	// Asserts bird-path bookkeeping; `home` is native now, so pin the engine.
+	prevBird := birdFlag
+	birdFlag = true
 	defer func() {
+		birdFlag = prevBird
 		strategyFlag, accountFlag, verboseFlag = prevStrategy, prevAccount, prevVerbose
 	}()
 
@@ -197,8 +217,14 @@ func TestRunPassthroughSkipsReadOnlyAccountsForWriteCommands(t *testing.T) {
 
 	prevStrategy, prevAccount, prevVerbose := strategyFlag, accountFlag, verboseFlag
 	strategyFlag, accountFlag, verboseFlag = "round-robin", "", false
+	// These assertions are about the bird passthrough's bookkeeping. `home` is
+	// served natively now, so pin the engine to bird or the test would exercise
+	// the wrong path (and hit the network).
+	prevBird := birdFlag
+	birdFlag = true
 	defer func() {
 		strategyFlag, accountFlag, verboseFlag = prevStrategy, prevAccount, prevVerbose
+		birdFlag = prevBird
 	}()
 
 	if err := runPassthrough(rootCmd, []string{"tweet", "hello"}); err != nil {
@@ -224,8 +250,14 @@ func TestRunPassthroughRejectsWriteCommandWhenAllAccountsAreReadOnly(t *testing.
 
 	prevStrategy, prevAccount, prevVerbose := strategyFlag, accountFlag, verboseFlag
 	strategyFlag, accountFlag, verboseFlag = "round-robin", "", false
+	// These assertions are about the bird passthrough's bookkeeping. `home` is
+	// served natively now, so pin the engine to bird or the test would exercise
+	// the wrong path (and hit the network).
+	prevBird := birdFlag
+	birdFlag = true
 	defer func() {
 		strategyFlag, accountFlag, verboseFlag = prevStrategy, prevAccount, prevVerbose
+		birdFlag = prevBird
 	}()
 
 	err := runPassthrough(rootCmd, []string{"tweet", "hello"})

@@ -24,12 +24,12 @@ func TestBudgetShowsAccountsWithStatus(t *testing.T) {
 			"use_count":  5,
 		},
 		{
-			"name":                  "hot-account",
-			"auth_token":            "token-b",
-			"ct0":                   "ct0-b",
-			"use_count":             10,
-			"last_rate_limited_at":  time.Now().Add(-3 * time.Minute),
-			"rate_limit_count":      2,
+			"name":                 "hot-account",
+			"auth_token":           "token-b",
+			"ct0":                  "ct0-b",
+			"use_count":            10,
+			"last_rate_limited_at": time.Now().Add(-3 * time.Minute),
+			"rate_limit_count":     2,
 		},
 	})
 

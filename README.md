@@ -440,6 +440,35 @@ birdy -s least-used search "rust"
 birdy -s random home
 ```
 
+## Native Go engine
+
+birdy serves these commands itself, in Go, with no Node.js and no `bird` binary:
+
+`read` `thread` `replies` `search` `home` `user-tweets` `likes` `bookmarks` `list-timeline`
+
+Everything else still forwards to [bird](https://github.com/steipete/bird) and
+still needs Node. That fallback is transitional and shrinks as commands are
+ported.
+
+Output is byte-identical to bird's, including `--json`, `--plain` and
+`--no-emoji`, because the birdy skill and TUI read the human-readable form.
+Verified by diffing both engines against live X.
+
+Force the bird path when you need it:
+
+```bash
+birdy --bird read <id>       # this invocation
+BIRDY_USE_BIRD=1 birdy home  # everything in this shell
+```
+
+A command carrying a flag the native path does not implement yet (`--all`,
+`--max-pages`, `--cursor`, `--json-full`, …) automatically falls back to bird
+rather than silently ignoring the flag.
+
+```bash
+birdy -v search golang   # prints which engine served the command
+```
+
 ## Go library (`pkg/tweet`)
 
 Embed birdy in a Go service to read tweets without shelling out to the CLI or
