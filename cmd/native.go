@@ -34,6 +34,8 @@ var nativeCommands = map[string]func(context.Context, *xapi.Client, nativeArgs, 
 	"whoami":        nativeWhoami,
 	"about":         nativeAbout,
 	"likes":         nativeLikes,
+	"followers":     nativeFollowers,
+	"following":     nativeFollowing,
 }
 
 // nativeSupports reports whether a command has a native implementation.
@@ -66,6 +68,9 @@ type nativeArgs struct {
 	emoji bool
 	// latest selects the chronological home timeline.
 	latest bool
+	// user is the numeric account id --user targets, for the listing commands
+	// that take an id rather than a handle.
+	user string
 	// command is the birdy subcommand being served, used to pick the wording
 	// for an empty result.
 	command string
@@ -91,6 +96,13 @@ func parseNativeArgs(args []string) nativeArgs {
 			// Accepted for compatibility; native output is never colorized.
 		case arg == "--latest":
 			parsed.latest = true
+		case arg == "--user":
+			if i+1 < len(args) {
+				parsed.user = args[i+1]
+				i++
+			}
+		case strings.HasPrefix(arg, "--user="):
+			parsed.user = arg[len("--user="):]
 		case arg == "-n" || arg == "--count" || arg == "--limit":
 			if i+1 < len(args) {
 				if n, err := strconv.Atoi(args[i+1]); err == nil {
@@ -121,6 +133,20 @@ var nativeSupportedFlags = map[string]bool{
 	"--latest": true, "-n": true, "--count": true, "--limit": true,
 }
 
+// commandExtraFlags widens the common set for commands that accept a flag no
+// other command does. --user is bird's target selector on the listing
+// commands, which take a numeric id instead of a positional handle.
+var commandExtraFlags = map[string]map[string]bool{
+	"followers": {"--user": true},
+	"following": {"--user": true},
+}
+
+// flagsTakingValue consume the following argument, which must not then be
+// mistaken for a flag in its own right.
+var flagsTakingValue = map[string]bool{
+	"-n": true, "--count": true, "--limit": true, "--user": true,
+}
+
 // commandUnsupportedFlags narrows nativeSupportedFlags for commands that accept
 // less than the common set.
 //
@@ -130,6 +156,9 @@ var nativeSupportedFlags = map[string]bool{
 // reproduces bird's error, which is the behavior callers already handle.
 var commandUnsupportedFlags = map[string]map[string]bool{
 	"whoami": {"--json": true, "-n": true, "--count": true, "--limit": true, "--latest": true},
+	// bird's listing commands page with a cursor; --latest is a timeline flag.
+	"followers": {"--latest": true},
+	"following": {"--latest": true},
 	// bird's `about` takes only --json; count and latest are meaningless here.
 	"about": {"-n": true, "--count": true, "--limit": true, "--latest": true},
 	"likes": {"--latest": true},
@@ -139,6 +168,7 @@ var commandUnsupportedFlags = map[string]map[string]bool{
 // implements for this command.
 func nativeAcceptsFlags(command string, args []string) bool {
 	unsupported := commandUnsupportedFlags[command]
+	extra := commandExtraFlags[command]
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if !strings.HasPrefix(arg, "-") || arg == "-" {
@@ -148,13 +178,14 @@ func nativeAcceptsFlags(command string, args []string) bool {
 		if eq := strings.IndexByte(arg, '='); eq > 0 {
 			name = arg[:eq]
 		}
-		if !nativeSupportedFlags[name] || unsupported[name] {
+		if !nativeSupportedFlags[name] && !extra[name] {
 			return false
 		}
-		if name == "-n" || name == "--count" || name == "--limit" {
-			if !strings.Contains(arg, "=") {
-				i++ // skip the value
-			}
+		if unsupported[name] {
+			return false
+		}
+		if flagsTakingValue[name] && !strings.Contains(arg, "=") {
+			i++ // skip the value
 		}
 	}
 	return true

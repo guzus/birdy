@@ -98,6 +98,7 @@ func TestNativeSupports(t *testing.T) {
 	for _, command := range []string{
 		"read", "thread", "search", "home", "user-tweets", "replies",
 		"bookmarks", "list-timeline", "whoami", "about", "likes",
+		"followers", "following",
 	} {
 		if !nativeSupports(command) {
 			t.Errorf("nativeSupports(%q) = false, want true", command)

@@ -32,6 +32,7 @@ const SETS = {
   timelineFeatures: 'buildTimelineFeatures',
   likesFeatures: 'buildLikesFeatures',
   bookmarksFeatures: 'buildBookmarksFeatures',
+  followingFeatures: 'buildFollowingFeatures',
 };
 
 // UserByScreenName's flags are inline in bird's user-lookup module rather than
@@ -69,6 +70,7 @@ function emit(name, obj) {
 const OPERATIONS = [
   'TweetDetail', 'SearchTimeline', 'UserTweets', 'HomeTimeline',
   'HomeLatestTimeline', 'Likes', 'Bookmarks', 'ListLatestTweetsTimeline',
+  'Following', 'Followers',
   // Carries no feature set of its own; only its hash is needed.
   'AboutAccountQuery',
 ];
