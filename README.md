@@ -616,6 +616,17 @@ See [`.github/workflows/example.yml`](.github/workflows/example.yml) for a full 
 
 Accounts are stored in `~/.config/birdy/accounts.json` with `0600` permissions (owner-only read/write). Rotation state is tracked in `~/.config/birdy/state.json`.
 
+## Compatibility
+
+birdy follows semantic versioning. [`COMPATIBILITY.md`](COMPATIBILITY.md) states
+exactly which surfaces that covers — `pkg/tweet`, command and flag names,
+`--json` output, and the account store schema — and which it deliberately does
+not, most importantly birdy's behavior against X's unversioned GraphQL API.
+
+It also covers what the ongoing [port from bird to native Go](#native-go-engine)
+does and does not promise: command names and output survive the port, so
+dropping the Node.js dependency is not a breaking change.
+
 ## License
 
 MIT
