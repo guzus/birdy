@@ -487,6 +487,54 @@ commands (posting, search, timelines, follow, lists, bookmarks, media upload)
 still forward to the [bird](https://github.com/steipete/bird) CLI and continue
 to require Node. Porting more of them to `internal/xapi` is incremental work.
 
+### Benchmarks
+
+Reads used to run through the bird CLI, a Node program spawned per call. They now
+run in-process in Go. Here is what that actually changed.
+
+Both paths wait on X's API, which takes **~1.5s and varies between calls by more
+than the two implementations differ from each other**. Benchmarking against the
+live API measures network weather, not code. So the numbers below isolate the
+work each client does that is *not* waiting on X: for Go, the full client path
+(build query → HTTP → decode) against a local server; for bird, process spawn
+plus module load, measured by running it with a missing argument so it exits
+before opening a socket.
+
+| | bird (Node subprocess) | `pkg/tweet` (Go, in-process) | |
+| --- | --- | --- | --- |
+| Per-call overhead, excluding network | 80.6 ms | **0.43 ms** | ~190× |
+| Memory per in-flight read | 60 MB resident | **0.29 MB** allocated | ~200× |
+| 32 concurrent reads | 374 ms, ~1.9 GB resident | one process, pooled connections | |
+| Decode a 50-tweet conversation | — | 0.27 ms (180 MB/s) | |
+| Runtime dependency | Node + `@steipete/bird` | **none** | |
+| **End-to-end vs live X** | **~1.5 s** | **~1.5 s** | **parity** |
+
+**Read the last row before quoting the first.** Per-request latency is
+unchanged, because X dominates it. If you make one read and wait, this work
+bought you nothing measurable.
+
+What it does buy: no Node in the image, and headroom under concurrency. Node's
+spawn cost amortizes across cores (129 ms/op at N=1 falls to 11.7 ms/op at
+N=32), so throughput alone is survivable — the binding constraint is memory. At
+32 in-flight reads the subprocess model wants ~1.9 GB resident, which exceeds a
+default Cloud Run instance; the Go path serves the same load from one process
+with a pooled connection.
+
+The honest framing is that this is not *Go vs Node*. It is *in-process call vs
+subprocess per request*. An in-process Node library would land in much the same
+place. The language is incidental; the process boundary was the cost.
+
+Reproduce, including hardware and versions:
+
+```bash
+./scripts/bench-go-vs-bird.sh          # hermetic; no rate-limit budget spent
+./scripts/bench-go-vs-bird.sh --live   # adds the end-to-end row against real X
+```
+
+Measured on an Apple M5 Pro, go1.26.5, node v26.5.0. Go figures come from
+`go test -bench` over `internal/xapi`, so `go test ./internal/xapi/ -bench=.`
+reproduces them directly.
+
 ### Query IDs
 
 X's GraphQL persisted-query hashes rotate. `internal/xapi` tries each known

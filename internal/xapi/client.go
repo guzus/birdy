@@ -55,6 +55,9 @@ type Client struct {
 	creds      Credentials
 	httpClient *http.Client
 	userAgent  string
+	// baseURL is the GraphQL endpoint root. Overridable so tests and benchmarks
+	// can run against a local server instead of the live API.
+	baseURL string
 
 	// clientUUID and deviceID are stable per client, matching how a browser
 	// session presents itself across requests.
@@ -72,9 +75,16 @@ func NewClient(creds Credentials) (*Client, error) {
 		creds:      creds,
 		httpClient: &http.Client{Timeout: defaultTimeout},
 		userAgent:  defaultUserAgent,
+		baseURL:    graphQLBase,
 		clientUUID: randomHex(16),
 		deviceID:   randomHex(16),
 	}, nil
+}
+
+// SetBaseURL points the client at an alternate GraphQL root. Intended for tests
+// and benchmarks; production callers should leave the default in place.
+func (c *Client) SetBaseURL(base string) {
+	c.baseURL = strings.TrimRight(base, "/")
 }
 
 // randomHex returns n random bytes hex-encoded. X only checks that these
@@ -106,7 +116,7 @@ func (c *Client) Conversation(ctx context.Context, tweetID string) ([]Tweet, err
 	// Query IDs rotate; a stale one 404s, so try each until one is accepted.
 	var lastErr error
 	for _, queryID := range tweetDetailQueryIDList() {
-		endpoint := fmt.Sprintf("%s/%s/TweetDetail?%s", graphQLBase, queryID, query)
+		endpoint := fmt.Sprintf("%s/%s/TweetDetail?%s", c.baseURL, queryID, query)
 
 		body, err := c.get(ctx, endpoint)
 		if err != nil {
