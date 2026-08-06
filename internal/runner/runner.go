@@ -2,6 +2,7 @@ package runner
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -49,9 +50,17 @@ func RunCapture(account *store.Account, args []string) (res Result, stdout, stde
 
 // RunCaptureWith is RunCapture plus extra subprocess options.
 func RunCaptureWith(account *store.Account, args []string, opts Options) (res Result, stdout, stderr string, err error) {
+	return RunCaptureContext(context.Background(), account, args, opts)
+}
+
+// RunCaptureContext is RunCaptureWith bound to a context. Cancelling the
+// context kills the bird subprocess, so long-running or hung invocations
+// cannot outlive the caller — important for servers that embed birdy and
+// must bound a request's lifetime.
+func RunCaptureContext(ctx context.Context, account *store.Account, args []string, opts Options) (res Result, stdout, stderr string, err error) {
 	var outBuf bytes.Buffer
 	var errBuf bytes.Buffer
-	res, err = runWithIO(account, args, opts, nil, &outBuf, &errBuf)
+	res, err = runWithIOContext(ctx, account, args, opts, nil, &outBuf, &errBuf)
 	return res, outBuf.String(), errBuf.String(), err
 }
 
@@ -87,6 +96,10 @@ func adaptWriter(w any) io.Writer {
 }
 
 func runWithIO(account *store.Account, args []string, opts Options, stdin any, stdout any, stderr any) (Result, error) {
+	return runWithIOContext(context.Background(), account, args, opts, stdin, stdout, stderr)
+}
+
+func runWithIOContext(ctx context.Context, account *store.Account, args []string, opts Options, stdin any, stdout any, stderr any) (Result, error) {
 	if account == nil {
 		return Result{ExitCode: 1}, fmt.Errorf("running bird: missing account")
 	}
@@ -96,7 +109,7 @@ func runWithIO(account *store.Account, args []string, opts Options, stdin any, s
 		return Result{ExitCode: 1}, err
 	}
 
-	cmd := exec.Command(birdBin, args...)
+	cmd := exec.CommandContext(ctx, birdBin, args...)
 	if stdin != nil {
 		if r, ok := stdin.(*os.File); ok {
 			cmd.Stdin = r
@@ -112,6 +125,11 @@ func runWithIO(account *store.Account, args []string, opts Options, stdin any, s
 	}
 
 	if err := cmd.Run(); err != nil {
+		// A cancelled context surfaces as a kill signal; report the context
+		// error so callers can distinguish it from a genuine bird failure.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return Result{ExitCode: 1, RateLimited: scan.matched}, fmt.Errorf("running bird: %w", ctxErr)
+		}
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			return Result{ExitCode: exitErr.ExitCode(), RateLimited: scan.matched}, nil
 		}

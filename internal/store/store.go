@@ -64,6 +64,28 @@ func loadFromEnv() ([]Account, error) {
 	return accounts, nil
 }
 
+// NewEphemeral builds an in-memory store from the given accounts. Save is a
+// no-op on it, so nothing is written to disk — useful for embedding birdy in a
+// service whose credentials come from its own configuration and whose
+// filesystem may be read-only.
+//
+// Account names and credentials are normalized the same way as env- and
+// file-backed accounts; invalid entries are rejected.
+func NewEphemeral(accounts []Account) (*Store, error) {
+	normalized := make([]Account, 0, len(accounts))
+	for _, a := range accounts {
+		name, authToken, ct0, err := normalizeAccountInput(a.Name, a.AuthToken, a.CT0)
+		if err != nil {
+			return nil, err
+		}
+		a.Name = name
+		a.AuthToken = authToken
+		a.CT0 = ct0
+		normalized = append(normalized, a)
+	}
+	return &Store{Accounts: normalized, ephemeral: true}, nil
+}
+
 // Open loads (or creates) the account store at the default location,
 // then merges any accounts from the BIRDY_ACCOUNTS env var.
 func Open() (*Store, error) {
