@@ -70,7 +70,7 @@ func TestNativeAcceptsFlags(t *testing.T) {
 		{"golang", "--no-emoji", "--no-color"},
 	}
 	for _, args := range accepted {
-		if !nativeAcceptsFlags(args) {
+		if !nativeAcceptsFlags("search", args) {
 			t.Errorf("nativeAcceptsFlags(%v) = false, want true", args)
 		}
 	}
@@ -83,28 +83,60 @@ func TestNativeAcceptsFlags(t *testing.T) {
 		{"SpaceX", "--delay", "1000"},
 	}
 	for _, args := range rejected {
-		if nativeAcceptsFlags(args) {
+		if nativeAcceptsFlags("search", args) {
 			t.Errorf("nativeAcceptsFlags(%v) = true, want false (unsupported flag)", args)
 		}
 	}
 
 	// The value of -n must not itself be treated as a flag.
-	if !nativeAcceptsFlags([]string{"-n", "5", "golang"}) {
+	if !nativeAcceptsFlags("search", []string{"-n", "5", "golang"}) {
 		t.Error("nativeAcceptsFlags skipped the count value incorrectly")
 	}
 }
 
 func TestNativeSupports(t *testing.T) {
-	for _, command := range []string{"read", "thread", "search", "home", "user-tweets", "replies", "bookmarks", "list-timeline"} {
+	for _, command := range []string{
+		"read", "thread", "search", "home", "user-tweets", "replies",
+		"bookmarks", "list-timeline", "whoami", "about", "likes",
+	} {
 		if !nativeSupports(command) {
 			t.Errorf("nativeSupports(%q) = false, want true", command)
 		}
 	}
 	// Not yet ported: these must still reach bird.
-	// `likes` is intentionally not native: bird's signature takes no argument.
-	for _, command := range []string{"tweet", "reply", "follow", "lists", "news", "whoami", "likes"} {
+	for _, command := range []string{"tweet", "reply", "follow", "lists", "news", "mentions", "check"} {
 		if nativeSupports(command) {
 			t.Errorf("nativeSupports(%q) = true, but it has no native implementation", command)
+		}
+	}
+}
+
+// bird's `whoami` declares no options, so `bird whoami --json` is a usage
+// error. Serving it natively would answer with human-readable output instead —
+// a divergence, not a fallback.
+func TestCommandScopedFlagFallback(t *testing.T) {
+	cases := []struct {
+		command string
+		args    []string
+		accept  bool
+	}{
+		{"whoami", nil, true},
+		{"whoami", []string{"--plain"}, true},
+		{"whoami", []string{"--json"}, false},
+		{"whoami", []string{"-n", "5"}, false},
+		{"about", []string{"guzus"}, true},
+		{"about", []string{"guzus", "--json"}, true},
+		{"about", []string{"guzus", "-n", "5"}, false},
+		{"likes", []string{"--json"}, true},
+		{"likes", []string{"-n", "5"}, true},
+		{"likes", []string{"--latest"}, false},
+		// Commands without a narrowing entry keep the common set.
+		{"search", []string{"--json", "-n", "5"}, true},
+	}
+
+	for _, tc := range cases {
+		if got := nativeAcceptsFlags(tc.command, tc.args); got != tc.accept {
+			t.Errorf("nativeAcceptsFlags(%q, %v) = %v, want %v", tc.command, tc.args, got, tc.accept)
 		}
 	}
 }

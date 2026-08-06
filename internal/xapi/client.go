@@ -63,6 +63,11 @@ type Client struct {
 	// session presents itself across requests.
 	clientUUID string
 	deviceID   string
+
+	// viewerEndpoints are the v1.1 account URLs CurrentUser tries, in order.
+	// Overridable so tests can point them at a local server.
+	viewerEndpoints []string
+	viewer          viewerCache
 }
 
 // NewClient builds a client for the given credentials.
@@ -72,13 +77,23 @@ func NewClient(creds Credentials) (*Client, error) {
 	}
 
 	return &Client{
-		creds:      creds,
-		httpClient: &http.Client{Timeout: defaultTimeout},
-		userAgent:  defaultUserAgent,
-		baseURL:    graphQLBase,
-		clientUUID: randomHex(16),
-		deviceID:   randomHex(16),
+		creds:           creds,
+		httpClient:      &http.Client{Timeout: defaultTimeout},
+		userAgent:       defaultUserAgent,
+		baseURL:         graphQLBase,
+		clientUUID:      randomHex(16),
+		deviceID:        randomHex(16),
+		viewerEndpoints: defaultViewerEndpoints,
 	}, nil
+}
+
+// SetViewerEndpoints overrides the v1.1 account URLs CurrentUser tries.
+// Intended for tests; production callers should leave the defaults in place.
+func (c *Client) SetViewerEndpoints(endpoints []string) {
+	c.viewerEndpoints = endpoints
+	c.viewer.mu.Lock()
+	c.viewer.seen = nil
+	c.viewer.mu.Unlock()
 }
 
 // SetBaseURL points the client at an alternate GraphQL root. Intended for tests

@@ -311,5 +311,6 @@ var queryIDs = map[string][]string{
 	"Likes":                    {"ETJflBunfqNa1uE1mBPCaw", "JR2gceKucIKcVNB_9JkhsA"},
 	"Bookmarks":                {"RV1g3b8n_SGOHwkqKYSCFw"},
 	"ListLatestTweetsTimeline": {"2TemLyqrMpTeAmysdbnVqw"},
+	"AboutAccountQuery":        {"zs_jFPFT78rBpXv9Z3U2YQ"},
 	"UserByScreenName":         {"xc8f1g7BYqr6VTzTbvNlGw", "qW5u-DAuXpMEG0zA1F7UGQ", "sLVLhk0bGj3MVFEKTdax1w"},
 }

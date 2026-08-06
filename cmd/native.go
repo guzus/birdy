@@ -22,10 +22,6 @@ import (
 // Anything not listed here still forwards to bird. The --bird flag (or
 // BIRDY_USE_BIRD=1) forces the bird path even for commands that are listed,
 // which is the escape hatch when a native implementation misbehaves.
-// `likes` is deliberately absent: bird's takes no argument (it reads the
-// authenticated account's likes) and birdy cannot resolve the current user
-// without a viewer lookup yet. Serving it with a handle-shaped signature would
-// silently diverge from bird, so it falls back until that exists.
 var nativeCommands = map[string]func(context.Context, *xapi.Client, nativeArgs, io.Writer) error{
 	"read":          nativeRead,
 	"thread":        nativeThread,
@@ -35,6 +31,9 @@ var nativeCommands = map[string]func(context.Context, *xapi.Client, nativeArgs, 
 	"user-tweets":   nativeUserTweets,
 	"bookmarks":     nativeBookmarks,
 	"list-timeline": nativeListTimeline,
+	"whoami":        nativeWhoami,
+	"about":         nativeAbout,
+	"likes":         nativeLikes,
 }
 
 // nativeSupports reports whether a command has a native implementation.
@@ -122,9 +121,24 @@ var nativeSupportedFlags = map[string]bool{
 	"--latest": true, "-n": true, "--count": true, "--limit": true,
 }
 
+// commandUnsupportedFlags narrows nativeSupportedFlags for commands that accept
+// less than the common set.
+//
+// bird's `whoami` declares no options at all, so `bird whoami --json` is a
+// usage error. Serving it natively would turn that error into human-readable
+// output — a silent divergence rather than a fallback. Routing it to bird
+// reproduces bird's error, which is the behavior callers already handle.
+var commandUnsupportedFlags = map[string]map[string]bool{
+	"whoami": {"--json": true, "-n": true, "--count": true, "--limit": true, "--latest": true},
+	// bird's `about` takes only --json; count and latest are meaningless here.
+	"about": {"-n": true, "--count": true, "--limit": true, "--latest": true},
+	"likes": {"--latest": true},
+}
+
 // nativeAcceptsFlags reports whether every flag in args is one the native path
-// implements.
-func nativeAcceptsFlags(args []string) bool {
+// implements for this command.
+func nativeAcceptsFlags(command string, args []string) bool {
+	unsupported := commandUnsupportedFlags[command]
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if !strings.HasPrefix(arg, "-") || arg == "-" {
@@ -134,7 +148,7 @@ func nativeAcceptsFlags(args []string) bool {
 		if eq := strings.IndexByte(arg, '='); eq > 0 {
 			name = arg[:eq]
 		}
-		if !nativeSupportedFlags[name] {
+		if !nativeSupportedFlags[name] || unsupported[name] {
 			return false
 		}
 		if name == "-n" || name == "--count" || name == "--limit" {
@@ -280,6 +294,91 @@ func nativeListTimeline(ctx context.Context, c *xapi.Client, args nativeArgs, ou
 	return renderTweets(out, tweets, args)
 }
 
+// nativeWhoami reports which account the selected credentials belong to.
+//
+// birdy always hands bird the credentials through AUTH_TOKEN/CT0 (see
+// runner.buildEnv), so bird's credential source is invariably "env AUTH_TOKEN".
+// Reproducing that string keeps the output identical rather than inventing a
+// birdy-specific label that would break anything parsing this.
+//
+// The engine line says "graphql" for the same reason. It is bird's name for
+// cookie-session auth as opposed to API keys, not a claim about which endpoint
+// served the request — this lookup is v1.1 REST in both engines.
+func nativeWhoami(ctx context.Context, c *xapi.Client, args nativeArgs, out io.Writer) error {
+	viewer, err := c.CurrentUser(ctx)
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintf(out, "%s @%s (%s)\n", label("user", "🙋", "User:", args), viewer.Username, viewer.Name)
+	fmt.Fprintf(out, "%s %s\n", label("user_id", "🪪", "User ID:", args), viewer.ID)
+	fmt.Fprintf(out, "%s graphql\n", label("engine", "⚙️", "Engine:", args))
+	fmt.Fprintf(out, "%s %s\n", label("credentials", "🔑", "Credentials:", args), birdCredentialSource)
+	return nil
+}
+
+// birdCredentialSource is what bird prints for credentials supplied through the
+// environment, which is the only way birdy supplies them.
+const birdCredentialSource = "env AUTH_TOKEN"
+
+// nativeAbout prints X's "About this account" panel for a handle.
+//
+// Every line after the header is conditional: bird omits a field X did not
+// report rather than printing an empty or default value, and the two booleans
+// are tri-state for that reason.
+func nativeAbout(ctx context.Context, c *xapi.Client, args nativeArgs, out io.Writer) error {
+	if args.positional == "" {
+		return fmt.Errorf("about: missing username")
+	}
+	handle := xapi.NormalizeHandle(args.positional)
+	if handle == "" {
+		return fmt.Errorf("invalid username: %s", args.positional)
+	}
+
+	profile, err := c.AboutAccount(ctx, handle)
+	if err != nil {
+		return err
+	}
+	if args.json {
+		return writeNativeJSON(out, profile)
+	}
+
+	fmt.Fprintf(out, "%s Account information for @%s:\n", status("info", "ℹ️", "Info:", args), handle)
+	if profile.AccountBasedIn != "" {
+		fmt.Fprintf(out, "  Account based in: %s\n", profile.AccountBasedIn)
+	}
+	if profile.CreatedCountryAccurate != nil {
+		fmt.Fprintf(out, "  Creation country accurate: %s\n", yesNo(*profile.CreatedCountryAccurate))
+	}
+	if profile.LocationAccurate != nil {
+		fmt.Fprintf(out, "  Location accurate: %s\n", yesNo(*profile.LocationAccurate))
+	}
+	if profile.Source != "" {
+		fmt.Fprintf(out, "%s %s\n", label("source", "📍", "Source:", args), profile.Source)
+	}
+	if profile.LearnMoreURL != "" {
+		fmt.Fprintf(out, "  Learn more: %s\n", profile.LearnMoreURL)
+	}
+	return nil
+}
+
+func yesNo(v bool) string {
+	if v {
+		return "Yes"
+	}
+	return "No"
+}
+
+// nativeLikes reads the authenticated account's likes. bird's `likes` takes no
+// handle, so neither does this; a positional argument would be a divergence.
+func nativeLikes(ctx context.Context, c *xapi.Client, args nativeArgs, out io.Writer) error {
+	tweets, err := c.ViewerLikes(ctx, args.count)
+	if err != nil {
+		return err
+	}
+	return renderTweets(out, tweets, args)
+}
+
 // resolveTweetID accepts a status URL or a bare id.
 func resolveTweetID(ref string) (string, error) {
 	if strings.TrimSpace(ref) == "" {
@@ -302,6 +401,7 @@ var emptyMessages = map[string]string{
 	"thread":        "No thread tweets found.",
 	"list-timeline": "No tweets found in this list.",
 	"bookmarks":     "No bookmarks found.",
+	"likes":         "No liked tweets found.",
 }
 
 const defaultEmptyMessage = "No tweets found."
@@ -393,6 +493,18 @@ func mediaLabel(media xapi.Media, args nativeArgs) string {
 func label(plainName, emoji, text string, args nativeArgs) string {
 	if args.plain {
 		return plainName + ":"
+	}
+	if args.emoji {
+		return emoji
+	}
+	return text
+}
+
+// status mirrors bird's status prefixes, which bracket their plain form
+// (`[info]`) where labels suffix theirs with a colon (`source:`).
+func status(plainName, emoji, text string, args nativeArgs) string {
+	if args.plain {
+		return "[" + plainName + "]"
 	}
 	if args.emoji {
 		return emoji

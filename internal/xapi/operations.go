@@ -131,8 +131,25 @@ func (c *Client) Likes(ctx context.Context, handle string, count int) ([]Tweet, 
 	if err != nil {
 		return nil, err
 	}
+	return c.likesByUserID(ctx, user.ID, count)
+}
+
+// ViewerLikes returns the authenticated account's liked tweets.
+//
+// This is the shape bird's `likes` exposes: it takes no handle and reads the
+// current session's likes. Resolving the viewer directly also skips the
+// UserByScreenName hop that Likes needs.
+func (c *Client) ViewerLikes(ctx context.Context, count int) ([]Tweet, error) {
+	viewer, err := c.CurrentUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return c.likesByUserID(ctx, viewer.ID, count)
+}
+
+func (c *Client) likesByUserID(ctx context.Context, userID string, count int) ([]Tweet, error) {
 	tweets, err := c.timeline(ctx, opLikes, map[string]any{
-		"userId":                 user.ID,
+		"userId":                 userID,
 		"count":                  clampCount(count),
 		"includePromotedContent": false,
 		"withClientEventToken":   false,
