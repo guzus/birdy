@@ -9,7 +9,7 @@ RUN bun install --frozen-lockfile
 COPY web/ ./
 RUN bun run build
 
-FROM golang:1.25-bookworm AS builder
+FROM golang:1.26.5-bookworm AS builder
 WORKDIR /src
 
 COPY go.mod go.sum ./
