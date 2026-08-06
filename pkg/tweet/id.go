@@ -8,7 +8,11 @@ import (
 
 // tweetURLPattern matches the status URL forms X serves. The handle segment is
 // permissive because the /i/web/ and /i/status/ forms carry no handle.
-var tweetURLPattern = regexp.MustCompile(`(?i)(?:twitter\.com|x\.com)/(?:[A-Za-z0-9_]{1,15}/status(?:es)?|i/web/status|i/status)/(\d+)`)
+//
+// The leading (?:^|[/.]) enforces a host boundary. Without it the host alternation
+// matches as a substring, so a lookalike domain like notx.com/user/status/123
+// would be accepted as a real X link.
+var tweetURLPattern = regexp.MustCompile(`(?i)(?:^|[/.])(?:twitter\.com|x\.com)/(?:[A-Za-z0-9_]{1,15}/status(?:es)?|i/web/status|i/status)/(\d+)`)
 
 // bareTweetIDPattern matches a raw numeric tweet ID.
 var bareTweetIDPattern = regexp.MustCompile(`^\d{5,25}$`)

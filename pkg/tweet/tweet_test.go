@@ -51,6 +51,8 @@ func TestExtractTweetID(t *testing.T) {
 		{"whitespace only", "   "},
 		{"profile url", "https://x.com/elonmusk"},
 		{"non-twitter host", "https://example.com/user/status/123"},
+		{"lookalike host", "https://notx.com/user/status/123"},
+		{"lookalike suffix host", "https://x.com.evil.test/user/status/123"},
 		{"missing id", "https://x.com/elonmusk/status/"},
 		{"non-numeric id", "https://x.com/elonmusk/status/abc"},
 		{"plain text", "just some words"},
