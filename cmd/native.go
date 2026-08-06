@@ -22,6 +22,10 @@ import (
 // Anything not listed here still forwards to bird. The --bird flag (or
 // BIRDY_USE_BIRD=1) forces the bird path even for commands that are listed,
 // which is the escape hatch when a native implementation misbehaves.
+// `likes` is deliberately absent: bird's takes no argument (it reads the
+// authenticated account's likes) and birdy cannot resolve the current user
+// without a viewer lookup yet. Serving it with a handle-shaped signature would
+// silently diverge from bird, so it falls back until that exists.
 var nativeCommands = map[string]func(context.Context, *xapi.Client, nativeArgs, io.Writer) error{
 	"read":          nativeRead,
 	"thread":        nativeThread,
@@ -29,7 +33,6 @@ var nativeCommands = map[string]func(context.Context, *xapi.Client, nativeArgs, 
 	"search":        nativeSearch,
 	"home":          nativeHome,
 	"user-tweets":   nativeUserTweets,
-	"likes":         nativeLikes,
 	"bookmarks":     nativeBookmarks,
 	"list-timeline": nativeListTimeline,
 }
@@ -64,6 +67,9 @@ type nativeArgs struct {
 	emoji bool
 	// latest selects the chronological home timeline.
 	latest bool
+	// command is the birdy subcommand being served, used to pick the wording
+	// for an empty result.
+	command string
 }
 
 // parseNativeArgs reads the flags the native commands honor. Unknown flags are
@@ -155,7 +161,9 @@ func runNative(ctx context.Context, account *store.Account, command string, args
 	if err != nil {
 		return err
 	}
-	return handler(ctx, client, parseNativeArgs(args), out)
+	parsed := parseNativeArgs(args)
+	parsed.command = command
+	return handler(ctx, client, parsed, out)
 }
 
 // recordNativeUsage mirrors the bookkeeping the bird path performs after a run,
@@ -253,17 +261,6 @@ func nativeUserTweets(ctx context.Context, c *xapi.Client, args nativeArgs, out 
 	return renderTweets(out, tweets, args)
 }
 
-func nativeLikes(ctx context.Context, c *xapi.Client, args nativeArgs, out io.Writer) error {
-	if args.positional == "" {
-		return fmt.Errorf("likes: missing username")
-	}
-	tweets, err := c.Likes(ctx, args.positional, args.count)
-	if err != nil {
-		return err
-	}
-	return renderTweets(out, tweets, args)
-}
-
 func nativeBookmarks(ctx context.Context, c *xapi.Client, args nativeArgs, out io.Writer) error {
 	tweets, err := c.Bookmarks(ctx, args.count)
 	if err != nil {
@@ -298,12 +295,35 @@ func resolveTweetID(ref string) (string, error) {
 
 const listSeparator = "──────────────────────────────────────────────────" // 50
 
+// emptyMessages mirror bird's per-command wording for a result with no tweets.
+// bird prints a line here; printing nothing would look like a silent failure.
+var emptyMessages = map[string]string{
+	"replies":       "No replies found.",
+	"thread":        "No thread tweets found.",
+	"list-timeline": "No tweets found in this list.",
+	"bookmarks":     "No bookmarks found.",
+}
+
+const defaultEmptyMessage = "No tweets found."
+
+func emptyMessageFor(command string) string {
+	if message, ok := emptyMessages[command]; ok {
+		return message
+	}
+	return defaultEmptyMessage
+}
+
 func renderTweets(out io.Writer, tweets []xapi.Tweet, args nativeArgs) error {
 	if args.json {
 		if tweets == nil {
 			tweets = []xapi.Tweet{}
 		}
 		return writeNativeJSON(out, tweets)
+	}
+
+	if len(tweets) == 0 {
+		_, err := fmt.Fprintln(out, emptyMessageFor(args.command))
+		return err
 	}
 
 	// bird closes every entry with a separator, including the last one.
@@ -344,24 +364,29 @@ func renderTweet(out io.Writer, tweet xapi.Tweet, args nativeArgs, withStats boo
 	return err
 }
 
-// mediaLabel distinguishes video from stills, matching bird's icons. In plain
-// mode bird prints the uppercased media type ("PHOTO:", "VIDEO:"), not a fixed
-// word, so the raw type carries through.
+// mediaLabel mirrors bird's icons. bird computes useEmoji as (emoji && !plain),
+// so --plain and --no-emoji share the same textual labels, and an animated gif
+// is neither a video nor a photo.
 func mediaLabel(media xapi.Media, args nativeArgs) string {
-	if args.plain {
-		kind := media.Type
-		if kind == "" {
-			kind = "media"
+	useEmoji := args.emoji && !args.plain
+
+	switch media.Type {
+	case "video":
+		if useEmoji {
+			return "🎬"
 		}
-		return strings.ToUpper(kind) + ":"
+		return "VIDEO:"
+	case "animated_gif":
+		if useEmoji {
+			return "🔄"
+		}
+		return "GIF:"
+	default:
+		if useEmoji {
+			return "🖼️"
+		}
+		return "PHOTO:"
 	}
-	if media.IsVideo() {
-		return "🎬"
-	}
-	if !args.emoji {
-		return "Image:"
-	}
-	return "🖼️"
 }
 
 // label renders a field prefix in whichever of bird's three output modes applies.

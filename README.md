@@ -444,10 +444,12 @@ birdy -s random home
 
 birdy serves these commands itself, in Go, with no Node.js and no `bird` binary:
 
-`read` `thread` `replies` `search` `home` `user-tweets` `likes` `bookmarks` `list-timeline`
+`read` `thread` `replies` `search` `home` `user-tweets` `bookmarks` `list-timeline`
 
 Everything else still forwards to [bird](https://github.com/steipete/bird) and
-still needs Node. That fallback is transitional and shrinks as commands are
+still needs Node — including `likes`, which bird exposes with no argument (the
+authenticated account's likes) and which birdy cannot serve until it can resolve
+the current user. That fallback is transitional and shrinks as commands are
 ported.
 
 Output is byte-identical to bird's, including `--json`, `--plain` and

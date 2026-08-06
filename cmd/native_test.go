@@ -95,13 +95,14 @@ func TestNativeAcceptsFlags(t *testing.T) {
 }
 
 func TestNativeSupports(t *testing.T) {
-	for _, command := range []string{"read", "thread", "search", "home", "user-tweets", "replies", "likes", "bookmarks", "list-timeline"} {
+	for _, command := range []string{"read", "thread", "search", "home", "user-tweets", "replies", "bookmarks", "list-timeline"} {
 		if !nativeSupports(command) {
 			t.Errorf("nativeSupports(%q) = false, want true", command)
 		}
 	}
 	// Not yet ported: these must still reach bird.
-	for _, command := range []string{"tweet", "reply", "follow", "lists", "news", "whoami"} {
+	// `likes` is intentionally not native: bird's signature takes no argument.
+	for _, command := range []string{"tweet", "reply", "follow", "lists", "news", "whoami", "likes"} {
 		if nativeSupports(command) {
 			t.Errorf("nativeSupports(%q) = true, but it has no native implementation", command)
 		}
@@ -168,13 +169,56 @@ func TestMediaLabel(t *testing.T) {
 		t.Errorf("photo emoji label = %q, want 🖼️", got)
 	}
 
-	// bird prints the uppercased media type in plain mode.
-	plain := nativeArgs{plain: true}
-	if got := mediaLabel(photo, plain); got != "PHOTO:" {
-		t.Errorf("photo plain label = %q, want PHOTO:", got)
+	// An animated gif is neither a video nor a photo to bird.
+	gif := xapi.Media{Type: "animated_gif", URL: "u", VideoURL: "v"}
+	if got := mediaLabel(gif, emoji); got != "🔄" {
+		t.Errorf("gif emoji label = %q, want 🔄", got)
 	}
-	if got := mediaLabel(video, plain); got != "VIDEO:" {
-		t.Errorf("video plain label = %q, want VIDEO:", got)
+
+	// bird computes useEmoji as (emoji && !plain), so --plain and --no-emoji
+	// share the same textual labels.
+	for name, args := range map[string]nativeArgs{
+		"plain":    {plain: true},
+		"no-emoji": {emoji: false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := mediaLabel(photo, args); got != "PHOTO:" {
+				t.Errorf("photo label = %q, want PHOTO:", got)
+			}
+			if got := mediaLabel(video, args); got != "VIDEO:" {
+				t.Errorf("video label = %q, want VIDEO:", got)
+			}
+			if got := mediaLabel(gif, args); got != "GIF:" {
+				t.Errorf("gif label = %q, want GIF:", got)
+			}
+		})
+	}
+}
+
+// An empty result prints bird's per-command wording. Printing nothing would
+// read as a silent failure.
+func TestEmptyMessages(t *testing.T) {
+	cases := map[string]string{
+		"replies":       "No replies found.",
+		"thread":        "No thread tweets found.",
+		"list-timeline": "No tweets found in this list.",
+		"bookmarks":     "No bookmarks found.",
+		"search":        "No tweets found.",
+		"home":          "No tweets found.",
+		"user-tweets":   "No tweets found.",
+	}
+	for command, want := range cases {
+		if got := emptyMessageFor(command); got != want {
+			t.Errorf("emptyMessageFor(%q) = %q, want %q", command, got, want)
+		}
+	}
+
+	var buf bytes.Buffer
+	if err := renderTweets(&buf, nil, nativeArgs{emoji: true, command: "bookmarks"}); err != nil {
+		t.Fatalf("renderTweets returned error: %v", err)
+	}
+	if got := strings.TrimSpace(buf.String()); got != "No bookmarks found." {
+		t.Errorf("empty render = %q, want the bookmarks wording", got)
 	}
 }
 
