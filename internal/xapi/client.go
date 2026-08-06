@@ -9,15 +9,15 @@
 package xapi
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"time"
 )
@@ -100,42 +100,19 @@ func randomHex(n int) string {
 }
 
 // Conversation fetches every tweet X returns for the conversation containing
-// tweetID, in the order X returned them (the focal tweet's thread first, then
-// replies). Ancestry is expressed through each tweet's InReplyToStatusID.
+// tweetID, in the order X returned them (the focal tweet's ancestors, the tweet
+// itself, then its replies). Ancestry is expressed through InReplyToStatusID.
 func (c *Client) Conversation(ctx context.Context, tweetID string) ([]Tweet, error) {
 	tweetID = strings.TrimSpace(tweetID)
 	if tweetID == "" {
 		return nil, fmt.Errorf("x api: empty tweet id")
 	}
 
-	query, err := buildTweetDetailQuery(tweetID)
+	body, err := c.graphQL(ctx, "TweetDetail", tweetDetailVariables(tweetID), tweetDetailFeatures, tweetDetailFieldToggles)
 	if err != nil {
 		return nil, err
 	}
-
-	// Query IDs rotate; a stale one 404s, so try each until one is accepted.
-	var lastErr error
-	for _, queryID := range tweetDetailQueryIDList() {
-		endpoint := fmt.Sprintf("%s/%s/TweetDetail?%s", c.baseURL, queryID, query)
-
-		body, err := c.get(ctx, endpoint)
-		if err != nil {
-			var apiErr *APIError
-			if ok := asAPIError(err, &apiErr); ok && apiErr.StatusCode == http.StatusNotFound {
-				lastErr = err
-				continue // stale query id, try the next
-			}
-			return nil, err
-		}
-
-		return parseConversation(body)
-	}
-
-	if lastErr != nil {
-		return nil, fmt.Errorf("x api: every known TweetDetail query id was rejected "+
-			"(X likely rotated them; set BIRDY_TWEET_DETAIL_QUERY_ID): %w", lastErr)
-	}
-	return nil, fmt.Errorf("x api: no TweetDetail query id configured")
+	return parseConversation(body)
 }
 
 // Tweet fetches a single tweet by id.
@@ -152,34 +129,46 @@ func (c *Client) Tweet(ctx context.Context, tweetID string) (*Tweet, error) {
 	return nil, &APIError{Message: fmt.Sprintf("tweet %s not found in the conversation response", tweetID)}
 }
 
-// tweetDetailQueryIDList returns the query IDs to try, honoring an override.
-func tweetDetailQueryIDList() []string {
-	if override := strings.TrimSpace(os.Getenv("BIRDY_TWEET_DETAIL_QUERY_ID")); override != "" {
-		return append([]string{override}, tweetDetailQueryIDs...)
+// operationQueryIDs returns the persisted-query hashes to try for an operation.
+// BIRDY_<OPERATION>_QUERY_ID overrides the generated list, so a rotation can be
+// worked around without a release.
+func operationQueryIDs(operation string) []string {
+	envKey := "BIRDY_" + strings.ToUpper(camelToSnake(operation)) + "_QUERY_ID"
+	generated := queryIDs[operation]
+
+	ids := make([]string, 0, len(generated)+2)
+	if override := strings.TrimSpace(os.Getenv(envKey)); override != "" {
+		ids = append(ids, override)
 	}
-	return tweetDetailQueryIDs
+
+	// Generated hashes come first even though discovered ones are newer. Our
+	// variables and feature sets are matched to the hashes bird vetted; pairing
+	// them with a newer hash is accepted by X but can return a differently
+	// shaped response (observed: UserByScreenName moving follower counts, which
+	// silently zeroed them). Discovery is a recovery path for rotation, not an
+	// upgrade path.
+	for _, id := range generated {
+		if !slices.Contains(ids, id) {
+			ids = append(ids, id)
+		}
+	}
+	if discovered, ok := resolver.lookup(operation); ok && !slices.Contains(ids, discovered) {
+		ids = append(ids, discovered)
+	}
+	return ids
 }
 
-// buildTweetDetailQuery encodes the variables/features/fieldToggles triplet.
-func buildTweetDetailQuery(tweetID string) (string, error) {
-	variables, err := json.Marshal(tweetDetailVariables(tweetID))
-	if err != nil {
-		return "", fmt.Errorf("x api: encoding variables: %w", err)
+// camelToSnake converts an operation name to the env-var form:
+// "TweetDetail" -> "TWEET_DETAIL".
+func camelToSnake(s string) string {
+	var b strings.Builder
+	for i, r := range s {
+		if i > 0 && r >= 'A' && r <= 'Z' {
+			b.WriteByte('_')
+		}
+		b.WriteRune(r)
 	}
-	features, err := json.Marshal(tweetDetailFeatures)
-	if err != nil {
-		return "", fmt.Errorf("x api: encoding features: %w", err)
-	}
-	fieldToggles, err := json.Marshal(tweetDetailFieldToggles)
-	if err != nil {
-		return "", fmt.Errorf("x api: encoding fieldToggles: %w", err)
-	}
-
-	params := url.Values{}
-	params.Set("variables", string(variables))
-	params.Set("features", string(features))
-	params.Set("fieldToggles", string(fieldToggles))
-	return params.Encode(), nil
+	return b.String()
 }
 
 // get performs an authenticated GraphQL GET and returns the raw body.
@@ -190,6 +179,11 @@ func (c *Client) get(ctx context.Context, endpoint string) ([]byte, error) {
 	}
 	c.setHeaders(req)
 
+	return c.do(req)
+}
+
+// do executes a prepared request and normalizes the response.
+func (c *Client) do(req *http.Request) ([]byte, error) {
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("x api: request failed: %w", err)
@@ -209,6 +203,18 @@ func (c *Client) get(ctx context.Context, endpoint string) ([]byte, error) {
 		}
 	}
 	return body, nil
+}
+
+// post performs an authenticated GraphQL POST and returns the raw body.
+func (c *Client) post(ctx context.Context, endpoint string, payload []byte) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return nil, fmt.Errorf("x api: building request: %w", err)
+	}
+	c.setHeaders(req)
+	req.Header.Set("content-type", "application/json")
+
+	return c.do(req)
 }
 
 // setHeaders applies the headers X's web client sends. Omitting any of these

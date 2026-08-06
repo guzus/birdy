@@ -368,8 +368,63 @@ func collectFromEntry(e entry) []*tweetResult {
 	return out
 }
 
-// parseConversation maps every tweet in the response, de-duplicated, in the
-// order X returned them.
+// tweetsFromInstructions maps every usable tweet out of a timeline's
+// instructions, de-duplicated, preserving X's ordering.
+func tweetsFromInstructions(instructions []instruction) []Tweet {
+	var tweets []Tweet
+	seen := make(map[string]bool)
+	for _, ins := range instructions {
+		for _, e := range ins.Entries {
+			for _, node := range collectFromEntry(e) {
+				t, ok := mapTweet(node)
+				if !ok || seen[t.ID] {
+					continue
+				}
+				seen[t.ID] = true
+				tweets = append(tweets, t)
+			}
+		}
+	}
+	return tweets
+}
+
+// ancestorChain walks up from targetID through InReplyToStatusID, root-first.
+// The target itself is excluded. A missing parent stops the walk and cyclic
+// data is cut short rather than looping.
+func ancestorChain(thread []Tweet, targetID string) []Tweet {
+	byID := make(map[string]Tweet, len(thread))
+	for _, t := range thread {
+		byID[t.ID] = t
+	}
+
+	target, ok := byID[targetID]
+	if !ok {
+		return nil
+	}
+
+	var chain []Tweet
+	seen := map[string]bool{targetID: true}
+	for parentID := target.InReplyToStatusID; parentID != ""; {
+		if seen[parentID] {
+			break
+		}
+		seen[parentID] = true
+
+		parent, found := byID[parentID]
+		if !found {
+			break
+		}
+		chain = append(chain, parent)
+		parentID = parent.InReplyToStatusID
+	}
+
+	for i, j := 0, len(chain)-1; i < j; i, j = i+1, j-1 {
+		chain[i], chain[j] = chain[j], chain[i]
+	}
+	return chain
+}
+
+// parseConversation maps every tweet in a TweetDetail response.
 func parseConversation(body []byte) ([]Tweet, error) {
 	var resp graphQLResponse
 	if err := json.Unmarshal(body, &resp); err != nil {
@@ -392,21 +447,7 @@ func parseConversation(body []byte) ([]Tweet, error) {
 		return nil, &APIError{Message: strings.Join(messages, ", ")}
 	}
 
-	var tweets []Tweet
-	seen := make(map[string]bool)
-	for _, ins := range instructions {
-		for _, e := range ins.Entries {
-			for _, node := range collectFromEntry(e) {
-				t, ok := mapTweet(node)
-				if !ok || seen[t.ID] {
-					continue
-				}
-				seen[t.ID] = true
-				tweets = append(tweets, t)
-			}
-		}
-	}
-	return tweets, nil
+	return tweetsFromInstructions(instructions), nil
 }
 
 // --- Type helpers ------------------------------------------------------------
