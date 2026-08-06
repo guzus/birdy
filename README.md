@@ -440,6 +440,50 @@ birdy -s least-used search "rust"
 birdy -s random home
 ```
 
+## Go library (`pkg/tweet`)
+
+Embed birdy in a Go service to read tweets without shelling out to the CLI or
+running `birdy host`. `pkg/tweet` exposes the same flow the CLI performs — pick
+an account, run bird with its credentials, record usage and rate limits.
+
+```go
+import "github.com/guzus/birdy/pkg/tweet"
+
+client, err := tweet.NewClient(tweet.Options{
+    // Accounts come from BIRDY_ACCOUNTS + ~/.config/birdy/accounts.json by
+    // default, or pass AccountsJSON to supply them from your own config.
+    Strategy: "quota-aware", // the default
+})
+
+t, err := client.Read(ctx, "https://x.com/SpaceX/status/2084912076502282341")
+for _, m := range t.Media {
+    fmt.Println(m.Type, m.DownloadURL()) // videos resolve to the mp4, not the thumbnail
+}
+
+// Threads come back flat; ancestry lives in InReplyToStatusID.
+thread, err := client.Thread(ctx, t.ConversationID)
+parents := tweet.AncestorChain(thread, t.ID) // root-first, target excluded
+```
+
+Notes:
+
+- A `Client` is safe for concurrent use and holds rotation state in memory, so
+  it works on a read-only filesystem (Cloud Run, scratch containers).
+- Passing `Options.AccountsJSON` builds an ephemeral store that never writes to
+  disk. Useful when credentials come from your own secret manager.
+- The default strategy is `quota-aware`, which avoids accounts that recently
+  returned a 429 — a better fit for a server than the CLI's `round-robin`.
+- Cancelling the context kills the bird subprocess, so a request cannot outlive
+  its caller.
+- The **bird CLI is still required at runtime** — it is a Node program, so the
+  host or image needs Node.js. Set `BIRDY_BIRD_PATH` when bird is not on `PATH`
+  (embedding birdy in another binary defeats its executable-relative lookup):
+
+  ```bash
+  npm install -g @steipete/bird
+  export BIRDY_BIRD_PATH=$(npm root -g)/@steipete/bird/dist/cli.js
+  ```
+
 ## Getting auth tokens
 
 You need two cookies from an active X/Twitter web session:
