@@ -1,128 +1,67 @@
 package tweet
 
 import (
-	"strings"
 	"testing"
 )
 
-// realReadStdout mirrors an actual `bird read <id> --json` payload.
-const realReadStdout = `{
-  "id": "2084912076502282341",
-  "text": "Falcon 9's first stage has landed https://t.co/VUSaoAg08v",
-  "createdAt": "Wed Aug 05 07:59:09 +0000 2026",
-  "replyCount": 429,
-  "likeCount": 8658,
-  "conversationId": "2084912076502282341",
-  "author": { "username": "SpaceX", "name": "SpaceX" },
-  "authorId": "34743251",
-  "media": [
-    {
-      "type": "video",
-      "url": "https://pbs.twimg.com/amplify_video_thumb/123/img/x.jpg",
-      "previewUrl": "https://pbs.twimg.com/amplify_video_thumb/123/img/x.jpg:small",
-      "videoUrl": "https://video.twimg.com/amplify_video/123/vid/avc1/3840x2160/y.mp4?tag=29",
-      "width": 2048,
-      "height": 1152,
-      "durationMs": 18349
-    }
-  ]
-}`
+// Response parsing and Tweet/Media semantics live in internal/xapi and are
+// tested there. These tests cover this package's own concerns: reference
+// parsing, client construction, account selection, and thread ancestry.
 
-func TestDecodeTweet(t *testing.T) {
-	tw, err := decodeTweet(realReadStdout)
-	if err != nil {
-		t.Fatalf("decodeTweet returned error: %v", err)
+func TestExtractTweetID(t *testing.T) {
+	const wantID = "1349129669258448897"
+
+	valid := []struct {
+		name string
+		in   string
+	}{
+		{"x.com", "https://x.com/elonmusk/status/1349129669258448897"},
+		{"twitter.com", "https://twitter.com/elonmusk/status/1349129669258448897"},
+		{"www prefix", "https://www.x.com/elonmusk/status/1349129669258448897"},
+		{"mobile prefix", "https://mobile.twitter.com/elonmusk/status/1349129669258448897"},
+		{"http scheme", "http://x.com/elonmusk/status/1349129669258448897"},
+		{"no scheme", "x.com/elonmusk/status/1349129669258448897"},
+		{"tracking query", "https://x.com/elonmusk/status/1349129669258448897?s=20&t=abc"},
+		{"trailing photo path", "https://x.com/elonmusk/status/1349129669258448897/photo/1"},
+		{"statuses form", "https://twitter.com/elonmusk/statuses/1349129669258448897"},
+		{"i/web/status form", "https://twitter.com/i/web/status/1349129669258448897"},
+		{"i/status form", "https://x.com/i/status/1349129669258448897"},
+		{"uppercase host", "https://X.com/elonmusk/status/1349129669258448897"},
+		{"surrounding space", "  https://x.com/elonmusk/status/1349129669258448897  "},
+		{"bare id", "1349129669258448897"},
 	}
 
-	if tw.ID != "2084912076502282341" {
-		t.Errorf("ID = %q, want the tweet id", tw.ID)
-	}
-	if tw.Author.Username != "SpaceX" {
-		t.Errorf("Author.Username = %q, want SpaceX", tw.Author.Username)
-	}
-	if tw.LikeCount != 8658 {
-		t.Errorf("LikeCount = %d, want 8658", tw.LikeCount)
-	}
-	if len(tw.Media) != 1 {
-		t.Fatalf("len(Media) = %d, want 1", len(tw.Media))
-	}
-	if !tw.Media[0].IsVideo() {
-		t.Error("Media[0].IsVideo() = false, want true")
-	}
-	if got := tw.Media[0].DownloadURL(); !strings.HasPrefix(got, "https://video.twimg.com/") {
-		t.Errorf("DownloadURL() = %q, want the mp4 rather than the thumbnail", got)
-	}
-}
-
-// bird prefixes JSON with progress lines; they must not break decoding.
-func TestDecodeTweetIgnoresProgressPreamble(t *testing.T) {
-	stdout := "ℹ️ Looking up @SpaceX...\nℹ️ Fetching tweet...\n" + realReadStdout + "\n"
-	tw, err := decodeTweet(stdout)
-	if err != nil {
-		t.Fatalf("decodeTweet returned error: %v", err)
-	}
-	if tw.ID != "2084912076502282341" {
-		t.Errorf("ID = %q, want the tweet id", tw.ID)
-	}
-}
-
-func TestDecodeTweetRejectsGarbage(t *testing.T) {
-	for _, stdout := range []string{"", "no json here", "ℹ️ Looking up @nobody..."} {
-		if _, err := decodeTweet(stdout); err == nil {
-			t.Errorf("decodeTweet(%q) = nil error, want error", stdout)
-		}
-	}
-	if _, err := decodeTweet(`{"error": "not found"}`); err == nil {
-		t.Error("decodeTweet(non-tweet json) = nil error, want error")
-	}
-}
-
-func TestDecodeTweets(t *testing.T) {
-	stdout := `ℹ️ Fetching thread...
-[
-  {"id": "100", "text": "root", "conversationId": "100", "author": {"username": "a"}},
-  {"id": "101", "text": "reply", "conversationId": "100", "inReplyToStatusId": "100", "author": {"username": "b"}}
-]`
-	tweets, err := decodeTweets(stdout)
-	if err != nil {
-		t.Fatalf("decodeTweets returned error: %v", err)
-	}
-	if len(tweets) != 2 {
-		t.Fatalf("len(tweets) = %d, want 2", len(tweets))
-	}
-	if tweets[1].InReplyToStatusID != "100" {
-		t.Errorf("InReplyToStatusID = %q, want 100", tweets[1].InReplyToStatusID)
-	}
-}
-
-func TestTweetIsReply(t *testing.T) {
-	root := Tweet{ID: "100", ConversationID: "100"}
-	if root.IsReply() {
-		t.Error("IsReply() = true for a conversation root")
+	for _, tc := range valid {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ExtractTweetID(tc.in)
+			if err != nil {
+				t.Fatalf("ExtractTweetID(%q) returned error: %v", tc.in, err)
+			}
+			if got != wantID {
+				t.Errorf("ExtractTweetID(%q) = %q, want %q", tc.in, got, wantID)
+			}
+		})
 	}
 
-	reply := Tweet{ID: "101", ConversationID: "100", InReplyToStatusID: "100"}
-	if !reply.IsReply() {
-		t.Error("IsReply() = false for a reply")
+	invalid := []struct {
+		name string
+		in   string
+	}{
+		{"empty", ""},
+		{"whitespace only", "   "},
+		{"profile url", "https://x.com/elonmusk"},
+		{"non-twitter host", "https://example.com/user/status/123"},
+		{"missing id", "https://x.com/elonmusk/status/"},
+		{"non-numeric id", "https://x.com/elonmusk/status/abc"},
+		{"plain text", "just some words"},
 	}
 
-	// bird omits inReplyToStatusId on some payloads; conversationId still tells us.
-	inferred := Tweet{ID: "102", ConversationID: "100"}
-	if !inferred.IsReply() {
-		t.Error("IsReply() = false when only conversationId marks it as a reply")
-	}
-}
-
-func TestTweetURL(t *testing.T) {
-	withAuthor := Tweet{ID: "123", Author: Author{Username: "SpaceX"}}
-	if got, want := withAuthor.URL(), "https://x.com/SpaceX/status/123"; got != want {
-		t.Errorf("URL() = %q, want %q", got, want)
-	}
-
-	// A missing handle must still yield a working permalink.
-	withoutAuthor := Tweet{ID: "123"}
-	if got, want := withoutAuthor.URL(), "https://x.com/i/status/123"; got != want {
-		t.Errorf("URL() = %q, want %q", got, want)
+	for _, tc := range invalid {
+		t.Run(tc.name, func(t *testing.T) {
+			if got, err := ExtractTweetID(tc.in); err == nil {
+				t.Errorf("ExtractTweetID(%q) = %q, want error", tc.in, got)
+			}
+		})
 	}
 }
 
@@ -183,8 +122,7 @@ func TestNewClientFromAccountsJSON(t *testing.T) {
 		t.Fatalf("NewClient returned error: %v", err)
 	}
 
-	got := c.Accounts()
-	if len(got) != 2 {
+	if got := c.Accounts(); len(got) != 2 {
 		t.Fatalf("Accounts() = %v, want 2 accounts", got)
 	}
 	// Default strategy must be quota-aware: a server should route around 429s.
@@ -234,18 +172,18 @@ func TestNewClientValidation(t *testing.T) {
 	})
 }
 
-func TestClientRejectsEmptyReference(t *testing.T) {
+func TestClientRejectsBadReference(t *testing.T) {
 	c, err := NewClient(Options{AccountsJSON: testAccounts})
 	if err != nil {
 		t.Fatalf("NewClient returned error: %v", err)
 	}
 
-	// Must fail before spawning bird, so these are safe without the CLI present.
+	// Must fail before any network call, so these are safe offline.
 	if _, err := c.Read(t.Context(), "  "); err == nil {
 		t.Error("Read(empty) = nil error, want error")
 	}
-	if _, err := c.Thread(t.Context(), ""); err == nil {
-		t.Error("Thread(empty) = nil error, want error")
+	if _, err := c.Thread(t.Context(), "https://x.com/elonmusk"); err == nil {
+		t.Error("Thread(profile url) = nil error, want error")
 	}
 }
 
@@ -282,5 +220,43 @@ func TestRotationAdvancesAcrossCalls(t *testing.T) {
 	}
 	if second.Name == first.Name {
 		t.Errorf("round-robin picked %q twice; want it to advance", first.Name)
+	}
+}
+
+// Each account gets its own X client, reused across calls so it keeps a stable
+// client identity.
+func TestAPIClientPerAccountIsCached(t *testing.T) {
+	c, err := NewClient(Options{AccountsJSON: testAccounts})
+	if err != nil {
+		t.Fatalf("NewClient returned error: %v", err)
+	}
+
+	main, err := c.store.Get("main")
+	if err != nil {
+		t.Fatalf("store.Get returned error: %v", err)
+	}
+	alt, err := c.store.Get("alt")
+	if err != nil {
+		t.Fatalf("store.Get returned error: %v", err)
+	}
+
+	first, err := c.apiClientFor(main)
+	if err != nil {
+		t.Fatalf("apiClientFor returned error: %v", err)
+	}
+	again, err := c.apiClientFor(main)
+	if err != nil {
+		t.Fatalf("apiClientFor returned error: %v", err)
+	}
+	if first != again {
+		t.Error("apiClientFor returned a new client for the same account; want it cached")
+	}
+
+	other, err := c.apiClientFor(alt)
+	if err != nil {
+		t.Fatalf("apiClientFor returned error: %v", err)
+	}
+	if other == first {
+		t.Error("apiClientFor returned the same client for different accounts")
 	}
 }

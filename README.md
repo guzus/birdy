@@ -443,8 +443,8 @@ birdy -s random home
 ## Go library (`pkg/tweet`)
 
 Embed birdy in a Go service to read tweets without shelling out to the CLI or
-running `birdy host`. `pkg/tweet` exposes the same flow the CLI performs — pick
-an account, run bird with its credentials, record usage and rate limits.
+running `birdy host`. Reads are implemented **natively in Go** against X's
+GraphQL API, so this path needs no Node.js and no bird CLI.
 
 ```go
 import "github.com/guzus/birdy/pkg/tweet"
@@ -460,29 +460,42 @@ for _, m := range t.Media {
     fmt.Println(m.Type, m.DownloadURL()) // videos resolve to the mp4, not the thumbnail
 }
 
-// Threads come back flat; ancestry lives in InReplyToStatusID.
+// Conversations come back flat; ancestry lives in InReplyToStatusID.
 thread, err := client.Thread(ctx, t.ConversationID)
 parents := tweet.AncestorChain(thread, t.ID) // root-first, target excluded
 ```
 
 Notes:
 
+- **No Node required.** `internal/xapi` speaks X's GraphQL API directly, using
+  the same auth a browser session does: X's public web bearer token plus your
+  `auth_token` cookie and `ct0` CSRF token.
 - A `Client` is safe for concurrent use and holds rotation state in memory, so
   it works on a read-only filesystem (Cloud Run, scratch containers).
 - Passing `Options.AccountsJSON` builds an ephemeral store that never writes to
   disk. Useful when credentials come from your own secret manager.
 - The default strategy is `quota-aware`, which avoids accounts that recently
   returned a 429 — a better fit for a server than the CLI's `round-robin`.
-- Cancelling the context kills the bird subprocess, so a request cannot outlive
-  its caller.
-- The **bird CLI is still required at runtime** — it is a Node program, so the
-  host or image needs Node.js. Set `BIRDY_BIRD_PATH` when bird is not on `PATH`
-  (embedding birdy in another binary defeats its executable-relative lookup):
+- Cancelling the context aborts the in-flight request.
+- `tweet.ExtractTweetID` parses status URLs and bare IDs, rejecting anything
+  that is not a tweet reference.
 
-  ```bash
-  npm install -g @steipete/bird
-  export BIRDY_BIRD_PATH=$(npm root -g)/@steipete/bird/dist/cli.js
-  ```
+### Scope
+
+`pkg/tweet` covers reading: single tweets and conversations. birdy's other CLI
+commands (posting, search, timelines, follow, lists, bookmarks, media upload)
+still forward to the [bird](https://github.com/steipete/bird) CLI and continue
+to require Node. Porting more of them to `internal/xapi` is incremental work.
+
+### Query IDs
+
+X's GraphQL persisted-query hashes rotate. `internal/xapi` tries each known
+`TweetDetail` id in turn and reports a clear error when all are rejected. If X
+rotates faster than this repo updates, override without a release:
+
+```bash
+export BIRDY_TWEET_DETAIL_QUERY_ID=<current-hash>
+```
 
 ## Getting auth tokens
 

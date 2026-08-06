@@ -8,13 +8,13 @@ import (
 	"time"
 )
 
-// Integration tests drive the real bird CLI against the live X API using the
-// accounts this machine has configured. They are skipped unless
-// BIRDY_TWEET_INTEGRATION=1, since they consume real rate-limit budget:
+// Integration tests hit the live X API using the accounts this machine has
+// configured. They are skipped unless BIRDY_TWEET_INTEGRATION=1, since they
+// consume real rate-limit budget:
 //
-//	BIRDY_TWEET_INTEGRATION=1 \
-//	  BIRDY_BIRD_PATH=$PWD/third_party/@steipete/bird/dist/cli.js \
-//	  go test ./pkg/tweet/ -run Integration -v
+//	BIRDY_TWEET_INTEGRATION=1 go test ./pkg/tweet/ -run Integration -v
+//
+// No Node.js or bird CLI is required — reads go straight to X over HTTP.
 func requireIntegration(t *testing.T) {
 	t.Helper()
 	if os.Getenv("BIRDY_TWEET_INTEGRATION") != "1" {
@@ -108,7 +108,7 @@ func TestIntegrationThreadAncestors(t *testing.T) {
 	}
 }
 
-// A cancelled context must kill the bird subprocess rather than run to completion.
+// A cancelled context must abort the in-flight request promptly.
 func TestIntegrationContextCancellation(t *testing.T) {
 	requireIntegration(t)
 
@@ -124,7 +124,7 @@ func TestIntegrationContextCancellation(t *testing.T) {
 	if _, err := c.Read(ctx, liveVideoTweetID); err == nil {
 		t.Error("Read with an expired context returned nil error, want cancellation error")
 	}
-	if elapsed := time.Since(start); elapsed > 20*time.Second {
-		t.Errorf("Read took %s after cancellation; the subprocess was not killed", elapsed)
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Errorf("Read took %s after cancellation; the request was not aborted", elapsed)
 	}
 }

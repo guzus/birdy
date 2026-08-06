@@ -1,19 +1,19 @@
 // Package tweet is birdy's public Go API for reading tweets.
 //
-// It exposes the account rotation that birdy's CLI already performs — pick an
-// account, run the bird CLI with its credentials, record usage and rate limits —
-// as an embeddable library, so a Go service can read X without shelling out to
-// the birdy binary or standing up a hosted birdy instance.
+// It exposes the account rotation that birdy's CLI performs — pick an account,
+// call X with its credentials, record usage and rate limits — as an embeddable
+// library, so a Go service can read X without shelling out to the birdy binary
+// or standing up a hosted birdy instance.
+//
+// Reading is implemented natively in Go against X's GraphQL API, so this
+// package needs no Node.js runtime and no bird CLI. (birdy's other CLI commands
+// still forward to bird.)
 //
 // A Client is safe for concurrent use and keeps rotation state in memory, so it
 // works on a read-only filesystem (Cloud Run, scratch containers). Accounts are
 // normally supplied through the BIRDY_ACCOUNTS environment variable:
 //
 //	BIRDY_ACCOUNTS=[{"name":"main","auth_token":"...","ct0":"..."}]
-//
-// Reading still requires the bird CLI (https://github.com/steipete/bird) to be
-// installed, since birdy drives it as a subprocess. Point BIRDY_BIRD_PATH at
-// bird's cli.js when it is not on PATH.
 package tweet
 
 import (
@@ -24,74 +24,16 @@ import (
 	"sync"
 
 	"github.com/guzus/birdy/internal/rotation"
-	"github.com/guzus/birdy/internal/runner"
 	"github.com/guzus/birdy/internal/store"
+	"github.com/guzus/birdy/internal/xapi"
 )
 
-// Author identifies who posted a tweet.
-type Author struct {
-	Username string `json:"username"`
-	Name     string `json:"name"`
-}
-
-// Media is a single attachment on a tweet.
-//
-// For photos, URL is the image. For videos and animated GIFs, URL is the still
-// thumbnail and VideoURL is the playable mp4 — use DownloadURL to get whichever
-// one actually holds the asset.
-type Media struct {
-	Type       string `json:"type"`
-	URL        string `json:"url"`
-	PreviewURL string `json:"previewUrl,omitempty"`
-	VideoURL   string `json:"videoUrl,omitempty"`
-	Width      int    `json:"width,omitempty"`
-	Height     int    `json:"height,omitempty"`
-	DurationMs int64  `json:"durationMs,omitempty"`
-}
-
-// IsVideo reports whether this attachment has playable video.
-func (m Media) IsVideo() bool {
-	return m.VideoURL != ""
-}
-
-// DownloadURL returns the URL holding the actual asset bytes.
-func (m Media) DownloadURL() string {
-	if m.VideoURL != "" {
-		return m.VideoURL
-	}
-	return m.URL
-}
-
-// Tweet is a single post as returned by the bird CLI.
-type Tweet struct {
-	ID                string  `json:"id"`
-	Text              string  `json:"text"`
-	CreatedAt         string  `json:"createdAt,omitempty"`
-	ConversationID    string  `json:"conversationId,omitempty"`
-	InReplyToStatusID string  `json:"inReplyToStatusId,omitempty"`
-	Author            Author  `json:"author"`
-	AuthorID          string  `json:"authorId,omitempty"`
-	Media             []Media `json:"media,omitempty"`
-	ReplyCount        int     `json:"replyCount,omitempty"`
-	RetweetCount      int     `json:"retweetCount,omitempty"`
-	LikeCount         int     `json:"likeCount,omitempty"`
-}
-
-// IsReply reports whether this tweet sits below the root of a conversation.
-func (t Tweet) IsReply() bool {
-	if t.InReplyToStatusID != "" {
-		return true
-	}
-	return t.ConversationID != "" && t.ConversationID != t.ID
-}
-
-// URL returns a canonical permalink for the tweet.
-func (t Tweet) URL() string {
-	if t.Author.Username != "" {
-		return "https://x.com/" + t.Author.Username + "/status/" + t.ID
-	}
-	return "https://x.com/i/status/" + t.ID
-}
+// Tweet, Media, and Author describe a post and its attachments.
+type (
+	Tweet  = xapi.Tweet
+	Media  = xapi.Media
+	Author = xapi.Author
+)
 
 // Options configures a Client.
 type Options struct {
@@ -117,6 +59,9 @@ type Client struct {
 
 	mu           sync.Mutex
 	lastUsedName string
+	// apiClients is one X client per account, built lazily and reused so each
+	// keeps a stable client identity across requests.
+	apiClients map[string]*xapi.Client
 }
 
 // NewClient builds a Client from the given options.
@@ -147,7 +92,12 @@ func NewClient(opts Options) (*Client, error) {
 		}
 	}
 
-	return &Client{store: st, strategy: strategy, pinned: pinned}, nil
+	return &Client{
+		store:      st,
+		strategy:   strategy,
+		pinned:     pinned,
+		apiClients: make(map[string]*xapi.Client),
+	}, nil
 }
 
 // openStore loads accounts, preferring an explicit JSON blob when supplied.
@@ -186,68 +136,94 @@ func (c *Client) Accounts() []string {
 
 // Read fetches a single tweet. ref may be a status URL or a bare tweet ID.
 func (c *Client) Read(ctx context.Context, ref string) (*Tweet, error) {
-	ref = strings.TrimSpace(ref)
-	if ref == "" {
-		return nil, fmt.Errorf("read: empty tweet reference")
-	}
-
-	stdout, err := c.run(ctx, "read", ref, "--json")
+	tweetID, err := ExtractTweetID(ref)
 	if err != nil {
 		return nil, err
 	}
-	return decodeTweet(stdout)
+
+	var result *Tweet
+	err = c.withAccount(ctx, func(ctx context.Context, api *xapi.Client) error {
+		t, err := api.Tweet(ctx, tweetID)
+		if err != nil {
+			return err
+		}
+		result = t
+		return nil
+	})
+	return result, err
 }
 
-// Thread fetches every tweet in a conversation, root first. ref may be a status
-// URL or a bare tweet ID for any tweet in the conversation.
+// Thread fetches the conversation around a tweet. ref may be a status URL or a
+// bare tweet ID.
 //
-// bird returns the conversation flat; ancestry is expressed through each
-// tweet's InReplyToStatusID. Use AncestorChain to walk it.
+// X returns the conversation flat: the focal tweet's ancestors, the focal tweet
+// itself, and its replies. Ancestry is expressed through each tweet's
+// InReplyToStatusID — use AncestorChain to walk it.
 func (c *Client) Thread(ctx context.Context, ref string) ([]Tweet, error) {
-	ref = strings.TrimSpace(ref)
-	if ref == "" {
-		return nil, fmt.Errorf("thread: empty tweet reference")
-	}
-
-	stdout, err := c.run(ctx, "thread", ref, "--json")
+	tweetID, err := ExtractTweetID(ref)
 	if err != nil {
 		return nil, err
 	}
-	return decodeTweets(stdout)
+
+	var result []Tweet
+	err = c.withAccount(ctx, func(ctx context.Context, api *xapi.Client) error {
+		tweets, err := api.Conversation(ctx, tweetID)
+		if err != nil {
+			return err
+		}
+		result = tweets
+		return nil
+	})
+	return result, err
 }
 
-// run picks an account, invokes bird, and records the outcome.
-func (c *Client) run(ctx context.Context, args ...string) (string, error) {
+// withAccount picks an account, runs fn against it, and records the outcome.
+func (c *Client) withAccount(ctx context.Context, fn func(context.Context, *xapi.Client) error) error {
 	account, err := c.pick()
 	if err != nil {
-		return "", err
+		return err
 	}
 
-	res, stdout, stderr, err := runner.RunCaptureContext(ctx, account, args, runner.Options{})
+	api, err := c.apiClientFor(account)
+	if err != nil {
+		return err
+	}
+
+	runErr := fn(ctx, api)
 
 	// Record the outcome even on failure: a 429 is exactly the signal the
 	// quota-aware strategy needs to route around this account next time.
-	if res.RateLimited {
+	if runErr != nil && xapi.IsRateLimited(runErr) {
 		_ = c.store.RecordRateLimit(account.Name)
 	}
 	_ = c.store.RecordUsage(account.Name)
 	_ = c.store.Save() // no-op for env-backed stores
 	c.setLastUsed(account.Name)
 
+	if runErr != nil {
+		return fmt.Errorf("account %q: %w", account.Name, runErr)
+	}
+	return nil
+}
+
+// apiClientFor returns the cached X client for an account, building it on first use.
+func (c *Client) apiClientFor(account *store.Account) (*xapi.Client, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if api, ok := c.apiClients[account.Name]; ok {
+		return api, nil
+	}
+
+	api, err := xapi.NewClient(xapi.Credentials{
+		AuthToken: account.AuthToken,
+		CT0:       account.CT0,
+	})
 	if err != nil {
-		return "", fmt.Errorf("bird %s (account %q): %w", args[0], account.Name, err)
+		return nil, fmt.Errorf("account %q: %w", account.Name, err)
 	}
-	if res.ExitCode != 0 {
-		detail := strings.TrimSpace(stderr)
-		if detail == "" {
-			detail = fmt.Sprintf("exit code %d", res.ExitCode)
-		}
-		if res.RateLimited {
-			return "", fmt.Errorf("bird %s: rate limited on account %q: %s", args[0], account.Name, detail)
-		}
-		return "", fmt.Errorf("bird %s failed on account %q: %s", args[0], account.Name, detail)
-	}
-	return stdout, nil
+	c.apiClients[account.Name] = api
+	return api, nil
 }
 
 // pick selects the account for the next call.
@@ -310,47 +286,4 @@ func AncestorChain(thread []Tweet, targetID string) []Tweet {
 		chain[i], chain[j] = chain[j], chain[i]
 	}
 	return chain
-}
-
-// decodeTweet extracts a single tweet from bird's stdout.
-func decodeTweet(stdout string) (*Tweet, error) {
-	payload, err := sliceJSON(stdout, '{', '}')
-	if err != nil {
-		return nil, err
-	}
-
-	var t Tweet
-	if err := json.Unmarshal([]byte(payload), &t); err != nil {
-		return nil, fmt.Errorf("decoding tweet json: %w", err)
-	}
-	if t.ID == "" {
-		return nil, fmt.Errorf("bird returned an unrecognized tweet payload")
-	}
-	return &t, nil
-}
-
-// decodeTweets extracts an array of tweets from bird's stdout.
-func decodeTweets(stdout string) ([]Tweet, error) {
-	payload, err := sliceJSON(stdout, '[', ']')
-	if err != nil {
-		return nil, err
-	}
-
-	var tweets []Tweet
-	if err := json.Unmarshal([]byte(payload), &tweets); err != nil {
-		return nil, fmt.Errorf("decoding thread json: %w", err)
-	}
-	return tweets, nil
-}
-
-// sliceJSON narrows stdout to its outermost JSON value. bird prefixes output
-// with human-readable progress lines ("ℹ️ Looking up ..."), so decoding the raw
-// stream would fail.
-func sliceJSON(stdout string, open, close byte) (string, error) {
-	start := strings.IndexByte(stdout, open)
-	end := strings.LastIndexByte(stdout, close)
-	if start < 0 || end <= start {
-		return "", fmt.Errorf("bird returned no tweet data")
-	}
-	return stdout[start : end+1], nil
 }
