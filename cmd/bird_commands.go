@@ -85,6 +85,14 @@ func applyBirdyGlobalFlags(args []string) ([]string, error) {
 				verboseFlag = accepted
 				i++
 				continue
+			case "--bird":
+				accepted, ok := parseBoolFlag(value)
+				if !ok {
+					return nil, fmt.Errorf("invalid value for %s: %q", name, value)
+				}
+				birdFlag = accepted
+				i++
+				continue
 			case "--vpn":
 				accepted, ok := parseBoolFlag(value)
 				if !ok {
@@ -129,6 +137,10 @@ func applyBirdyGlobalFlags(args []string) ([]string, error) {
 			continue
 		case "--verbose", "-v":
 			verboseFlag = true
+			i++
+			continue
+		case "--bird":
+			birdFlag = true
 			i++
 			continue
 		case "--vpn":

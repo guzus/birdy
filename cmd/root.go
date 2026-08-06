@@ -9,6 +9,7 @@ import (
 
 var (
 	strategyFlag  string
+	birdFlag      bool
 	accountFlag   string
 	verboseFlag   bool
 	vpnFlag       bool
@@ -43,6 +44,8 @@ Examples:
 func init() {
 	rootCmd.PersistentFlags().StringVarP(&strategyFlag, "strategy", "s", "round-robin",
 		"rotation strategy: round-robin, least-recently-used, least-used, random")
+	rootCmd.PersistentFlags().BoolVar(&birdFlag, "bird", false,
+		"force the bird CLI (Node) instead of birdy's native Go implementation")
 	rootCmd.PersistentFlags().StringVarP(&accountFlag, "account", "a", "",
 		"use a specific account by name (skip rotation)")
 	rootCmd.PersistentFlags().BoolVarP(&verboseFlag, "verbose", "v", false,

@@ -440,6 +440,142 @@ birdy -s least-used search "rust"
 birdy -s random home
 ```
 
+## Native Go engine
+
+birdy serves these commands itself, in Go, with no Node.js and no `bird` binary:
+
+`read` `thread` `replies` `search` `home` `user-tweets` `bookmarks` `list-timeline`
+
+Everything else still forwards to [bird](https://github.com/steipete/bird) and
+still needs Node — including `likes`, which bird exposes with no argument (the
+authenticated account's likes) and which birdy cannot serve until it can resolve
+the current user. That fallback is transitional and shrinks as commands are
+ported.
+
+Output is byte-identical to bird's, including `--json`, `--plain` and
+`--no-emoji`, because the birdy skill and TUI read the human-readable form.
+Verified by diffing both engines against live X.
+
+Force the bird path when you need it:
+
+```bash
+birdy --bird read <id>       # this invocation
+BIRDY_USE_BIRD=1 birdy home  # everything in this shell
+```
+
+A command carrying a flag the native path does not implement yet (`--all`,
+`--max-pages`, `--cursor`, `--json-full`, …) automatically falls back to bird
+rather than silently ignoring the flag.
+
+```bash
+birdy -v search golang   # prints which engine served the command
+```
+
+## Go library (`pkg/tweet`)
+
+Embed birdy in a Go service to read tweets without shelling out to the CLI or
+running `birdy host`. Reads are implemented **natively in Go** against X's
+GraphQL API, so this path needs no Node.js and no bird CLI.
+
+```go
+import "github.com/guzus/birdy/pkg/tweet"
+
+client, err := tweet.NewClient(tweet.Options{
+    // Accounts come from BIRDY_ACCOUNTS + ~/.config/birdy/accounts.json by
+    // default, or pass AccountsJSON to supply them from your own config.
+    Strategy: "quota-aware", // the default
+})
+
+t, err := client.Read(ctx, "https://x.com/SpaceX/status/2084912076502282341")
+for _, m := range t.Media {
+    fmt.Println(m.Type, m.DownloadURL()) // videos resolve to the mp4, not the thumbnail
+}
+
+// Conversations come back flat; ancestry lives in InReplyToStatusID.
+thread, err := client.Thread(ctx, t.ConversationID)
+parents := tweet.AncestorChain(thread, t.ID) // root-first, target excluded
+```
+
+Notes:
+
+- **No Node required.** `internal/xapi` speaks X's GraphQL API directly, using
+  the same auth a browser session does: X's public web bearer token plus your
+  `auth_token` cookie and `ct0` CSRF token.
+- A `Client` is safe for concurrent use and holds rotation state in memory, so
+  it works on a read-only filesystem (Cloud Run, scratch containers).
+- Passing `Options.AccountsJSON` builds an ephemeral store that never writes to
+  disk. Useful when credentials come from your own secret manager.
+- The default strategy is `quota-aware`, which avoids accounts that recently
+  returned a 429 — a better fit for a server than the CLI's `round-robin`.
+- Cancelling the context aborts the in-flight request.
+- `tweet.ExtractTweetID` parses status URLs and bare IDs, rejecting anything
+  that is not a tweet reference.
+
+### Scope
+
+`pkg/tweet` covers reading: single tweets and conversations. birdy's other CLI
+commands (posting, search, timelines, follow, lists, bookmarks, media upload)
+still forward to the [bird](https://github.com/steipete/bird) CLI and continue
+to require Node. Porting more of them to `internal/xapi` is incremental work.
+
+### Benchmarks
+
+Reads used to run through the bird CLI, a Node program spawned per call. They now
+run in-process in Go. Here is what that actually changed.
+
+Both paths wait on X's API, which takes **~1.5s and varies between calls by more
+than the two implementations differ from each other**. Benchmarking against the
+live API measures network weather, not code. So the numbers below isolate the
+work each client does that is *not* waiting on X: for Go, the full client path
+(build query → HTTP → decode) against a local server; for bird, process spawn
+plus module load, measured by running it with a missing argument so it exits
+before opening a socket.
+
+| | bird (Node subprocess) | `pkg/tweet` (Go, in-process) | |
+| --- | --- | --- | --- |
+| Per-call overhead, excluding network | 80.6 ms | **0.43 ms** | ~190× |
+| Memory per in-flight read | 60 MB resident | **0.29 MB** allocated | ~200× |
+| 32 concurrent reads | 374 ms, ~1.9 GB resident | one process, pooled connections | |
+| Decode a 50-tweet conversation | — | 0.27 ms (180 MB/s) | |
+| Runtime dependency | Node + `@steipete/bird` | **none** | |
+| **End-to-end vs live X** | **~1.5 s** | **~1.5 s** | **parity** |
+
+**Read the last row before quoting the first.** Per-request latency is
+unchanged, because X dominates it. If you make one read and wait, this work
+bought you nothing measurable.
+
+What it does buy: no Node in the image, and headroom under concurrency. Node's
+spawn cost amortizes across cores (129 ms/op at N=1 falls to 11.7 ms/op at
+N=32), so throughput alone is survivable — the binding constraint is memory. At
+32 in-flight reads the subprocess model wants ~1.9 GB resident, which exceeds a
+default Cloud Run instance; the Go path serves the same load from one process
+with a pooled connection.
+
+The honest framing is that this is not *Go vs Node*. It is *in-process call vs
+subprocess per request*. An in-process Node library would land in much the same
+place. The language is incidental; the process boundary was the cost.
+
+Reproduce, including hardware and versions:
+
+```bash
+./scripts/bench-go-vs-bird.sh          # hermetic; no rate-limit budget spent
+./scripts/bench-go-vs-bird.sh --live   # adds the end-to-end row against real X
+```
+
+Measured on an Apple M5 Pro, go1.26.5, node v26.5.0. Go figures come from
+`go test -bench` over `internal/xapi`, so `go test ./internal/xapi/ -bench=.`
+reproduces them directly.
+
+### Query IDs
+
+X's GraphQL persisted-query hashes rotate. `internal/xapi` tries each known
+`TweetDetail` id in turn and reports a clear error when all are rejected. If X
+rotates faster than this repo updates, override without a release:
+
+```bash
+export BIRDY_TWEET_DETAIL_QUERY_ID=<current-hash>
+```
+
 ## Getting auth tokens
 
 You need two cookies from an active X/Twitter web session:
