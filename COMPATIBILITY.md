@@ -15,7 +15,7 @@ A breaking change to any of these requires a major version bump.
 | CLI commands | Names of commands birdy serves, and their positional arguments |
 | CLI flags | Global flags (`--account`, `--strategy`, `--bird`, `--verbose`, `--vpn`, `--vpn-server`) and per-command flags birdy implements |
 | Output formats | The shape of `--json` output, and the presence of `--plain` / `--no-emoji` |
-| Struct layout | `pkg/tweet` field **order** is not covered. It tracks bird's JSON key order, which can change; use keyed struct literals |
+| Struct layout | `pkg/tweet` field **order**, frozen at 1.0.0. Reordering breaks unkeyed composite literals, so it is a major bump |
 | Account store | The `~/.config/birdy/accounts.json` schema and the `BIRDY_ACCOUNTS` JSON shape |
 | Exit codes | `0` success, non-zero failure |
 
@@ -24,8 +24,18 @@ changing a JSON tag, is a major bump.
 
 `pkg/tweet`'s structs are declared in `pkg/tweet/types.go` as their own types
 rather than aliases into `internal/xapi`, precisely so that a parser change
-cannot alter this contract without someone deciding to. `TestPublicTypesCoverParserFields`
-fails on drift in either direction.
+cannot alter this contract without someone deciding to. Two tests guard it:
+`TestPublicTypesCoverParserFields` fails when a field is added, renamed or
+re-tagged upstream without being mirrored, and `TestPublicFieldOrderIsFrozen`
+fails when the declaration order changes.
+
+Field order is covered because Go ties it to more than aesthetics: reordering
+exported fields silently changes what an unkeyed composite literal means in a
+caller's code. It is deliberately **not** tied to `internal/xapi`'s order. The
+CLI's `--json` is produced by marshalling the parser's types, not these, so
+nothing about birdy's output depends on the order here — and tying them
+together would have meant re-breaking this package every time bird's payload
+shape shifted.
 
 ## Not covered by semver
 

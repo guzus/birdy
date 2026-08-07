@@ -82,44 +82,66 @@ func TestPublicTypesCoverParserFields(t *testing.T) {
 	}
 }
 
-// TestPublicTypesKeepParserFieldOrder pins declaration order across the
-// boundary.
+// TestPublicFieldOrderIsFrozen pins this package's declaration order as a
+// constant, deliberately NOT to internal/xapi's.
 //
-// Go's encoding/json emits struct fields in declaration order, and birdy's
-// --json is a byte-for-byte contract with bird — so the ORDER is part of the
-// public API, not just the set of tags. TestPublicTypesCoverParserFields
-// compares maps and is order-blind; this is the half it cannot see.
-func TestPublicTypesKeepParserFieldOrder(t *testing.T) {
-	cases := []struct {
-		name     string
-		public   reflect.Type
-		internal reflect.Type
-	}{
-		{"Tweet", reflect.TypeOf(Tweet{}), reflect.TypeOf(xapi.Tweet{})},
-		{"Media", reflect.TypeOf(Media{}), reflect.TypeOf(xapi.Media{})},
-		{"Author", reflect.TypeOf(Author{}), reflect.TypeOf(xapi.Author{})},
-		{"Article", reflect.TypeOf(Article{}), reflect.TypeOf(xapi.Article{})},
+// The previous version of this test tied the two together, reasoning that
+// encoding/json emits keys in declaration order and birdy's --json is a
+// byte-for-byte contract with bird, so the order was part of the public API.
+// The premise was wrong: the CLI marshals xapi.Tweet, not this package's Tweet.
+// cmd imports pkg/tweet for ExtractTweetID and nothing else, so nothing about
+// birdy's output depends on the order here.
+//
+// Tying them together did real harm. Every time bird's payload shape shifted,
+// internal/xapi would reorder to keep --json byte-identical, this test would
+// fail, and the obvious fix was to reorder the PUBLIC struct too — silently
+// breaking any caller using an unkeyed composite literal, for no benefit.
+//
+// So the order is frozen here instead. Reordering these fields is a breaking
+// change, and this test is what makes it impossible to do by accident.
+// TestPublicTypesCoverParserFields still catches a field added, renamed or
+// re-tagged upstream, which is the drift that actually matters.
+func TestPublicFieldOrderIsFrozen(t *testing.T) {
+	frozen := map[string][]string{
+		// This is the order v1.0.0 shipped. It happens to match bird's JSON key
+		// order, because that is where it came from — but it is frozen on its
+		// own terms now, and will not follow bird if bird's changes.
+		"Tweet": {
+			"ID", "Text", "CreatedAt", "ReplyCount", "RetweetCount", "LikeCount",
+			"ConversationID", "InReplyToStatusID", "Author", "AuthorID",
+			"QuotedTweet", "Media", "Article",
+		},
+		"Author":  {"Username", "Name"},
+		"Media":   {"Type", "URL", "Width", "Height", "PreviewURL", "VideoURL", "DurationMs"},
+		"Article": {"Title", "PreviewText"},
+	}
+	types := map[string]reflect.Type{
+		"Tweet":   reflect.TypeOf(Tweet{}),
+		"Author":  reflect.TypeOf(Author{}),
+		"Media":   reflect.TypeOf(Media{}),
+		"Article": reflect.TypeOf(Article{}),
 	}
 
-	names := func(t reflect.Type) []string {
-		var out []string
-		for i := range t.NumField() {
-			if f := t.Field(i); f.IsExported() {
-				out = append(out, f.Name)
+	for name, want := range frozen {
+		t.Run(name, func(t *testing.T) {
+			typ := types[name]
+			var got []string
+			for i := range typ.NumField() {
+				if f := typ.Field(i); f.IsExported() {
+					got = append(got, f.Name)
+				}
 			}
-		}
-		return out
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			pub, inner := names(tc.public), names(tc.internal)
-			if len(pub) != len(inner) {
-				t.Fatalf("field counts differ: public %v, parser %v", pub, inner)
+			if len(got) != len(want) {
+				t.Fatalf("field count changed: got %v, frozen %v\n"+
+					"Adding a field is fine — append it here and to the frozen list.\n"+
+					"Removing one is a breaking change.", got, want)
 			}
-			for i := range pub {
-				if pub[i] != inner[i] {
-					t.Fatalf("field order differs at %d: public %v, parser %v", i, pub, inner)
+			for i := range want {
+				if got[i] != want[i] {
+					t.Fatalf("field order changed at %d: got %q, frozen %q\n"+
+						"Reordering exported fields breaks unkeyed composite literals in "+
+						"callers' code, silently. If this is intentional it is a major "+
+						"version bump; otherwise put the field back.", i, got[i], want[i])
 				}
 			}
 		})
