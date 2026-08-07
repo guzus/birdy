@@ -335,6 +335,16 @@ NordVPN service credentials are different from your account login — find them 
 
 ## Install
 
+### Homebrew
+
+```bash
+brew install guzus/tap/birdy
+```
+
+### Script
+
+
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/guzus/birdy/main/install.sh | bash
 ```
