@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img">
   <title>Birdy — Read X faster than light</title>
   <desc>Birdy is a lightweight multi-account X/Twitter CLI, installable with
-  brew install birdy.</desc>
+  brew install guzus/tap/birdy.</desc>
 
   <rect width="1280" height="640" fill="#F2FAFE"/>
 
@@ -12,9 +12,11 @@
         font-weight="500" fill="#0B1220">Read X faster than light</text>
 
   <!-- Terminal chip, same language as the other social assets. -->
-  <rect x="96" y="392" width="520" height="86" rx="14" fill="#252D3F"/>
+  <!-- Width tracks the command: Menlo at 30px advances 18px per character, so
+       the 28-character command needs 504px of run past the prompt at x=164. -->
+  <rect x="96" y="392" width="610" height="86" rx="14" fill="#252D3F"/>
   <text x="128" y="447" font-family="Menlo, Monaco, monospace" font-size="30" fill="#2CAADD">$</text>
-  <text x="164" y="447" font-family="Menlo, Monaco, monospace" font-size="30" fill="#E8EEF6">brew install birdy</text>
+  <text x="164" y="447" font-family="Menlo, Monaco, monospace" font-size="30" fill="#E8EEF6">brew install guzus/tap/birdy</text>
 
   <!-- The bird, from assets/birdy-logo.svg. Same paths, same #2CAADD. -->
   <g transform="translate(846 148) scale(1.14)">
