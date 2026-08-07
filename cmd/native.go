@@ -567,6 +567,8 @@ func renderTweet(out io.Writer, tweet xapi.Tweet, args nativeArgs, withStats boo
 		fmt.Fprintf(&b, "%s %s\n", mediaLabel(media, args), media.URL)
 	}
 
+	renderQuoted(&b, tweet.QuotedTweet, args)
+
 	if tweet.CreatedAt != "" {
 		fmt.Fprintf(&b, "%s %s\n", label("date", "📅", "Date:", args), tweet.CreatedAt)
 	}
@@ -627,6 +629,36 @@ func status(plainName, emoji, text string, args nativeArgs) string {
 		return emoji
 	}
 	return text
+}
+
+// renderQuoted prints the quoted tweet block.
+//
+// bird draws a box in emoji mode and a mail-style quote otherwise, truncates
+// the quoted text to 280 characters, and prints at most its first four lines.
+// Those limits are bird's, and reproducing them is the whole point.
+func renderQuoted(b *strings.Builder, quoted *xapi.Tweet, args nativeArgs) {
+	if quoted == nil {
+		return
+	}
+
+	top, mid, bot := "> ", "> ", "> "
+	if args.emoji && !args.plain {
+		top, mid, bot = "┌─", "│ ", "└─"
+	}
+
+	fmt.Fprintf(b, "%s QT @%s:\n", top, quoted.Author.Username)
+
+	text := truncateJS(quoted.Text, 280)
+	for i, line := range strings.Split(text, "\n") {
+		if i >= 4 {
+			break
+		}
+		fmt.Fprintf(b, "%s%s\n", mid, line)
+	}
+	for _, media := range quoted.Media {
+		fmt.Fprintf(b, "%s%s %s\n", mid, mediaLabel(media, args), media.URL)
+	}
+	fmt.Fprintf(b, "%s https://x.com/%s/status/%s\n", bot, quoted.Author.Username, quoted.ID)
 }
 
 // threadView matches bird's `thread`: the conversation narrowed to the root's

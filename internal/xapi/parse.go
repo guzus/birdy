@@ -2,7 +2,9 @@ package xapi
 
 import (
 	"encoding/json"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -38,6 +40,8 @@ type Tweet struct {
 	ReplyCount        int     `json:"replyCount,omitempty"`
 	RetweetCount      int     `json:"retweetCount,omitempty"`
 	LikeCount         int     `json:"likeCount,omitempty"`
+	// QuotedTweet is the tweet this one quotes, when it quotes one.
+	QuotedTweet *Tweet `json:"quotedTweet,omitempty"`
 }
 
 // --- Raw response shapes -----------------------------------------------------
@@ -90,6 +94,10 @@ type itemContent struct {
 type tweetResult struct {
 	RestID string       `json:"rest_id"`
 	Tweet  *tweetResult `json:"tweet"`
+
+	QuotedStatusResult *struct {
+		Result *tweetResult `json:"result"`
+	} `json:"quoted_status_result"`
 
 	Core *struct {
 		UserResults struct {
@@ -204,7 +212,67 @@ func mapTweet(raw *tweetResult) (Tweet, bool) {
 		t.ConversationID = raw.Legacy.ConversationIDStr
 		t.InReplyToStatusID = raw.Legacy.InReplyToStatusIDSt
 	}
+
+	// A quote carries the tweet it quotes. Roughly a third of a live timeline
+	// has one, and dropping it silently strips the context that makes the
+	// quoting tweet mean anything — a consumer scoring "is this a quote" reads
+	// constant-false. Depth is bounded because quotes nest.
+	if depth := quoteDepth(); depth > 0 {
+		t.QuotedTweet = mapQuoted(raw, depth)
+	}
 	return t, true
+}
+
+// mapQuoted resolves the quoted tweet, descending at most depth levels.
+func mapQuoted(raw *tweetResult, depth int) *Tweet {
+	if depth <= 0 || raw.QuotedStatusResult == nil || raw.QuotedStatusResult.Result == nil {
+		return nil
+	}
+	inner := raw.QuotedStatusResult.Result.unwrap()
+	if inner == nil || inner.RestID == "" {
+		return nil
+	}
+
+	username, name, authorID := mapAuthor(inner)
+	if username == "" {
+		return nil
+	}
+	text := extractText(inner)
+	if text == "" {
+		return nil
+	}
+
+	quoted := Tweet{
+		ID:       inner.RestID,
+		Text:     text,
+		AuthorID: authorID,
+		Author:   Author{Username: username, Name: name},
+		Media:    extractMedia(inner),
+	}
+	if inner.Legacy != nil {
+		quoted.CreatedAt = inner.Legacy.CreatedAt
+		quoted.ReplyCount = inner.Legacy.ReplyCount
+		quoted.RetweetCount = inner.Legacy.RetweetCount
+		quoted.LikeCount = inner.Legacy.FavoriteCount
+		quoted.ConversationID = inner.Legacy.ConversationIDStr
+		quoted.InReplyToStatusID = inner.Legacy.InReplyToStatusIDSt
+	}
+	quoted.QuotedTweet = mapQuoted(inner, depth-1)
+	return &quoted
+}
+
+// quoteDepth mirrors bird's --quote-depth global: one level by default, and 0
+// disables quote resolution entirely.
+func quoteDepth() int {
+	raw := strings.TrimSpace(os.Getenv("BIRDY_QUOTE_DEPTH"))
+	if raw == "" {
+		return 1
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return 1
+	}
+	return n
 }
 
 // mapAuthor reads the handle from whichever of the two shapes X returns.

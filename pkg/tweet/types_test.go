@@ -105,6 +105,11 @@ func TestConvertTweetCopiesEveryField(t *testing.T) {
 		ReplyCount:   5,
 		RetweetCount: 6,
 		LikeCount:    7,
+		QuotedTweet: &xapi.Tweet{
+			ID:     "8",
+			Text:   "quoted",
+			Author: xapi.Author{Username: "other", Name: "Other"},
+		},
 	}
 
 	got := convertTweet(src)
@@ -126,6 +131,33 @@ func TestConvertTweetCopiesEveryField(t *testing.T) {
 
 	if got.Author.Username != "guzus" || got.Author.Name != "Guzus" {
 		t.Errorf("Author not copied: %+v", got.Author)
+	}
+
+	// A quote must survive the boundary as its own converted value, not as a
+	// pointer back into the parser's tree.
+	if got.QuotedTweet == nil {
+		t.Fatal("QuotedTweet dropped by convertTweet")
+	}
+	if got.QuotedTweet.ID != "8" || got.QuotedTweet.Author.Username != "other" {
+		t.Errorf("quoted tweet not converted: %+v", got.QuotedTweet)
+	}
+}
+
+// A quote chain must terminate rather than recursing forever, and the parser
+// bounds it before this package ever sees it.
+func TestConvertQuotedHandlesNesting(t *testing.T) {
+	inner := &xapi.Tweet{ID: "3", Text: "inner", Author: xapi.Author{Username: "c"}}
+	mid := &xapi.Tweet{ID: "2", Text: "mid", Author: xapi.Author{Username: "b"}, QuotedTweet: inner}
+	got := convertTweet(xapi.Tweet{ID: "1", Text: "top", Author: xapi.Author{Username: "a"}, QuotedTweet: mid})
+
+	if got.QuotedTweet == nil || got.QuotedTweet.QuotedTweet == nil {
+		t.Fatalf("nested quote lost: %+v", got.QuotedTweet)
+	}
+	if got.QuotedTweet.QuotedTweet.ID != "3" {
+		t.Errorf("inner quote wrong: %+v", got.QuotedTweet.QuotedTweet)
+	}
+	if got.QuotedTweet.QuotedTweet.QuotedTweet != nil {
+		t.Error("chain should end where the parser ended it")
 	}
 }
 

@@ -67,6 +67,10 @@ type Tweet struct {
 	ReplyCount        int     `json:"replyCount,omitempty"`
 	RetweetCount      int     `json:"retweetCount,omitempty"`
 	LikeCount         int     `json:"likeCount,omitempty"`
+	// QuotedTweet is the tweet this one quotes, when it quotes one. Roughly a
+	// third of a live timeline carries one, so a caller that ignores it is
+	// reading the quoting text without the thing it refers to.
+	QuotedTweet *Tweet `json:"quotedTweet,omitempty"`
 }
 
 // IsReply reports whether this tweet sits below the root of a conversation.
@@ -106,7 +110,18 @@ func convertTweet(t xapi.Tweet) Tweet {
 		ReplyCount:   t.ReplyCount,
 		RetweetCount: t.RetweetCount,
 		LikeCount:    t.LikeCount,
+		QuotedTweet:  convertQuoted(t.QuotedTweet),
 	}
+}
+
+// convertQuoted walks the quote chain. It is depth-bounded upstream, in the
+// parser, so this recursion terminates on whatever the parser produced.
+func convertQuoted(q *xapi.Tweet) *Tweet {
+	if q == nil {
+		return nil
+	}
+	converted := convertTweet(*q)
+	return &converted
 }
 
 // convertTweets converts a slice, preserving order and distinguishing a nil
