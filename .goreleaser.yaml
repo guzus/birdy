@@ -39,6 +39,14 @@ brews:
       # Pushing a formula into another repository needs a token that can write
       # to it; the workflow's default GITHUB_TOKEN is scoped to this one.
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    # Without this goreleaser writes birdy.rb to the tap root while the
+    # existing formula lives in Formula/, leaving two copies that drift.
+    directory: Formula
+    # The tap's history should read as the maintainer's, not the release bot's.
+    commit_author:
+      name: guzus
+      email: birdyopensource@gmail.com
+    commit_msg_template: "birdy {{ .Tag }}"
     homepage: "https://github.com/guzus/birdy"
     description: "Multi-account X/Twitter CLI with account rotation, in one Go binary"
     license: "MIT"
