@@ -100,14 +100,21 @@ here rather than quietly diverging. The current list:
   credentials from its own account store, so there is no cookie source to name.
 - **`--limit`** is birdy's own alias for `-n`. bird has no such flag.
 - **`following` / `followers` `--json` carry more per-user data than bird's.**
-  Measured on the same account and the same user id: birdy emits
-  `description`, `followersCount` and `followingCount`; bird emits none of the
-  three. The likely cause is that birdy answers from the v1.1 list endpoint —
-  which returns a full user object — where bird answers from a GraphQL payload
-  that carried no `legacy` block. **Unconfirmed:** the account was rate-limited
-  before the path could be traced, so this is a hypothesis, not a finding.
-  birdy's output is a superset, so a consumer reading bird's fields still gets
-  them.
+  Measured on the same account and the same user id: birdy emits `description`,
+  `followersCount` and `followingCount`; bird emits none of the three.
+
+  Traced, not guessed. Both engines call the same GraphQL operation and both
+  succeed — the difference is which persisted-query hash they send. birdy uses
+  the hash its variables and feature set were vetted against; bird uses one it
+  discovers from X's web bundles at runtime. The two return different payload
+  shapes: birdy's includes the `legacy` block those three fields come from, and
+  bird's is core-only.
+
+  This is left alone deliberately. birdy's output is a strict superset, so
+  nothing reading bird's fields breaks, and matching bird would mean discarding
+  data X already returned. It is also the same mechanism `operationQueryIDs`
+  warns about in reverse: pairing a newer hash with older variables is what
+  silently zeroed follower counts once before.
 
 ## Reporting a break
 
