@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img">
+  <title>birdy was dogfooded by ai-research-arm</title>
+  <desc>ai-research-arm ran birdy's native Go engine against live X and found nine output
+  divergences from the bird CLI that the test suite did not catch.</desc>
+
+  <rect width="1280" height="640" fill="#F2FAFE"/>
+
+  <!-- Headline -->
+  <text x="96" y="152" font-family="Helvetica, Arial, sans-serif" font-size="76"
+        font-weight="700" fill="#0B1220">Dogfooded in production</text>
+
+  <text x="96" y="218" font-family="Helvetica, Arial, sans-serif" font-size="38"
+        font-weight="500" fill="#2CAADD">by ai-research-arm</text>
+
+  <!-- The claim, stated so it cannot be read as "birdy passed" -->
+  <text x="96" y="292" font-family="Helvetica, Arial, sans-serif" font-size="27"
+        font-weight="400" fill="#33404F">birdy&#8217;s heaviest consumer replayed its real X workloads</text>
+  <text x="96" y="330" font-family="Helvetica, Arial, sans-serif" font-size="27"
+        font-weight="400" fill="#33404F">against both engines and diffed every byte.</text>
+
+  <!-- Stats. Each number is measured, not rounded up. -->
+  <g font-family="Helvetica, Arial, sans-serif">
+    <text x="96"  y="424" font-size="52" font-weight="700" fill="#0B1220">9</text>
+    <text x="96"  y="456" font-size="19" font-weight="400" fill="#5A6875">divergences found</text>
+
+    <text x="330" y="424" font-size="52" font-weight="700" fill="#0B1220">0</text>
+    <text x="330" y="456" font-size="19" font-weight="400" fill="#5A6875">caught by the test suite</text>
+
+    <text x="640" y="424" font-size="52" font-weight="700" fill="#0B1220">3</text>
+    <text x="640" y="456" font-size="19" font-weight="400" fill="#5A6875">agents, read-only, live X</text>
+  </g>
+
+  <!-- Terminal chip, matching the social preview's language. -->
+  <rect x="96" y="502" width="606" height="72" rx="12" fill="#252D3F"/>
+  <text x="124" y="548" font-family="Menlo, Monaco, monospace" font-size="26" fill="#2CAADD">$</text>
+  <text x="156" y="548" font-family="Menlo, Monaco, monospace" font-size="26" fill="#E8EEF6">scripts/diff-engines.sh</text>
+
+  <!-- The bird, from assets/birdy-logo.svg, scaled and placed to mirror the
+       social preview. Same paths, same #2CAADD. -->
+  <g transform="translate(872 132) scale(1.06)">
+    <path fill="#2CAADD" fill-rule="evenodd"
+      d="M20 111c22-3 41-11 50-21 14-14 29-10 45 4 21 18 46 24 72 18 50-12 96-52 131-90 4-4 7-2 7 4 2 24-8 44-29 62-30 23-52 49-61 86-4 19-11 32-25 40-26 13-57 15-84 5-35-13-57-37-68-65-10-24-22-36-38-43ZM90 94a9 12 0 1 0 0 24 9 12 0 1 0 0-24Z"/>
+    <g fill="none" stroke="#2CAADD" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M177 218l13 49h22"/>
+      <path d="M214 197l17 87h20"/>
+      <path d="M191 267c-14 3-22 15-24 31"/>
+      <path d="M194 269c-10 8-15 20-16 33"/>
+      <path d="M198 271c-7 10-9 23-7 36"/>
+      <path d="M232 284c-14 4-22 18-25 37"/>
+      <path d="M237 285c-10 10-14 25-14 40"/>
+      <path d="M242 286c-7 13-9 28-7 43"/>
+    </g>
+  </g>
+</svg>
