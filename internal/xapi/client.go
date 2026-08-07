@@ -81,6 +81,8 @@ type Client struct {
 
 	// friendshipEndpoints overrides the v1.1 follow/unfollow URLs. Tests only.
 	friendshipEndpoints []string
+	// userListRESTPaths overrides the v1.1 followers/friends URLs. Tests only.
+	userListRESTPaths []string
 }
 
 // NewClient builds a client for the given credentials.
@@ -105,6 +107,12 @@ func NewClient(creds Credentials) (*Client, error) {
 // Intended for tests; production callers should leave the defaults in place.
 func (c *Client) SetFriendshipEndpoints(endpoints []string) {
 	c.friendshipEndpoints = endpoints
+}
+
+// SetUserListRESTPaths overrides the v1.1 followers/friends list URLs.
+// Intended for tests; production callers should leave the defaults in place.
+func (c *Client) SetUserListRESTPaths(paths []string) {
+	c.userListRESTPaths = paths
 }
 
 // SetViewerEndpoints overrides the v1.1 account URLs CurrentUser tries.

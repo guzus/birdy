@@ -3,6 +3,8 @@ package xapi
 import (
 	"context"
 	"encoding/json"
+	"net/url"
+	"strconv"
 )
 
 // ListedUser is a user as it appears in a followers/following listing.
@@ -35,12 +37,37 @@ type UserListPage struct {
 
 // Following returns accounts the given user id follows.
 func (c *Client) Following(ctx context.Context, userID string, count int, cursor string) (*UserListPage, error) {
-	return c.userList(ctx, "Following", userID, count, cursor)
+	page, err := c.userList(ctx, "Following", userID, count, cursor)
+	if err == nil {
+		return page, nil
+	}
+	if IsRateLimited(err) {
+		return nil, err
+	}
+	return c.userListViaREST(ctx, c.restPaths(followingRESTPaths), userID, count, cursor)
 }
 
 // Followers returns accounts following the given user id.
+//
+// In practice this always takes the REST path: see the note on
+// followersRESTPaths.
 func (c *Client) Followers(ctx context.Context, userID string, count int, cursor string) (*UserListPage, error) {
-	return c.userList(ctx, "Followers", userID, count, cursor)
+	page, err := c.userList(ctx, "Followers", userID, count, cursor)
+	if err == nil {
+		return page, nil
+	}
+	if IsRateLimited(err) {
+		return nil, err
+	}
+	return c.userListViaREST(ctx, c.restPaths(followersRESTPaths), userID, count, cursor)
+}
+
+// restPaths lets tests redirect the v1.1 endpoints at a local server.
+func (c *Client) restPaths(defaults []string) []string {
+	if c.userListRESTPaths != nil {
+		return c.userListRESTPaths
+	}
+	return defaults
 }
 
 func (c *Client) userList(ctx context.Context, operation, userID string, count int, cursor string) (*UserListPage, error) {
@@ -216,4 +243,126 @@ func mapUser(raw *rawUser) (ListedUser, bool) {
 		user.Name = user.Username
 	}
 	return user, true
+}
+
+// --- v1.1 REST fallback --------------------------------------------------
+
+// The GraphQL Followers operation returns 404 constantly — every hash birdy
+// ships and every hash discovery finds were rejected for all five test
+// accounts, with and without a feature set. bird carries the same note:
+// "GraphQL Followers regularly returns 404 (queryId churn / endpoint
+// flakiness)". The v1.1 list endpoints still answer for a cookie session, and
+// are what actually serves the command.
+//
+// This is the third fallback in this client that looked redundant and turned
+// out to be load-bearing, after whoami's settings-page scrape and the friendship
+// REST path. The pattern is worth naming: bird's belt-and-braces paths exist
+// because X's GraphQL surface is unreliable, not because bird misread its own
+// responses.
+var (
+	followersRESTPaths = []string{
+		"https://x.com/i/api/1.1/followers/list.json",
+		"https://api.twitter.com/1.1/followers/list.json",
+	}
+	followingRESTPaths = []string{
+		"https://x.com/i/api/1.1/friends/list.json",
+		"https://api.twitter.com/1.1/friends/list.json",
+	}
+)
+
+func (c *Client) userListViaREST(ctx context.Context, endpoints []string, userID string, count int, cursor string) (*UserListPage, error) {
+	form := url.Values{
+		"user_id":               {userID},
+		"count":                 {strconv.Itoa(count)},
+		"skip_status":           {"true"},
+		"include_user_entities": {"false"},
+	}
+	if cursor != "" {
+		form.Set("cursor", cursor)
+	}
+
+	var lastErr error
+	for _, base := range endpoints {
+		body, err := c.get(ctx, base+"?"+form.Encode())
+		if err != nil {
+			lastErr = err
+			if IsRateLimited(err) {
+				return nil, err
+			}
+			continue
+		}
+
+		page, err := parseRESTUserList(body)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		return page, nil
+	}
+	return nil, lastErr
+}
+
+type restUser struct {
+	IDStr                string `json:"id_str"`
+	ID                   int64  `json:"id"`
+	ScreenName           string `json:"screen_name"`
+	Name                 string `json:"name"`
+	Description          string `json:"description"`
+	FollowersCount       *int   `json:"followers_count"`
+	FriendsCount         *int   `json:"friends_count"`
+	Verified             *bool  `json:"verified"`
+	ProfileImageURLHTTPS string `json:"profile_image_url_https"`
+	CreatedAt            string `json:"created_at"`
+}
+
+func parseRESTUserList(body []byte) (*UserListPage, error) {
+	var resp struct {
+		Users         []restUser `json:"users"`
+		NextCursorStr string     `json:"next_cursor_str"`
+		Errors        []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, &APIError{Message: "decoding user list response: " + err.Error()}
+	}
+	if len(resp.Errors) > 0 {
+		messages := make([]string, 0, len(resp.Errors))
+		for _, e := range resp.Errors {
+			messages = append(messages, e.Message)
+		}
+		return nil, &APIError{Message: joinMessages(messages)}
+	}
+
+	page := &UserListPage{}
+	// "0" is X's terminator, not a cursor.
+	if resp.NextCursorStr != "" && resp.NextCursorStr != "0" {
+		page.NextCursor = resp.NextCursorStr
+	}
+
+	for _, u := range resp.Users {
+		id := u.IDStr
+		if id == "" && u.ID != 0 {
+			id = strconv.FormatInt(u.ID, 10)
+		}
+		if id == "" || u.ScreenName == "" {
+			continue
+		}
+		name := u.Name
+		if name == "" {
+			name = u.ScreenName
+		}
+		page.Users = append(page.Users, ListedUser{
+			ID:              id,
+			Username:        u.ScreenName,
+			Name:            name,
+			Description:     u.Description,
+			FollowersCount:  u.FollowersCount,
+			FollowingCount:  u.FriendsCount,
+			IsBlueVerified:  u.Verified,
+			ProfileImageURL: u.ProfileImageURLHTTPS,
+			CreatedAt:       u.CreatedAt,
+		})
+	}
+	return page, nil
 }

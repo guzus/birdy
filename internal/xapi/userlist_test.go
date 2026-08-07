@@ -1,6 +1,11 @@
 package xapi
 
-import "testing"
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
 
 // userListBody wraps timeline entries in the envelope X returns, so each test
 // writes only the part it cares about instead of counting braces.
@@ -109,5 +114,71 @@ func TestParseUserListSkipsNonUsers(t *testing.T) {
 	// The third entry has an id but no username, which is also unusable.
 	if len(page.Users) != 0 {
 		t.Errorf("expected no usable users, got %+v", page.Users)
+	}
+}
+
+// The GraphQL Followers operation 404s constantly, so the REST fallback is the
+// path that actually serves the command. This pins that a 404 falls through
+// rather than surfacing, which is how it shipped broken.
+func TestFollowersFallsBackToRESTOn404(t *testing.T) {
+	graphQL := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer graphQL.Close()
+
+	rest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte(`{"users":[{"id_str":"7","screen_name":"guzus","name":"Guzus",
+			"description":"bio","followers_count":57,"friends_count":9,
+			"profile_image_url_https":"https://img/a.jpg"}],"next_cursor_str":"0"}`))
+	}))
+	defer rest.Close()
+
+	c, err := NewClient(Credentials{AuthToken: "a", CT0: "b"})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	c.SetBaseURL(graphQL.URL)
+	c.SetUserListRESTPaths([]string{rest.URL})
+
+	page, err := c.Followers(context.Background(), "1", 3, "")
+	if err != nil {
+		t.Fatalf("Followers: %v", err)
+	}
+	if len(page.Users) != 1 || page.Users[0].Username != "guzus" {
+		t.Fatalf("REST fallback did not produce users: %+v", page.Users)
+	}
+	if page.Users[0].FollowersCount == nil || *page.Users[0].FollowersCount != 57 {
+		t.Errorf("counts not mapped from the REST shape: %+v", page.Users[0])
+	}
+	// "0" is X's terminator, not a usable cursor.
+	if page.NextCursor != "" {
+		t.Errorf("next_cursor_str of 0 must not become a cursor, got %q", page.NextCursor)
+	}
+}
+
+// A rate limit must not be mistaken for "GraphQL is down, try REST" — that
+// would spend a second request to earn the same 429.
+func TestFollowersDoesNotFallBackOnRateLimit(t *testing.T) {
+	graphQL := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer graphQL.Close()
+
+	var restHits int
+	rest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		restHits++
+		w.Write([]byte(`{"users":[]}`))
+	}))
+	defer rest.Close()
+
+	c, _ := NewClient(Credentials{AuthToken: "a", CT0: "b"})
+	c.SetBaseURL(graphQL.URL)
+	c.SetUserListRESTPaths([]string{rest.URL})
+
+	if _, err := c.Followers(context.Background(), "1", 3, ""); !IsRateLimited(err) {
+		t.Errorf("expected the rate limit to surface, got %v", err)
+	}
+	if restHits != 0 {
+		t.Errorf("REST must not be tried after a 429, got %d hits", restHits)
 	}
 }
