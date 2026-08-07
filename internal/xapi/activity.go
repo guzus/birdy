@@ -6,17 +6,33 @@ import (
 	"fmt"
 )
 
+// ActorPage is one page of accounts that acted on a tweet.
+//
+// NextCursor is empty at the end. It is carried rather than dropped because
+// bird's `activity --json` prints a nextCursor per section, and a hardcoded
+// null there is a value divergence a consumer sees on every call.
+type ActorPage struct {
+	Users      []ListedUser
+	NextCursor string
+}
+
+// QuotePage is one page of tweets quoting a tweet.
+type QuotePage struct {
+	Tweets     []Tweet
+	NextCursor string
+}
+
 // Favoriters returns accounts that liked a tweet.
-func (c *Client) Favoriters(ctx context.Context, tweetID string, count int) ([]ListedUser, error) {
+func (c *Client) Favoriters(ctx context.Context, tweetID string, count int) (*ActorPage, error) {
 	return c.tweetActors(ctx, "Favoriters", "favoriters_timeline", tweetID, count)
 }
 
 // Retweeters returns accounts that reposted a tweet.
-func (c *Client) Retweeters(ctx context.Context, tweetID string, count int) ([]ListedUser, error) {
+func (c *Client) Retweeters(ctx context.Context, tweetID string, count int) (*ActorPage, error) {
 	return c.tweetActors(ctx, "Retweeters", "retweeters_timeline", tweetID, count)
 }
 
-func (c *Client) tweetActors(ctx context.Context, operation, root, tweetID string, count int) ([]ListedUser, error) {
+func (c *Client) tweetActors(ctx context.Context, operation, root, tweetID string, count int) (*ActorPage, error) {
 	variables := map[string]any{
 		"tweetId":                tweetID,
 		"count":                  clampCount(count),
@@ -32,7 +48,7 @@ func (c *Client) tweetActors(ctx context.Context, operation, root, tweetID strin
 
 // parseActorTimeline reads a user timeline rooted at a per-operation key rather
 // than under "user", which is why it cannot reuse parseUserList.
-func parseActorTimeline(body []byte, root string) ([]ListedUser, error) {
+func parseActorTimeline(body []byte, root string) (*ActorPage, error) {
 	var envelope struct {
 		Data   map[string]json.RawMessage `json:"data"`
 		Errors []struct {
@@ -52,7 +68,7 @@ func parseActorTimeline(body []byte, root string) ([]ListedUser, error) {
 			}
 			return nil, &APIError{Message: joinMessages(messages)}
 		}
-		return nil, nil
+		return &ActorPage{}, nil
 	}
 
 	var timeline struct {
@@ -66,24 +82,43 @@ func parseActorTimeline(body []byte, root string) ([]ListedUser, error) {
 		return nil, &APIError{Message: fmt.Sprintf("decoding %s: %s", root, err.Error())}
 	}
 
-	var users []ListedUser
+	page := &ActorPage{}
 	for _, instruction := range timeline.Timeline.Instructions {
 		for _, entry := range instruction.Entries {
+			// A cursor lives in its own entry, exactly as in parseUserList.
+			if entry.Content.CursorType == "Bottom" && entry.Content.Value != "" {
+				page.NextCursor = entry.Content.Value
+				continue
+			}
 			user, ok := mapUser(entry.Content.ItemContent.UserResults.Result.unwrap())
 			if !ok {
 				continue
 			}
-			users = append(users, user)
+			page.Users = append(page.Users, user)
 		}
 	}
-	return users, nil
+	return page, nil
 }
 
 // QuoteTweets returns tweets quoting a tweet.
 //
-// X has no dedicated operation for this; bird runs a search for
-// "quoted_tweet_id:<id>", so birdy does the same rather than inventing a
-// different result set.
-func (c *Client) QuoteTweets(ctx context.Context, tweetID string, count int) ([]Tweet, error) {
-	return c.Search(ctx, "quoted_tweet_id:"+tweetID, count)
+// X has no dedicated operation for this; bird runs a SearchTimeline for
+// "quoted_tweet_id:<id>". It is deliberately NOT birdy's Search: bird sends
+// querySource "tdqt" and product "Top" here where Search sends "typed_query"
+// and "Latest", and the two return partially disjoint sets — observed live on
+// tweet 2085074976290505090. It is also a single page, because bird's
+// non-`--all` getQuoteTweets calls fetchQuoteTweetsPage once with no loop.
+func (c *Client) QuoteTweets(ctx context.Context, tweetID string, count int) (*QuotePage, error) {
+	page, err := c.timelinePageFor(ctx, opSearch, map[string]any{
+		"rawQuery":                               "quoted_tweet_id:" + tweetID,
+		"count":                                  count,
+		"querySource":                            "tdqt",
+		"product":                                "Top",
+		"withGrokTranslatedBio":                  true,
+		"withQuickPromoteEligibilityTweetFields": false,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &QuotePage{Tweets: limitTweets(page.tweets, count), NextCursor: page.cursor}, nil
 }

@@ -39,7 +39,7 @@ func makeBirdCmd(use, short string) *cobra.Command {
 				return err
 			}
 			// Prepend the command name back — cobra consumed it.
-			return runPassthrough(cmd, append([]string{cmd.Name()}, cleaned...))
+			return forwardToBird(cmd, append([]string{cmd.Name()}, cleaned...))
 		},
 	}
 }
@@ -204,6 +204,7 @@ func init() {
 		{"reply", "Reply to a tweet"},
 		{"search", "Search for tweets"},
 		{"thread", "Read a tweet thread"},
+		{"trending", "Get trending topics"},
 		{"tweet", "Post a new tweet"},
 		{"unbookmark", "Remove a tweet from bookmarks"},
 		{"unfollow", "Unfollow a user"},

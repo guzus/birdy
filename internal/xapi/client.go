@@ -13,6 +13,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -79,6 +80,11 @@ type Client struct {
 	settingsPages []string
 	viewer        viewerCache
 
+	// userTweetsPageDelay is the wait before every user-tweets page after the
+	// first. bird's getUserTweetsPaged defaults it to 1000ms and it is the only
+	// command with one. Overridable so tests do not sleep.
+	userTweetsPageDelay time.Duration
+
 	// friendshipEndpoints overrides the v1.1 follow/unfollow URLs. Tests only.
 	friendshipEndpoints []string
 	// userListRESTPaths overrides the v1.1 followers/friends URLs. Tests only.
@@ -100,6 +106,8 @@ func NewClient(creds Credentials) (*Client, error) {
 		deviceID:        randomHex(16),
 		viewerEndpoints: defaultViewerEndpoints,
 		settingsPages:   defaultSettingsPages,
+
+		userTweetsPageDelay: time.Second,
 	}, nil
 }
 
@@ -131,6 +139,13 @@ func (c *Client) SetSettingsPages(pages []string) {
 	c.viewer.mu.Lock()
 	c.viewer.seen = nil
 	c.viewer.mu.Unlock()
+}
+
+// SetUserTweetsPageDelay overrides the wait between user-tweets pages.
+// Intended for tests; production callers should leave bird's 1s default in
+// place, because it is what keeps a 10-page walk from looking like a burst.
+func (c *Client) SetUserTweetsPageDelay(d time.Duration) {
+	c.userTweetsPageDelay = d
 }
 
 // SetBaseURL points the client at an alternate GraphQL root. Intended for tests
@@ -175,10 +190,90 @@ func (c *Client) Tweet(ctx context.Context, tweetID string) (*Tweet, error) {
 	}
 	for i := range tweets {
 		if tweets[i].ID == tweetID {
-			return &tweets[i], nil
+			found := &tweets[i]
+			c.recoverArticleBody(ctx, found)
+			return found, nil
 		}
 	}
 	return nil, &APIError{Message: fmt.Sprintf("tweet %s not found in the conversation response", tweetID)}
+}
+
+// recoverArticleBody fills in an X Article whose TweetDetail response carried a
+// title and nothing else.
+//
+// This is bird's second network call in getTweet
+// (lib/twitter-client-tweet-detail.js:158-181) and it looks skippable — every
+// article sampled live returned content_state from TweetDetail. It is not: when
+// X withholds the body there, the only other content is the t.co shortlink, so
+// without this `read` prints a headline and nothing else. bird swallows every
+// failure here rather than failing the read, and so does this: a stale query id
+// or an empty response leaves the tweet exactly as it was.
+//
+// bird calls this only from getTweet, so `thread`, `replies` and the timelines
+// deliberately do not pay for it.
+func (c *Client) recoverArticleBody(ctx context.Context, t *Tweet) {
+	if t.Article == nil || t.AuthorID == "" {
+		return
+	}
+	// Only when the detail response yielded nothing beyond the headline.
+	if strings.TrimSpace(t.Text) != strings.TrimSpace(t.Article.Title) {
+		return
+	}
+
+	title, plain := c.articlePlainText(ctx, t.AuthorID, t.ID)
+	if plain == "" {
+		return
+	}
+	if title != "" {
+		t.Text = title + "\n\n" + plain
+		return
+	}
+	t.Text = plain
+}
+
+// articlePlainText asks UserArticlesTweets for one article's body. Any error is
+// reported as an empty result, matching bird's silent catch.
+func (c *Client) articlePlainText(ctx context.Context, userID, tweetID string) (title, plain string) {
+	body, err := c.graphQL(ctx, "UserArticlesTweets", userArticlesVariables(userID), articleFeatures, articleFieldToggles)
+	if err != nil {
+		return "", ""
+	}
+
+	var resp struct {
+		Data struct {
+			User struct {
+				Result struct {
+					Timeline struct {
+						Timeline struct {
+							Instructions []instruction `json:"instructions"`
+						} `json:"timeline"`
+					} `json:"timeline"`
+				} `json:"result"`
+			} `json:"user"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return "", ""
+	}
+
+	for _, ins := range resp.Data.User.Result.Timeline.Timeline.Instructions {
+		for _, e := range ins.Entries {
+			ic := e.Content.ItemContent
+			if ic == nil || ic.TweetResults == nil || ic.TweetResults.Result == nil {
+				continue
+			}
+			raw := ic.TweetResults.Result.unwrap()
+			if raw.RestID != tweetID {
+				continue
+			}
+			node, res := articleParts(raw)
+			if node == nil {
+				return "", ""
+			}
+			return firstText(res.Title, node.Title), firstText(res.PlainText, node.PlainText)
+		}
+	}
+	return "", ""
 }
 
 // operationQueryIDs returns the persisted-query hashes to try for an operation.

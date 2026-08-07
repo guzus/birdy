@@ -40,7 +40,7 @@ func TestParseUserListReadsBothPayloadShapes(t *testing.T) {
 	}
 
 	legacy := page.Users[0]
-	if legacy.Username != "guzus" || legacy.Name != "Guzus" || legacy.Description != "bio" {
+	if legacy.Username != "guzus" || legacy.Name != "Guzus" || legacy.Description == nil || *legacy.Description != "bio" {
 		t.Errorf("legacy identity wrong: %+v", legacy)
 	}
 	if legacy.FollowersCount == nil || *legacy.FollowersCount != 12 {

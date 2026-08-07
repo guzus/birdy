@@ -17,31 +17,57 @@ type Author struct {
 // Media is a single attachment on a tweet. For photos, URL is the image. For
 // videos and animated GIFs, URL is the still thumbnail and VideoURL is the
 // playable mp4.
+//
+// Field order is bird's assignment order in extractMedia
+// (lib/twitter-client-utils.js:316-349) because `--json` is a byte-for-byte
+// contract and Go marshals in declaration order. The omitempty tags are correct
+// here and must stay: bird assigns width/height only when X sent a size block,
+// previewUrl only for sizes.small, and videoUrl/durationMs only for video and
+// animated_gif, so "absent" is the right encoding rather than a zero.
 type Media struct {
 	Type       string `json:"type"`
 	URL        string `json:"url"`
-	PreviewURL string `json:"previewUrl,omitempty"`
-	VideoURL   string `json:"videoUrl,omitempty"`
 	Width      int    `json:"width,omitempty"`
 	Height     int    `json:"height,omitempty"`
+	PreviewURL string `json:"previewUrl,omitempty"`
+	VideoURL   string `json:"videoUrl,omitempty"`
 	DurationMs int64  `json:"durationMs,omitempty"`
 }
 
+// Article is the header of an X "Article" (long-form) post. Title is always set
+// when Article is non-nil — bird emits no article object at all without one.
+// PreviewText is only served by timeline responses.
+type Article struct {
+	Title       string `json:"title"`
+	PreviewText string `json:"previewText,omitempty"`
+}
+
 // Tweet is a single post.
+//
+// Field order mirrors bird's mapTweetResult literal
+// (lib/twitter-client-utils.js:395-405). The engagement counts carry no
+// omitempty on purpose: bird reads them from legacy, where they are always
+// present numbers, so a genuine 0 is emitted rather than dropped. Go's
+// omitempty conflates "zero" with "absent", a distinction bird makes and live
+// payloads exercise constantly.
 type Tweet struct {
-	ID                string  `json:"id"`
-	Text              string  `json:"text"`
-	CreatedAt         string  `json:"createdAt,omitempty"`
-	ConversationID    string  `json:"conversationId,omitempty"`
-	InReplyToStatusID string  `json:"inReplyToStatusId,omitempty"`
-	Author            Author  `json:"author"`
-	AuthorID          string  `json:"authorId,omitempty"`
-	Media             []Media `json:"media,omitempty"`
-	ReplyCount        int     `json:"replyCount,omitempty"`
-	RetweetCount      int     `json:"retweetCount,omitempty"`
-	LikeCount         int     `json:"likeCount,omitempty"`
+	ID                string `json:"id"`
+	Text              string `json:"text"`
+	CreatedAt         string `json:"createdAt,omitempty"`
+	ReplyCount        int    `json:"replyCount"`
+	RetweetCount      int    `json:"retweetCount"`
+	LikeCount         int    `json:"likeCount"`
+	ConversationID    string `json:"conversationId,omitempty"`
+	InReplyToStatusID string `json:"inReplyToStatusId,omitempty"`
+	Author            Author `json:"author"`
+	AuthorID          string `json:"authorId,omitempty"`
 	// QuotedTweet is the tweet this one quotes, when it quotes one.
-	QuotedTweet *Tweet `json:"quotedTweet,omitempty"`
+	QuotedTweet *Tweet  `json:"quotedTweet,omitempty"`
+	Media       []Media `json:"media,omitempty"`
+	// Article is set when the post is an X Article. Text then carries the
+	// rendered article body, not legacy.full_text — which for an article is
+	// only a t.co shortlink.
+	Article *Article `json:"article,omitempty"`
 }
 
 // --- Raw response shapes -----------------------------------------------------
@@ -67,7 +93,12 @@ type instruction struct {
 type entry struct {
 	Content struct {
 		ItemContent *itemContent `json:"itemContent"`
-		Item        *struct {
+		// A pagination cursor lives in its own entry, alongside the tweets. A
+		// page can therefore be full and still be the last one, or empty and
+		// still have more.
+		CursorType string `json:"cursorType"`
+		Value      string `json:"value"`
+		Item       *struct {
 			ItemContent *itemContent `json:"itemContent"`
 		} `json:"item"`
 		Items []struct {
@@ -131,8 +162,9 @@ type tweetResult struct {
 		} `json:"entities"`
 	} `json:"legacy"`
 
-	// NoteTweet carries long-form ("article") post text, which is truncated in
-	// legacy.full_text.
+	// NoteTweet carries long-form post text, which is truncated in
+	// legacy.full_text. This is X's "long post" feature and is NOT the same
+	// thing as Article below.
 	NoteTweet *struct {
 		NoteTweetResults struct {
 			Result *struct {
@@ -140,6 +172,11 @@ type tweetResult struct {
 			} `json:"result"`
 		} `json:"note_tweet_results"`
 	} `json:"note_tweet"`
+
+	// Article carries an X Article (long-form, rich formatting). Timeline
+	// responses give title + preview_text only; TweetDetail additionally gives
+	// plain_text and the Draft.js content_state. See article.go.
+	Article *articleNode `json:"article"`
 }
 
 type rawMedia struct {
@@ -202,6 +239,7 @@ func mapTweet(raw *tweetResult) (Tweet, bool) {
 		AuthorID: authorID,
 		Author:   Author{Username: username, Name: name},
 		Media:    extractMedia(raw),
+		Article:  extractArticleMetadata(raw),
 	}
 
 	if raw.Legacy != nil {
@@ -248,6 +286,7 @@ func mapQuoted(raw *tweetResult, depth int) *Tweet {
 		AuthorID: authorID,
 		Author:   Author{Username: username, Name: name},
 		Media:    extractMedia(inner),
+		Article:  extractArticleMetadata(inner),
 	}
 	if inner.Legacy != nil {
 		quoted.CreatedAt = inner.Legacy.CreatedAt
@@ -300,9 +339,16 @@ func mapAuthor(raw *tweetResult) (username, name, authorID string) {
 	return username, name, authorID
 }
 
-// extractText prefers long-form note text, which supersedes the truncated
-// legacy full_text when a post exceeds the classic character limit.
+// extractText is bird's extractTweetText precedence: an X Article's rendered
+// body first, then long-form note text, then the truncated legacy full_text.
+//
+// The article branch has to come first and cannot be skipped: for an article
+// post legacy.full_text is a t.co shortlink, not a shortened body, so falling
+// through to it returns a wrong answer rather than a degraded one.
 func extractText(raw *tweetResult) string {
+	if text := extractArticleText(raw); text != "" {
+		return text
+	}
 	if raw.NoteTweet != nil && raw.NoteTweet.NoteTweetResults.Result != nil {
 		if text := strings.TrimSpace(raw.NoteTweet.NoteTweetResults.Result.Text); text != "" {
 			return text
@@ -456,40 +502,24 @@ func tweetsFromInstructions(instructions []instruction) []Tweet {
 	return tweets
 }
 
-// ancestorChain walks up from targetID through InReplyToStatusID, root-first.
-// The target itself is excluded. A missing parent stops the walk and cyclic
-// data is cut short rather than looping.
-func ancestorChain(thread []Tweet, targetID string) []Tweet {
-	byID := make(map[string]Tweet, len(thread))
-	for _, t := range thread {
-		byID[t.ID] = t
-	}
-
-	target, ok := byID[targetID]
-	if !ok {
-		return nil
-	}
-
-	var chain []Tweet
-	seen := map[string]bool{targetID: true}
-	for parentID := target.InReplyToStatusID; parentID != ""; {
-		if seen[parentID] {
-			break
+// bottomCursorFromInstructions mirrors bird's extractCursorFromInstructions:
+// the first Bottom cursor with a non-empty value, scanning ONLY
+// instruction.entries.
+//
+// That narrowness is deliberate, not an oversight to improve on. X moves the
+// Bottom cursor into TimelineReplaceEntry.entry (singular) on later search
+// pages, and bird never looks there — which is precisely why `bird search -n 50`
+// stops at 40. A more thorough extractor would page further than bird and
+// return a different result set.
+func bottomCursorFromInstructions(instructions []instruction) string {
+	for _, ins := range instructions {
+		for _, e := range ins.Entries {
+			if e.Content.CursorType == "Bottom" && e.Content.Value != "" {
+				return e.Content.Value
+			}
 		}
-		seen[parentID] = true
-
-		parent, found := byID[parentID]
-		if !found {
-			break
-		}
-		chain = append(chain, parent)
-		parentID = parent.InReplyToStatusID
 	}
-
-	for i, j := 0, len(chain)-1; i < j; i, j = i+1, j-1 {
-		chain[i], chain[j] = chain[j], chain[i]
-	}
-	return chain
+	return ""
 }
 
 // parseConversation maps every tweet in a TweetDetail response.

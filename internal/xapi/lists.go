@@ -11,9 +11,12 @@ import (
 // MemberCount is a pointer for the same reason ListedUser's counts are: X omits
 // it for some lists, and bird prints a 0 only when X actually reported one.
 type List struct {
-	ID              string     `json:"id"`
-	Name            string     `json:"name"`
-	Description     string     `json:"description,omitempty"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// Description is a pointer for the same reason ListedUser's is: bird passes
+	// listResult.description straight through, so an empty description is
+	// emitted as "" and only a missing key omits it.
+	Description     *string    `json:"description,omitempty"`
 	MemberCount     *int       `json:"memberCount,omitempty"`
 	SubscriberCount *int       `json:"subscriberCount,omitempty"`
 	IsPrivate       bool       `json:"isPrivate"`
@@ -71,13 +74,13 @@ type listEntry struct {
 }
 
 type rawList struct {
-	IDStr           string `json:"id_str"`
-	Name            string `json:"name"`
-	Description     string `json:"description"`
-	MemberCount     *int   `json:"member_count"`
-	SubscriberCount *int   `json:"subscriber_count"`
-	Mode            string `json:"mode"`
-	CreatedAt       int64  `json:"created_at"`
+	IDStr           string  `json:"id_str"`
+	Name            string  `json:"name"`
+	Description     *string `json:"description"`
+	MemberCount     *int    `json:"member_count"`
+	SubscriberCount *int    `json:"subscriber_count"`
+	Mode            string  `json:"mode"`
+	CreatedAt       int64   `json:"created_at"`
 	UserResults     *struct {
 		Result *rawUser `json:"result"`
 	} `json:"user_results"`

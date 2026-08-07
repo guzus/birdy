@@ -42,7 +42,7 @@ func TestParseActivityTypes(t *testing.T) {
 // heading, a profile URL per user, and no separator.
 func TestRenderActivityUsersShape(t *testing.T) {
 	var buf bytes.Buffer
-	users := []xapi.ListedUser{{Username: "guzus", Name: "Guzus", Description: "builder", FollowersCount: intPtr(1234)}}
+	users := []xapi.ListedUser{{Username: "guzus", Name: "Guzus", Description: strPtr("builder"), FollowersCount: intPtr(1234)}}
 	renderActivityUsers(&buf, "Likes", users, nativeArgs{emoji: true})
 
 	want := "\nLikes (1)\n" +

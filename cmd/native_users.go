@@ -64,8 +64,8 @@ func renderUsers(out io.Writer, users []xapi.ListedUser, args nativeArgs) error 
 
 	for _, user := range users {
 		fmt.Fprintf(out, "@%s (%s)\n", user.Username, user.Name)
-		if user.Description != "" {
-			fmt.Fprintf(out, "  %s\n", truncateJS(user.Description, 100))
+		if description := deref(user.Description); description != "" {
+			fmt.Fprintf(out, "  %s\n", truncateJS(description, 100))
 		}
 		// bird prints this line whenever the count is present, including a
 		// genuine zero. X omits it for suspended and some protected accounts,
@@ -76,6 +76,16 @@ func renderUsers(out io.Writer, users []xapi.ListedUser, args nativeArgs) error 
 		fmt.Fprintln(out, listSeparator)
 	}
 	return nil
+}
+
+// deref reads an optional string. Presence and emptiness are distinct in the
+// JSON (bird emits `"description": ""` but omits a genuinely missing one),
+// while for rendering both mean "print nothing".
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // truncateJS cuts to n UTF-16 code units and appends "..." when it cut,

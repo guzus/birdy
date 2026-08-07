@@ -15,15 +15,20 @@ import (
 // fields are pointers. The JSON tags match bird's listing payload exactly,
 // which is a different shape from the profile lookup's.
 type ListedUser struct {
-	ID              string `json:"id"`
-	Username        string `json:"username"`
-	Name            string `json:"name"`
-	Description     string `json:"description,omitempty"`
-	FollowersCount  *int   `json:"followersCount,omitempty"`
-	FollowingCount  *int   `json:"followingCount,omitempty"`
-	IsBlueVerified  *bool  `json:"isBlueVerified,omitempty"`
-	ProfileImageURL string `json:"profileImageUrl,omitempty"`
-	CreatedAt       string `json:"createdAt,omitempty"`
+	ID       string `json:"id"`
+	Username string `json:"username"`
+	Name     string `json:"name"`
+	// Description is a pointer for the same reason the counts are. bird reads
+	// legacy.description, a string that is present-but-empty for most accounts
+	// (12 of 15 in a live sample) and genuinely absent only on a core-only
+	// payload. A plain string with omitempty collapsed those two cases and
+	// dropped `"description": ""` from every such user.
+	Description     *string `json:"description,omitempty"`
+	FollowersCount  *int    `json:"followersCount,omitempty"`
+	FollowingCount  *int    `json:"followingCount,omitempty"`
+	IsBlueVerified  *bool   `json:"isBlueVerified,omitempty"`
+	ProfileImageURL string  `json:"profileImageUrl,omitempty"`
+	CreatedAt       string  `json:"createdAt,omitempty"`
 }
 
 // UserListPage is one page of a user-list timeline (followers, following).
@@ -134,15 +139,17 @@ type rawUser struct {
 	// UserWithVisibilityResults wraps the real user one level deeper.
 	User   *rawUser `json:"user"`
 	Legacy *struct {
-		ScreenName           string `json:"screen_name"`
-		Name                 string `json:"name"`
-		Description          string `json:"description"`
-		FollowersCount       int    `json:"followers_count"`
-		FriendsCount         int    `json:"friends_count"`
-		StatusesCount        int    `json:"statuses_count"`
-		Verified             bool   `json:"verified"`
-		CreatedAt            string `json:"created_at"`
-		ProfileImageURLHTTPS string `json:"profile_image_url_https"`
+		ScreenName string `json:"screen_name"`
+		Name       string `json:"name"`
+		// A pointer so a legacy block without the key stays absent rather than
+		// becoming "", which bird distinguishes.
+		Description          *string `json:"description"`
+		FollowersCount       int     `json:"followers_count"`
+		FriendsCount         int     `json:"friends_count"`
+		StatusesCount        int     `json:"statuses_count"`
+		Verified             bool    `json:"verified"`
+		CreatedAt            string  `json:"created_at"`
+		ProfileImageURLHTTPS string  `json:"profile_image_url_https"`
 	} `json:"legacy"`
 	Core *struct {
 		ScreenName string `json:"screen_name"`
@@ -303,16 +310,16 @@ func (c *Client) userListViaREST(ctx context.Context, endpoints []string, userID
 }
 
 type restUser struct {
-	IDStr                string `json:"id_str"`
-	ID                   int64  `json:"id"`
-	ScreenName           string `json:"screen_name"`
-	Name                 string `json:"name"`
-	Description          string `json:"description"`
-	FollowersCount       *int   `json:"followers_count"`
-	FriendsCount         *int   `json:"friends_count"`
-	Verified             *bool  `json:"verified"`
-	ProfileImageURLHTTPS string `json:"profile_image_url_https"`
-	CreatedAt            string `json:"created_at"`
+	IDStr                string  `json:"id_str"`
+	ID                   int64   `json:"id"`
+	ScreenName           string  `json:"screen_name"`
+	Name                 string  `json:"name"`
+	Description          *string `json:"description"`
+	FollowersCount       *int    `json:"followers_count"`
+	FriendsCount         *int    `json:"friends_count"`
+	Verified             *bool   `json:"verified"`
+	ProfileImageURLHTTPS string  `json:"profile_image_url_https"`
+	CreatedAt            string  `json:"created_at"`
 }
 
 func parseRESTUserList(body []byte) (*UserListPage, error) {

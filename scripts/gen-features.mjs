@@ -35,6 +35,7 @@ const SETS = {
   followingFeatures: 'buildFollowingFeatures',
   tweetCreateFeatures: 'buildTweetCreateFeatures',
   listsFeatures: 'buildListsFeatures',
+  articleFeatures: 'buildArticleFeatures',
 };
 
 // UserByScreenName's flags are inline in bird's user-lookup module rather than
@@ -79,6 +80,9 @@ const OPERATIONS = [
   'ListOwnerships', 'ListMemberships', 'Favoriters', 'Retweeters',
   // Carries no feature set of its own; only its hash is needed.
   'AboutAccountQuery',
+  // bird's read-time fallback for an article whose TweetDetail response gave a
+  // title but no body. The hash exists only in FALLBACK_QUERY_IDS.
+  'UserArticlesTweets',
 ];
 
 function loadQueryIds() {

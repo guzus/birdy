@@ -51,6 +51,7 @@ func TestPublicTypesCoverParserFields(t *testing.T) {
 		{"Tweet", reflect.TypeOf(Tweet{}), reflect.TypeOf(xapi.Tweet{})},
 		{"Media", reflect.TypeOf(Media{}), reflect.TypeOf(xapi.Media{})},
 		{"Author", reflect.TypeOf(Author{}), reflect.TypeOf(xapi.Author{})},
+		{"Article", reflect.TypeOf(Article{}), reflect.TypeOf(xapi.Article{})},
 	}
 
 	for _, tc := range cases {
@@ -75,6 +76,50 @@ func TestPublicTypesCoverParserFields(t *testing.T) {
 					t.Errorf("pkg/tweet.%s has field %s with no parser counterpart; "+
 						"removing it from xapi.%s is a breaking public API change",
 						tc.name, name, tc.name)
+				}
+			}
+		})
+	}
+}
+
+// TestPublicTypesKeepParserFieldOrder pins declaration order across the
+// boundary.
+//
+// Go's encoding/json emits struct fields in declaration order, and birdy's
+// --json is a byte-for-byte contract with bird — so the ORDER is part of the
+// public API, not just the set of tags. TestPublicTypesCoverParserFields
+// compares maps and is order-blind; this is the half it cannot see.
+func TestPublicTypesKeepParserFieldOrder(t *testing.T) {
+	cases := []struct {
+		name     string
+		public   reflect.Type
+		internal reflect.Type
+	}{
+		{"Tweet", reflect.TypeOf(Tweet{}), reflect.TypeOf(xapi.Tweet{})},
+		{"Media", reflect.TypeOf(Media{}), reflect.TypeOf(xapi.Media{})},
+		{"Author", reflect.TypeOf(Author{}), reflect.TypeOf(xapi.Author{})},
+		{"Article", reflect.TypeOf(Article{}), reflect.TypeOf(xapi.Article{})},
+	}
+
+	names := func(t reflect.Type) []string {
+		var out []string
+		for i := range t.NumField() {
+			if f := t.Field(i); f.IsExported() {
+				out = append(out, f.Name)
+			}
+		}
+		return out
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pub, inner := names(tc.public), names(tc.internal)
+			if len(pub) != len(inner) {
+				t.Fatalf("field counts differ: public %v, parser %v", pub, inner)
+			}
+			for i := range pub {
+				if pub[i] != inner[i] {
+					t.Fatalf("field order differs at %d: public %v, parser %v", i, pub, inner)
 				}
 			}
 		})
@@ -110,9 +155,24 @@ func TestConvertTweetCopiesEveryField(t *testing.T) {
 			Text:   "quoted",
 			Author: xapi.Author{Username: "other", Name: "Other"},
 		},
+		Article: &xapi.Article{Title: "An Article", PreviewText: "preview"},
 	}
 
 	got := convertTweet(src)
+
+	// The article must cross the boundary as its own value, so mutating the
+	// parser's copy afterwards cannot reach a caller's.
+	if got.Article == nil {
+		t.Fatal("Article dropped by convertTweet")
+	}
+	if got.Article == (*Article)(nil) || got.Article.Title != "An Article" || got.Article.PreviewText != "preview" {
+		t.Errorf("article not converted: %+v", got.Article)
+	}
+	src.Article.Title = "mutated"
+	if got.Article.Title != "An Article" {
+		t.Error("convertArticle aliased the parser's value instead of copying it")
+	}
+	src.Article.Title = "An Article"
 
 	v := reflect.ValueOf(got)
 	for i := range v.NumField() {

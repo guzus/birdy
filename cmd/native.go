@@ -380,16 +380,66 @@ func nativeHome(ctx context.Context, c *xapi.Client, args nativeArgs, out io.Wri
 	return renderTweets(out, tweets, args)
 }
 
+// nativeUserTweets is the one listing command whose JSON shape depends on -n.
+//
+// bird wraps the array in {tweets, nextCursor} whenever the count exceeds one
+// page (commands/user-tweets.js:84), rejects a count above its 10-page safety
+// cap before making any request, and prints a resume hint to stderr. All three
+// are reachable from a plain `-n`, with no paging flag involved.
 func nativeUserTweets(ctx context.Context, c *xapi.Client, args nativeArgs, out io.Writer) error {
 	if args.positional == "" {
 		return fmt.Errorf("user-tweets: missing username")
 	}
-	tweets, err := c.UserTweets(ctx, args.positional, args.count)
+	// Validated before the network call, exactly where bird validates it.
+	if args.count > userTweetsMaxCount {
+		return fmt.Errorf("Invalid --count. Max %d tweets per run (safety cap: %d pages). Use --cursor to continue.",
+			userTweetsMaxCount, userTweetsMaxCount/userTweetsPageSize)
+	}
+
+	tweets, nextCursor, err := c.UserTweets(ctx, args.positional, args.count)
 	if err != nil {
 		return err
 	}
-	return renderTweets(out, tweets, args)
+
+	if args.json && args.count > userTweetsPageSize {
+		if tweets == nil {
+			tweets = []xapi.Tweet{}
+		}
+		var cursor *string
+		if nextCursor != "" {
+			cursor = &nextCursor
+		}
+		return writeNativeJSON(out, tweetsEnvelope{Tweets: tweets, NextCursor: cursor})
+	}
+
+	if err := renderTweets(out, tweets, args); err != nil {
+		return err
+	}
+	if !args.json && nextCursor != "" {
+		fmt.Fprintf(nativeStderr, "%s More tweets available. Use --cursor %q to continue.\n",
+			status("info", "ℹ️", "Info:", args), nextCursor)
+	}
+	return nil
 }
+
+// bird's user-tweets page budget, and the count ceiling it implies.
+const (
+	userTweetsPageSize = 20
+	userTweetsMaxCount = 200
+)
+
+// tweetsEnvelope is bird's paginated JSON shape. Field order matters: bird
+// emits tweets first and nextCursor second, and nextCursor is JSON null rather
+// than absent when the timeline ran out. A map[string]any would sort the keys
+// and emit nextCursor first.
+type tweetsEnvelope struct {
+	Tweets     []xapi.Tweet `json:"tweets"`
+	NextCursor *string      `json:"nextCursor"`
+}
+
+// nativeStderr is where the native commands write bird's stderr-only notes.
+// Indirected so tests can capture them without touching the process's stderr.
+var nativeStderr io.Writer = os.Stderr
 
 func nativeBookmarks(ctx context.Context, c *xapi.Client, args nativeArgs, out io.Writer) error {
 	tweets, err := c.Bookmarks(ctx, args.count)
@@ -560,8 +610,24 @@ func renderTweet(out io.Writer, tweet xapi.Tweet, args nativeArgs, withStats boo
 
 	b.WriteString("\n")
 	fmt.Fprintf(&b, "@%s (%s):\n", tweet.Author.Username, tweet.Author.Name)
-	b.WriteString(tweet.Text)
-	b.WriteString("\n")
+
+	if tweet.Article != nil {
+		// bird: text that already begins with the title is the rendered body,
+		// so it prints whole. Otherwise only the title is known (a timeline
+		// response gives no body) and the preview goes beneath it, indented by
+		// three spaces once — a multi-line preview is printed raw.
+		if strings.HasPrefix(tweet.Text, tweet.Article.Title) {
+			fmt.Fprintf(&b, "%s %s\n", articleLabel(args), tweet.Text)
+		} else {
+			fmt.Fprintf(&b, "%s %s\n", articleLabel(args), tweet.Article.Title)
+			if tweet.Article.PreviewText != "" {
+				fmt.Fprintf(&b, "   %s\n", tweet.Article.PreviewText)
+			}
+		}
+	} else {
+		b.WriteString(tweet.Text)
+		b.WriteString("\n")
+	}
 
 	for _, media := range tweet.Media {
 		fmt.Fprintf(&b, "%s %s\n", mediaLabel(media, args), media.URL)
@@ -608,6 +674,17 @@ func mediaLabel(media xapi.Media, args nativeArgs) string {
 	}
 }
 
+// articleLabel mirrors bird's articleLabel (cli/shared.js:238), which is derived
+// from (emoji && !plain) exactly like the media labels — NOT from the l()/label()
+// helper. That distinction is load-bearing: label() lowercases in plain mode, so
+// routing this through it would print "article:" where bird prints "Article:".
+func articleLabel(args nativeArgs) string {
+	if args.emoji && !args.plain {
+		return "📰"
+	}
+	return "Article:"
+}
+
 // label renders a field prefix in whichever of bird's three output modes applies.
 func label(plainName, emoji, text string, args nativeArgs) string {
 	if args.plain {
@@ -648,7 +725,14 @@ func renderQuoted(b *strings.Builder, quoted *xapi.Tweet, args nativeArgs) {
 
 	fmt.Fprintf(b, "%s QT @%s:\n", top, quoted.Author.Username)
 
-	text := truncateJS(quoted.Text, 280)
+	// A quoted article shows its title, not the tweet's shortlink. The label
+	// counts against bird's 280-unit budget, so it is prepended before the cut.
+	qtText := quoted.Text
+	if quoted.Article != nil {
+		qtText = articleLabel(args) + " " + quoted.Article.Title
+	}
+
+	text := truncateJS(qtText, 280)
 	for i, line := range strings.Split(text, "\n") {
 		if i >= 4 {
 			break

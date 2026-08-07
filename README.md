@@ -471,9 +471,12 @@ falls back to bird rather than silently dropping the attachment.
 lets `likes` match bird's signature — bird's `likes` takes no handle and reads
 the authenticated account's likes.
 
-Output is byte-identical to bird's, including `--json`, `--plain` and
-`--no-emoji`, because the birdy skill and TUI read the human-readable form.
-Verified by diffing both engines against live X.
+Output is byte-identical to bird's for `--plain` and `--no-emoji`, because the
+birdy skill and TUI read the human-readable form. `--json` matches key-for-key
+and in key order, with the narrow exceptions listed in
+[COMPATIBILITY.md](COMPATIBILITY.md#the-bird-passthrough-and-removing-it)
+(U+2028/U+2029 escaping, rare `article` body shapes, `query-ids`). Verified by
+diffing both engines against live X.
 
 Force the bird path when you need it:
 

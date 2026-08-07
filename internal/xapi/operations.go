@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"time"
 )
 
 // timelineOp describes a GraphQL operation that returns a timeline of tweets.
@@ -73,16 +74,18 @@ func (c *Client) Search(ctx context.Context, query string, count int) ([]Tweet, 
 	if query == "" {
 		return nil, fmt.Errorf("x api: empty search query")
 	}
-	tweets, err := c.timeline(ctx, opSearch, map[string]any{
-		"rawQuery":    query,
-		"count":       clampCount(count),
-		"querySource": "typed_query",
-		"product":     "Latest",
+	tweets, _, err := c.pagedTimeline(ctx, opSearch, pagedOptions{
+		limit: count,
+		variables: func(pageCount int, cursor string) map[string]any {
+			return withCursor(map[string]any{
+				"rawQuery":    query,
+				"count":       pageCount,
+				"querySource": "typed_query",
+				"product":     "Latest",
+			}, cursor)
+		},
 	})
-	if err != nil {
-		return nil, err
-	}
-	return limitTweets(tweets, count), nil
+	return tweets, err
 }
 
 // Home returns the authenticated account's home timeline. When latest is true it
@@ -92,36 +95,59 @@ func (c *Client) Home(ctx context.Context, count int, latest bool) ([]Tweet, err
 	if latest {
 		op = opHomeLatestTimeline
 	}
-	tweets, err := c.timeline(ctx, op, map[string]any{
-		"count":                  clampCount(count),
-		"includePromotedContent": true,
-		"latestControlAvailable": true,
-		"requestContext":         "launch",
-		"withCommunity":          true,
+	// bird's home loop reports no nextCursor at all, so neither does this.
+	tweets, _, err := c.pagedTimeline(ctx, op, pagedOptions{
+		limit: count,
+		variables: func(pageCount int, cursor string) map[string]any {
+			return withCursor(map[string]any{
+				"count":                  pageCount,
+				"includePromotedContent": true,
+				"latestControlAvailable": true,
+				"requestContext":         "launch",
+				"withCommunity":          true,
+			}, cursor)
+		},
 	})
-	if err != nil {
-		return nil, err
-	}
-	return limitTweets(tweets, count), nil
+	return tweets, err
 }
 
+// userTweetsHardMaxPages is bird's safety cap: 10 pages of 20, i.e. 200 tweets
+// in a single run. Beyond that bird refuses rather than truncating.
+const userTweetsHardMaxPages = 10
+
 // UserTweets returns a user's recent tweets. handle may include a leading @.
-func (c *Client) UserTweets(ctx context.Context, handle string, count int) ([]Tweet, error) {
+//
+// It returns the cursor to resume from alongside the tweets, because it is the
+// one command whose JSON shape depends on it: bird's user-tweets switches from
+// a bare array to {tweets, nextCursor} whenever -n exceeds one page.
+func (c *Client) UserTweets(ctx context.Context, handle string, count int) ([]Tweet, string, error) {
 	user, err := c.UserByScreenName(ctx, handle)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	tweets, err := c.timeline(ctx, opUserTweets, map[string]any{
-		"userId":                                 user.ID,
-		"count":                                  clampCount(count),
-		"includePromotedContent":                 true,
-		"withQuickPromoteEligibilityTweetFields": true,
-		"withVoice":                              true,
+
+	// bird: effectiveMaxPages = min(10, ceil(limit / 20)).
+	maxPages := (max(count, 1) + timelinePageSize - 1) / timelinePageSize
+	maxPages = min(max(maxPages, 1), userTweetsHardMaxPages)
+
+	return c.pagedTimeline(ctx, opUserTweets, pagedOptions{
+		limit:     count,
+		maxPages:  maxPages,
+		pageDelay: c.userTweetsPageDelay,
+		variables: func(pageCount int, cursor string) map[string]any {
+			return withCursor(map[string]any{
+				"userId": user.ID,
+				"count":  pageCount,
+				// NOTE: bird sends includePromotedContent:false here and a
+				// {withArticlePlainText:false} fieldToggles blob. That is a
+				// separate result-set divergence, deliberately left alone by
+				// the paging change.
+				"includePromotedContent":                 true,
+				"withQuickPromoteEligibilityTweetFields": true,
+				"withVoice":                              true,
+			}, cursor)
+		},
 	})
-	if err != nil {
-		return nil, err
-	}
-	return limitTweets(tweets, count), nil
 }
 
 // Likes returns tweets a user has liked. Most accounts hide likes from others,
@@ -148,32 +174,40 @@ func (c *Client) ViewerLikes(ctx context.Context, count int) ([]Tweet, error) {
 }
 
 func (c *Client) likesByUserID(ctx context.Context, userID string, count int) ([]Tweet, error) {
-	tweets, err := c.timeline(ctx, opLikes, map[string]any{
-		"userId":                 userID,
-		"count":                  clampCount(count),
-		"includePromotedContent": false,
-		"withClientEventToken":   false,
-		"withVoice":              true,
+	tweets, _, err := c.pagedTimeline(ctx, opLikes, pagedOptions{
+		limit: count,
+		variables: func(pageCount int, cursor string) map[string]any {
+			return withCursor(map[string]any{
+				"userId":                 userID,
+				"count":                  pageCount,
+				"includePromotedContent": false,
+				"withClientEventToken":   false,
+				// bird sends this and birdy did not. Matching the request
+				// exactly is free, and a mismatched variable set is a silent
+				// way to get a differently-ranked page.
+				"withBirdwatchNotes": false,
+				"withVoice":          true,
+			}, cursor)
+		},
 	})
-	if err != nil {
-		return nil, err
-	}
-	return limitTweets(tweets, count), nil
+	return tweets, err
 }
 
 // Bookmarks returns the authenticated account's bookmarked tweets.
 func (c *Client) Bookmarks(ctx context.Context, count int) ([]Tweet, error) {
-	tweets, err := c.timeline(ctx, opBookmarks, map[string]any{
-		"count":                    clampCount(count),
-		"includePromotedContent":   false,
-		"withDownvotePerspective":  false,
-		"withReactionsMetadata":    false,
-		"withReactionsPerspective": false,
+	tweets, _, err := c.pagedTimeline(ctx, opBookmarks, pagedOptions{
+		limit: count,
+		variables: func(pageCount int, cursor string) map[string]any {
+			return withCursor(map[string]any{
+				"count":                    pageCount,
+				"includePromotedContent":   false,
+				"withDownvotePerspective":  false,
+				"withReactionsMetadata":    false,
+				"withReactionsPerspective": false,
+			}, cursor)
+		},
 	})
-	if err != nil {
-		return nil, err
-	}
-	return limitTweets(tweets, count), nil
+	return tweets, err
 }
 
 // ListTimeline returns tweets from a list by its numeric id.
@@ -182,37 +216,44 @@ func (c *Client) ListTimeline(ctx context.Context, listID string, count int) ([]
 	if listID == "" {
 		return nil, fmt.Errorf("x api: empty list id")
 	}
-	tweets, err := c.timeline(ctx, opListTimeline, map[string]any{
-		"listId":                 listID,
-		"count":                  clampCount(count),
-		"includePromotedContent": false,
+	tweets, _, err := c.pagedTimeline(ctx, opListTimeline, pagedOptions{
+		limit: count,
+		variables: func(pageCount int, cursor string) map[string]any {
+			return withCursor(map[string]any{
+				"listId":                 listID,
+				"count":                  pageCount,
+				"includePromotedContent": false,
+			}, cursor)
+		},
 	})
-	if err != nil {
-		return nil, err
-	}
-	return limitTweets(tweets, count), nil
+	return tweets, err
 }
 
-// Replies returns the replies to a tweet: everything in its conversation that
-// is not the tweet itself or one of its ancestors.
+// Replies returns the direct replies to a tweet: the conversation entries whose
+// in_reply_to_status_id_str is this tweet.
+//
+// bird selects exactly this way (lib/twitter-client-tweet-detail.js:196) and the
+// depth-1 constraint is the command. "The conversation minus the focal tweet and
+// its ancestors" looks equivalent but is a subtraction, and X's TweetDetail nests
+// replies-to-replies inside the same conversationthread modules that carry the
+// direct replies — so the subtraction silently returns the whole subtree (35 vs
+// bird's 31 on one live conversation, 2 vs 1 on another).
+//
+// Order is X's entry order, unsorted, same as bird. Unlike `thread`, `replies`
+// does not sort by createdAt.
 func (c *Client) Replies(ctx context.Context, tweetID string) ([]Tweet, error) {
+	tweetID = strings.TrimSpace(tweetID)
 	conversation, err := c.Conversation(ctx, tweetID)
 	if err != nil {
 		return nil, err
 	}
 
-	// Ancestors sit above the focal tweet; everything else below it is a reply.
-	ancestors := make(map[string]bool)
-	for _, t := range ancestorChain(conversation, tweetID) {
-		ancestors[t.ID] = true
-	}
-
+	// Non-nil even when empty, so --json prints [] rather than null.
 	replies := make([]Tweet, 0, len(conversation))
 	for _, t := range conversation {
-		if t.ID == tweetID || ancestors[t.ID] {
-			continue
+		if t.InReplyToStatusID == tweetID {
+			replies = append(replies, t)
 		}
-		replies = append(replies, t)
 	}
 	return replies, nil
 }
@@ -240,8 +281,8 @@ func clampCount(count int) int {
 	}
 }
 
-// timeline runs a timeline operation and maps the tweets out of its response.
-func (c *Client) timeline(ctx context.Context, op timelineOp, variables map[string]any) ([]Tweet, error) {
+// timelinePageFor runs one timeline request and maps its tweets and cursor.
+func (c *Client) timelinePageFor(ctx context.Context, op timelineOp, variables map[string]any) (timelinePage, error) {
 	var (
 		body []byte
 		err  error
@@ -252,9 +293,116 @@ func (c *Client) timeline(ctx context.Context, op timelineOp, variables map[stri
 		body, err = c.graphQL(ctx, op.name, variables, op.features, nil)
 	}
 	if err != nil {
-		return nil, err
+		return timelinePage{}, err
 	}
-	return parseTimeline(body, op.roots)
+	return parseTimelinePage(body, op.roots)
+}
+
+// timelinePageSize is bird's pageSize for every timeline command.
+//
+// X treats `count` as a hint over ENTRIES, not a promise of parseable tweets:
+// a page can contain a tombstone (`tweet_results: {}` for a deleted or withheld
+// post) that both parsers drop, and several operations silently cap a page at
+// 20 regardless of what was asked. Requesting `-n N` in one shot and truncating
+// therefore under-returns, which is exactly what the loop below exists to fix.
+const timelinePageSize = 20
+
+// pagedOptions configures one paged walk.
+type pagedOptions struct {
+	// limit is the caller's -n.
+	limit int
+	// maxPages caps the walk; 0 is bird's unlimited.
+	maxPages int
+	// pageDelay waits before every page after the first; 0 is no wait. Only
+	// user-tweets has one.
+	pageDelay time.Duration
+	// variables builds one request. pageCount is bird's min(20, remaining);
+	// cursor is empty on the first page and must then be OMITTED from the
+	// payload, not sent as null — X rejects an explicit null cursor.
+	variables func(pageCount int, cursor string) map[string]any
+}
+
+// pagedTimeline is a transcription of bird's page loop, which is character-for-
+// character the same in searchPaged, getUserTweetsPaged, fetchHomeTimeline,
+// getLikesPaged, getBookmarksPaged and getListTimelinePaged.
+//
+// Two details are load-bearing and easy to lose:
+//   - the four termination conditions are evaluated BEFORE the maxPages check,
+//     so an exhausted timeline reports no cursor even when a page budget
+//     remains;
+//   - nextCursor is assigned at the bottom of a successful iteration, so a walk
+//     that hits the limit exactly still reports a cursor to resume from. An
+//     implementation that only sets it when it breaks early emits null where
+//     bird emits a cursor.
+func (c *Client) pagedTimeline(ctx context.Context, op timelineOp, o pagedOptions) ([]Tweet, string, error) {
+	if o.limit <= 0 {
+		o.limit = 20 // bird's default count
+	}
+
+	var (
+		tweets     []Tweet
+		cursor     string
+		nextCursor string
+		pages      int
+	)
+	seen := make(map[string]bool)
+
+	for len(tweets) < o.limit {
+		if pages > 0 && o.pageDelay > 0 {
+			timer := time.NewTimer(o.pageDelay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, "", ctx.Err()
+			case <-timer.C:
+			}
+		}
+
+		pageCount := timelinePageSize
+		if remaining := o.limit - len(tweets); remaining < pageCount {
+			pageCount = remaining
+		}
+
+		page, err := c.timelinePageFor(ctx, op, o.variables(pageCount, cursor))
+		if err != nil {
+			// bird fails the whole call and discards what it accumulated.
+			return nil, "", err
+		}
+		pages++
+
+		added := 0
+		for _, t := range page.tweets {
+			if seen[t.ID] {
+				continue
+			}
+			seen[t.ID] = true
+			tweets = append(tweets, t)
+			added++
+			if len(tweets) >= o.limit {
+				break
+			}
+		}
+
+		if page.cursor == "" || page.cursor == cursor || len(page.tweets) == 0 || added == 0 {
+			nextCursor = ""
+			break
+		}
+		if o.maxPages > 0 && pages >= o.maxPages {
+			nextCursor = page.cursor
+			break
+		}
+		cursor = page.cursor
+		nextCursor = page.cursor
+	}
+	return tweets, nextCursor, nil
+}
+
+// withCursor adds bird's conditionally-spread cursor variable.
+func withCursor(variables map[string]any, cursor string) map[string]any {
+	if cursor != "" {
+		variables["cursor"] = cursor
+	}
+	return variables
 }
 
 // graphQLPost issues a POST-style operation: variables ride in the query string
@@ -404,9 +552,22 @@ func buildQuery(variables map[string]any, features map[string]bool, fieldToggles
 	return params.Encode(), nil
 }
 
+// timelinePage is one response: the tweets it carried and the cursor to ask for
+// the next one, empty when the timeline is exhausted.
+type timelinePage struct {
+	tweets []Tweet
+	cursor string
+}
+
 // parseTimeline maps tweets from a response whose instructions live at one of
-// the given paths.
+// the given paths, discarding the cursor.
 func parseTimeline(body []byte, roots [][]string) ([]Tweet, error) {
+	page, err := parseTimelinePage(body, roots)
+	return page.tweets, err
+}
+
+// parseTimelinePage maps both the tweets and the Bottom cursor.
+func parseTimelinePage(body []byte, roots [][]string) (timelinePage, error) {
 	var envelope struct {
 		Data   json.RawMessage `json:"data"`
 		Errors []struct {
@@ -414,7 +575,7 @@ func parseTimeline(body []byte, roots [][]string) ([]Tweet, error) {
 		} `json:"errors"`
 	}
 	if err := json.Unmarshal(body, &envelope); err != nil {
-		return nil, &APIError{Message: "decoding response: " + err.Error()}
+		return timelinePage{}, &APIError{Message: "decoding response: " + err.Error()}
 	}
 
 	for _, root := range roots {
@@ -426,7 +587,10 @@ func parseTimeline(body []byte, roots [][]string) ([]Tweet, error) {
 		if err := json.Unmarshal(raw, &instructions); err != nil {
 			continue
 		}
-		return tweetsFromInstructions(instructions), nil
+		return timelinePage{
+			tweets: tweetsFromInstructions(instructions),
+			cursor: bottomCursorFromInstructions(instructions),
+		}, nil
 	}
 
 	// Nothing usable at any known path: surface X's error if it gave one, since
@@ -436,10 +600,10 @@ func parseTimeline(body []byte, roots [][]string) ([]Tweet, error) {
 		for _, e := range envelope.Errors {
 			messages = append(messages, e.Message)
 		}
-		return nil, &APIError{Message: strings.Join(messages, ", ")}
+		return timelinePage{}, &APIError{Message: strings.Join(messages, ", ")}
 	}
 	// An empty timeline is a legitimate result, not an error.
-	return nil, nil
+	return timelinePage{}, nil
 }
 
 // navigate walks a JSON object along a path of keys.

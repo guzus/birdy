@@ -131,8 +131,8 @@ func nativeLists(ctx context.Context, c *xapi.Client, args nativeArgs, out io.Wr
 			visibility = "[private]"
 		}
 		fmt.Fprintf(out, "%s %s\n", list.Name, visibility)
-		if list.Description != "" {
-			fmt.Fprintf(out, "  %s\n", truncateJS(list.Description, 100))
+		if description := deref(list.Description); description != "" {
+			fmt.Fprintf(out, "  %s\n", truncateJS(description, 100))
 		}
 		// bird prints "0 members" when X omits the count, unlike the user
 		// listing where an absent count suppresses the line entirely.
@@ -200,23 +200,26 @@ func nativeActivity(ctx context.Context, c *xapi.Client, args nativeArgs, out io
 	for _, kind := range types {
 		switch kind {
 		case "likes":
-			users, err := c.Favoriters(ctx, id, args.count)
+			page, err := c.Favoriters(ctx, id, args.count)
 			if err != nil {
 				return fmt.Errorf("Failed to fetch likes: %w", err)
 			}
-			report.Likes.Users = users
+			report.Likes.Users = page.Users
+			report.Likes.NextCursor = optionalString(page.NextCursor)
 		case "reposts":
-			users, err := c.Retweeters(ctx, id, args.count)
+			page, err := c.Retweeters(ctx, id, args.count)
 			if err != nil {
 				return fmt.Errorf("Failed to fetch reposts: %w", err)
 			}
-			report.Reposts.Users = users
+			report.Reposts.Users = page.Users
+			report.Reposts.NextCursor = optionalString(page.NextCursor)
 		case "quotes":
-			tweets, err := c.QuoteTweets(ctx, id, args.count)
+			page, err := c.QuoteTweets(ctx, id, args.count)
 			if err != nil {
 				return fmt.Errorf("Failed to fetch quotes: %w", err)
 			}
-			report.Quotes.Tweets = tweets
+			report.Quotes.Tweets = page.Tweets
+			report.Quotes.NextCursor = optionalString(page.NextCursor)
 		}
 	}
 
@@ -262,6 +265,15 @@ type activityReport struct {
 	} `json:"quotes"`
 }
 
+// optionalString maps an absent cursor to JSON null, which is what bird's
+// `page.nextCursor ?? null` emits.
+func optionalString(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
 // normalize replaces nil slices with empty ones so the JSON carries [] the way
 // bird's does, rather than null.
 func (r *activityReport) normalize() {
@@ -287,8 +299,8 @@ func renderActivityUsers(out io.Writer, heading string, users []xapi.ListedUser,
 	}
 	for _, user := range users {
 		fmt.Fprintf(out, "@%s (%s)\n", user.Username, user.Name)
-		if user.Description != "" {
-			fmt.Fprintf(out, "  %s\n", truncateJS(user.Description, 100))
+		if description := deref(user.Description); description != "" {
+			fmt.Fprintf(out, "  %s\n", truncateJS(description, 100))
 		}
 		if user.FollowersCount != nil {
 			fmt.Fprintf(out, "  %s %s followers\n", status("info", "ℹ️", "Info:", args), groupThousands(*user.FollowersCount))

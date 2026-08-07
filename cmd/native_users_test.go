@@ -11,9 +11,11 @@ import (
 
 func intPtr(n int) *int { return &n }
 
+func strPtr(s string) *string { return &s }
+
 func TestRenderUsersOutput(t *testing.T) {
 	users := []xapi.ListedUser{
-		{Username: "guzus", Name: "Guzus", Description: "builder", FollowersCount: intPtr(1234567)},
+		{Username: "guzus", Name: "Guzus", Description: strPtr("builder"), FollowersCount: intPtr(1234567)},
 		// No description and no reported count: both lines are omitted.
 		{Username: "quiet", Name: "Quiet"},
 	}

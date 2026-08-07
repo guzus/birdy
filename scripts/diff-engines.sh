@@ -105,30 +105,74 @@ else
 fi
 
 # shape reduces output to what should be stable regardless of which tweets came
-# back: the set of JSON field paths, or the sequence of line kinds.
+# back: an order-preserving fingerprint of the JSON structure, or the sequence
+# of line kinds.
 shape() {
   local file="$1" mode="$2"
   if [[ "$mode" == *--json* ]]; then
-    python3 - "$file" <<'PYEOF'
+    python3 - "$file" "${3:-strict}" <<'PYEOF'
 import json, sys
-def paths(node, prefix=""):
+
+# Keys that only some tweets carry. On a ranked feed the two engines see
+# different tweets, so their presence cannot be compared: an absent quotedTweet
+# may mean the parser dropped it or may mean this page had no quotes. They are
+# therefore elided in "loose" mode and verified on the deterministic commands
+# (read, thread, user-tweets on a fixed handle), where both engines see the
+# same tweets and a missing key is unambiguous.
+#
+# Verifying a property only where it is actually verifiable is the point. The
+# alternative — comparing them anyway — produces a failure on every ranked feed,
+# and a harness that cries wolf gets ignored, which is how the original
+# divergences survived in the first place.
+OPTIONAL = {"quotedTweet", "media", "article", "previewUrl", "videoUrl"}
+LOOSE = len(sys.argv) > 2 and sys.argv[2] == "loose"
+
+def shape(node, prefix=""):
     if isinstance(node, dict):
-        for k in sorted(node):
-            yield from paths(node[k], f"{prefix}.{k}")
+        # The ordered key list, emitted before the values. bird's output is
+        # JSON.stringify over an object literal and birdy's is Go marshalling a
+        # struct, so key ORDER and per-key PRESENCE are both part of the
+        # contract. Sorting the keys here (and unioning paths across a list)
+        # made both invisible, which is how a whole class of divergence —
+        # reordered fields, `"replyCount": 0` dropped by omitempty, an empty
+        # description omitted — survived this harness for months.
+        keys = [k for k in node if not (LOOSE and k in OPTIONAL)]
+        yield f"{prefix}{{{','.join(keys)}}}"
+        for k in keys:
+            yield from shape(node[k], f"{prefix}.{k}")
     elif isinstance(node, list):
-        # Every element, not just the first: a field only some entries carry
-        # (quotedTweet, media) is invisible if element 0 lacks it.
         yield f"{prefix}[]:len={len(node)}"
+        # The UNION of per-element key sequences, not the multiset of distinct
+        # element fingerprints.
+        #
+        # Fingerprinting each variant looked stricter and was unusable: two
+        # engines legitimately receive different tweets from a ranked feed, so
+        # one sample containing a quoted tweet and the other not produced
+        # different variant sets and a guaranteed failure. Measured on
+        # `home -n 5 --json`: zero tweet-id overlap, byte-identical key order
+        # on every element, reported FAIL.
+        #
+        # That matters more than it sounds. A harness that cries wolf on every
+        # ranked feed gets ignored, and an ignored harness is how the original
+        # divergences survived. The union still catches the three classes this
+        # has to catch — reordered fields, a key dropped by omitempty, an
+        # omitted empty string — because those change the key SEQUENCE that
+        # every element carries, not which elements were sampled.
+        seen = []
         for item in node:
-            yield from paths(item, f"{prefix}[]")
+            for line in shape(item, f"{prefix}[]"):
+                if line not in seen:
+                    seen.append(line)
+        yield from sorted(seen)
     else:
         yield f"{prefix}:{type(node).__name__}"
+
 try:
     data = json.load(open(sys.argv[1]))
 except Exception:
     sys.exit(0)
-for p in sorted(set(paths(data))):
-    print(p)
+for line in shape(data):
+    print(line)
 PYEOF
   else
     # Collapse each line to its kind: the label or prefix, not the payload.
@@ -214,8 +258,8 @@ for cmd in "${COMMANDS[@]}"; do
         fail=$((fail+1))
       fi
     else
-      shape "$OUT/$slug.native" "$mode" >"$OUT/$slug.native.shape"
-      shape "$OUT/$slug.bird" "$mode" >"$OUT/$slug.bird.shape"
+      shape "$OUT/$slug.native" "$mode" loose >"$OUT/$slug.native.shape"
+      shape "$OUT/$slug.bird" "$mode" loose >"$OUT/$slug.bird.shape"
       if diff -q "$OUT/$slug.native.shape" "$OUT/$slug.bird.shape" >/dev/null 2>&1; then
         echo "ok    $label  (shape; content is live)"
         pass=$((pass+1))
