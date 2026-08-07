@@ -99,17 +99,15 @@ func TestNativeSupports(t *testing.T) {
 		"read", "thread", "search", "home", "user-tweets", "replies",
 		"bookmarks", "list-timeline", "whoami", "about", "likes",
 		"followers", "following", "tweet", "reply", "follow", "unfollow", "unbookmark",
-		"check", "mentions", "query-ids", "lists", "activity",
+		"check", "mentions", "query-ids", "lists", "activity", "news",
 	} {
 		if !nativeSupports(command) {
 			t.Errorf("nativeSupports(%q) = false, want true", command)
 		}
 	}
-	// Not yet ported: these must still reach bird.
-	for _, command := range []string{"news"} {
-		if nativeSupports(command) {
-			t.Errorf("nativeSupports(%q) = true, but it has no native implementation", command)
-		}
+	// Nothing forwards to bird any more; every command birdy exposes is native.
+	if nativeSupports("definitely-not-a-command") {
+		t.Error("an unknown command must not report as supported")
 	}
 }
 
