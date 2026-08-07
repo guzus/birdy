@@ -2,47 +2,64 @@
   <img src="https://raw.githubusercontent.com/guzus/birdy/main/assets/birdy-dogfood.png" alt="Dogfooded in production by ai-research-arm: 9 divergences found, 0 caught by the test suite, 3 agents running read-only against live X" width="820">
 </p>
 
-## Dogfooded in production by ai-research-arm
+## 1.0.0 — one Go binary, no Node
 
-birdy is replacing the Node `bird` CLI with a native Go engine, command by command.
-This release is the first that [ai-research-arm](https://github.com/guzus/ai-research-arm)
-— birdy's heaviest consumer, whose hourly pipeline pulls X through it — put through a
-full differential run against live X.
+birdy began as a multi-account proxy in front of the Node
+[bird](https://github.com/steipete/bird) CLI. It now talks to X natively in Go.
+All 24 commands, reads and writes, are served in-process.
 
-Because both engines can run side by side, every command can be answered twice and
-compared:
+**The release is a single binary.** No bundled `bird`, no `node_modules`, no
+Node runtime. `install.sh` unpacks one file.
 
 ```bash
-birdy read <id> --json        # native Go
-birdy --bird read <id> --json # the Node reference
-scripts/diff-engines.sh       # every read command, every output mode
+curl -fsSL https://raw.githubusercontent.com/guzus/birdy/main/install.sh | bash
+birdy account add main && birdy tui
 ```
 
-**It found nine output divergences. The test suite had caught none of them.** That is the
-point of the exercise, not an embarrassment to bury: mocks verify that the code does what
-its author believed `bird` does, and only `bird` verifies what `bird` does. Among them:
+### What 1.0.0 commits to
 
-- **Quoted tweets were dropped entirely** — roughly a third of a live timeline quotes
-  another tweet, and every one of those was rendering as a bare comment with the thing it
-  referred to missing.
-- **`followers` returned nothing on every account.** X's GraphQL `Followers` operation
-  404s for cookie sessions; the v1.1 fallback that `bird` carries had not been ported.
-- **`whoami` could not resolve the account at all**, for the same reason — the endpoints
-  it used are gone.
-- Smaller ones with the same shape: `search` defaulted to 20 results where `bird` uses 10,
-  `--latest` was accepted and silently ignored on seven commands, and `-n 0` returned a
-  full page instead of an error.
+`pkg/tweet` is birdy's embeddable Go API — read X from a Go service without
+shelling out or standing up a host. Its exported names, struct fields, JSON tags
+and **field order** are frozen under semver, along with command and flag names,
+`--json` output shape, and the account store schema.
+[`COMPATIBILITY.md`](https://github.com/guzus/birdy/blob/main/COMPATIBILITY.md)
+states exactly what that covers — and, more usefully, what it cannot: X's
+GraphQL API is unversioned and undocumented, so a stable signature guarantees
+your code keeps compiling, not that a call keeps succeeding.
 
-The differential harness itself was also wrong, and ai-research-arm caught that too: its
-default fixture tweet had been deleted, so four commands reported `ok` while both engines
-were failing identically. A passing comparison now requires a real answer from both sides.
+### How it was verified
 
-**This release does not claim parity.** Several divergences are still open and tracked in
-[`COMPATIBILITY.md`](https://github.com/guzus/birdy/blob/main/COMPATIBILITY.md).
+Not by the test suite. Both engines ship together, so every command can be
+answered twice and diffed against live X:
 
-`--bird` is also why this release can drop Node without losing the ability to check itself.
-The archive is now a single Go binary — no bundled `bird`, no `node_modules` — but the flag
-survives, resolving `bird` from your `PATH` when you install it separately. Users get a
-Node-free binary; anyone who wants to re-run the comparison above still can. The method, and
-why that escape hatch outlives the migration, is in
+```bash
+scripts/diff-engines.sh          # 16 commands x 3 output modes, both engines
+```
+
+The full matrix passes **47 of 48**, with no skips — a skipped case is not a
+passing one. The single remaining difference is documented: birdy returns
+*more* per-user data than bird on `following`/`followers`, because it sends the
+persisted-query hash its variables were vetted against while bird discovers a
+newer one that returns less.
+
+That method found nine output divergences the entire Go test suite had missed,
+when [ai-research-arm](https://github.com/guzus/ai-research-arm) — birdy's
+heaviest consumer — replayed its production workloads through both engines.
+Quoted tweets were being dropped from roughly a third of a timeline.
+`followers` returned nothing at all. `whoami` could not resolve the account.
+Every one of those passed CI.
+
+So `--bird` survives 1.0.0. It resolves bird from your `PATH` when you install
+it separately, and it is the instrument that keeps this checkable. The
+reasoning is in
 [`docs/MIGRATION.md`](https://github.com/guzus/birdy/blob/main/docs/MIGRATION.md).
+
+### Also in this release
+
+- `birdy account disable <name>` takes an account out of rotation without
+  discarding its credentials — for a rate-limited, suspended, or stale login.
+- `--vpn` routes the native engine through SOCKS5 directly, with no local
+  bridge and no `undici`. It had silently become a no-op as commands were
+  ported; it is now verified by a measured change of egress IP.
+- Timeline commands page to fill `-n` instead of silently truncating at one
+  page. This costs up to `ceil(n/20)` requests where it previously cost one.
