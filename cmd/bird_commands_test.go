@@ -252,3 +252,22 @@ func TestParseBoolFlag(t *testing.T) {
 		}
 	}
 }
+
+// Every command bird knows must be a registered cobra command, so it gets
+// DisableFlagParsing (which is what protects the post-subcommand flag region)
+// and a help entry. `help` is excluded: cobra owns that name.
+func TestBirdCommandsCoverBirdKnownCommands(t *testing.T) {
+	// third_party/@steipete/bird/dist/cli/program.js:19-44.
+	known := []string{
+		"tweet", "activity", "reply", "query-ids", "read", "replies", "thread",
+		"search", "mentions", "bookmarks", "unbookmark", "follow", "unfollow",
+		"following", "followers", "likes", "lists", "list-timeline", "home",
+		"user-tweets", "news", "trending", "whoami", "check",
+	}
+	for _, name := range known {
+		found, _, err := rootCmd.Find([]string{name})
+		if err != nil || found == rootCmd || found.Name() != name {
+			t.Errorf("%q is a bird command but is not registered on rootCmd", name)
+		}
+	}
+}

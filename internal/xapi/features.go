@@ -80,6 +80,41 @@ var tweetDetailFieldToggles = map[string]bool{
 	"withPayments":                false,
 }
 
+// articleFieldToggles accompanies articleFeatures on a UserArticlesTweets call.
+// withArticlePlainText is the one that matters — it is what makes X serve the
+// article body this endpoint exists to recover.
+var articleFieldToggles = map[string]bool{
+	"withArticlePlainText":        true,
+	"withArticleRichContentState": true,
+	"withAuxiliaryUserLabels":     false,
+	"withDisallowedReplyControls": false,
+	"withGrokAnalyze":             false,
+	"withPayments":                false,
+}
+
+// userArticlesVariables builds the variables for UserArticlesTweets, bird's
+// read-time fallback for an article whose TweetDetail response carried a title
+// and no body (lib/twitter-client-tweet-detail.js:11-60).
+func userArticlesVariables(userID string) map[string]any {
+	return map[string]any{
+		"userId":                                 userID,
+		"count":                                  20,
+		"includePromotedContent":                 true,
+		"withVoice":                              true,
+		"withQuickPromoteEligibilityTweetFields": true,
+		"withBirdwatchNotes":                     true,
+		"withCommunity":                          true,
+		"withSafetyModeUserFields":               true,
+		"withSuperFollowsUserFields":             true,
+		"withDownvotePerspective":                false,
+		"withReactionsMetadata":                  false,
+		"withReactionsPerspective":               false,
+		"withSuperFollowsTweetFields":            true,
+		"withSuperFollowsReplyCount":             false,
+		"withClientEventToken":                   false,
+	}
+}
+
 // tweetDetailVariables builds the variables payload for a conversation fetch.
 func tweetDetailVariables(tweetID string) map[string]any {
 	return map[string]any{

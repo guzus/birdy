@@ -52,41 +52,12 @@ sudo install -m 755 "$BIN_SRC" "$INSTALL_DIR/birdy"
 
 echo "birdy installed to $INSTALL_DIR/birdy"
 
-if [ -f "$TMPDIR/bird/dist/cli.js" ]; then
-  # Install the vendored bird npm package next to birdy and create a small wrapper
-  # so birdy can exec `birdy-bird` without needing the user to install bird.
-  sudo rm -rf "$INSTALL_DIR/bird"
-  sudo mkdir -p "$INSTALL_DIR/bird"
-  sudo cp -R "$TMPDIR/bird/." "$INSTALL_DIR/bird/"
-  sudo chmod +x "$INSTALL_DIR/bird/dist/cli.js" 2>/dev/null || true
-
-  WRAPPER="$TMPDIR/birdy-bird"
-  cat >"$WRAPPER" <<'EOF'
-#!/bin/sh
-set -e
-
-ROOT="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-CLI="$ROOT/bird/dist/cli.js"
-
-if [ ! -f "$CLI" ]; then
-  echo "Error: bundled bird CLI not found at $CLI" >&2
-  exit 1
-fi
-
-if ! command -v node >/dev/null 2>&1; then
-  echo "Error: node (>= 22) is required to run the bundled bird CLI." >&2
-  exit 1
-fi
-
-exec node "$CLI" "$@"
-EOF
-  chmod +x "$WRAPPER"
-  sudo install -m 755 "$WRAPPER" "$INSTALL_DIR/birdy-bird"
-
-  echo "bird (bundled) installed to $INSTALL_DIR/bird (wrapper: $INSTALL_DIR/birdy-bird)"
-else
-  echo "Warning: bundled bird package not found in the release archive."
-  echo "Install bird separately from https://github.com/steipete/bird"
-fi
+# The release archive no longer carries the bird CLI or its node_modules, so
+# there is nothing to unpack here and no Node runtime to require. birdy serves
+# every command itself.
+#
+# `--bird` still works for anyone who wants to diff the two engines against each
+# other; it resolves bird from BIRDY_BIRD_PATH or PATH. Installing bird is a
+# maintainer's choice now, not a precondition for birdy working.
 
 birdy version

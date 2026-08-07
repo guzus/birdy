@@ -79,7 +79,7 @@ func runPassthrough(cmd *cobra.Command, args []string) error {
 	// bird keeps commands that have not been ported working, and --bird forces
 	// the bird path for anything.
 	command := args[0]
-	if !useBird() && nativeSupports(command) && nativeAcceptsFlags(args[1:]) {
+	if !useBird() && nativeSupports(command) && nativeAcceptsFlags(command, args[1:]) {
 		if verboseFlag {
 			fmt.Fprintf(errOut, "[birdy] engine: native (go)\n")
 		}
