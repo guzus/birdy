@@ -68,7 +68,10 @@ Stored by default:
 
 ### 3. Run Bird Commands Through Birdy
 
-Any unknown command/flag is forwarded to bird using the selected account.
+birdy serves every command natively using the selected account. A flag birdy
+does not implement (`--all`, `--max-pages`, `--cursor`, `--json-full`,
+`--media`) is refused rather than ignored; add `--bird` to run the original
+Node engine instead, which requires installing bird separately.
 
 ```bash
 # Auto-rotate accounts

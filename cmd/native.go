@@ -19,9 +19,10 @@ import (
 
 // Commands birdy serves itself, in Go, without spawning the bird CLI.
 //
-// Anything not listed here still forwards to bird. The --bird flag (or
-// BIRDY_USE_BIRD=1) forces the bird path even for commands that are listed,
-// which is the escape hatch when a native implementation misbehaves.
+// Every command birdy serves is here; nothing forwards to bird by default. The
+// --bird flag (or BIRDY_USE_BIRD=1) still forces the bird path when bird is
+// installed separately, which is how birdy's output is verified against the
+// engine it replaced.
 var nativeCommands = map[string]func(context.Context, *xapi.Client, nativeArgs, io.Writer) error{
 	"read":          nativeRead,
 	"thread":        nativeThread,
@@ -46,6 +47,7 @@ var nativeCommands = map[string]func(context.Context, *xapi.Client, nativeArgs, 
 	"query-ids":     nativeQueryIDs,
 	"lists":         nativeLists,
 	"activity":      nativeActivity,
+	"news":          nativeNews,
 }
 
 // defaultCounts overrides the common default of 20 where bird differs.
@@ -53,6 +55,7 @@ var defaultCounts = map[string]int{
 	"mentions": 10,
 	"search":   10,
 	"lists":    100,
+	"news":     10,
 }
 
 // nativeSupports reports whether a command has a native implementation.
@@ -95,6 +98,9 @@ type nativeArgs struct {
 	memberOf bool
 	// types is `activity`'s --types selector.
 	types string
+	// aiOnly and newsTabs drive `news`.
+	aiOnly   bool
+	newsTabs []string
 	// authToken and ct0 are the selected account's credentials, needed by
 	// `check`, which reports on them rather than calling X.
 	authToken string
@@ -132,6 +138,10 @@ func parseNativeArgs(args []string) nativeArgs {
 			parsed.latest = true
 		case arg == "--member-of":
 			parsed.memberOf = true
+		case arg == "--ai-only":
+			parsed.aiOnly = true
+		case newsTabFlags[arg] != "":
+			parsed.newsTabs = append(parsed.newsTabs, newsTabFlags[arg])
 		case arg == "--types":
 			if i+1 < len(args) {
 				parsed.types = args[i+1]
@@ -200,6 +210,10 @@ var commandExtraFlags = map[string]map[string]bool{
 	"mentions": {"--user": true, "-u": true},
 	"lists":    {"--member-of": true},
 	"activity": {"--types": true},
+	"news": {
+		"--ai-only": true, "--for-you": true, "--news-only": true,
+		"--sports": true, "--entertainment": true, "--trending-only": true,
+	},
 }
 
 // flagsTakingValue consume the following argument, which must not then be
@@ -569,6 +583,7 @@ var emptyMessages = map[string]string{
 	"bookmarks":     "No bookmarks found.",
 	"likes":         "No liked tweets found.",
 	"mentions":      "No mentions found.",
+	"news":          "No news items found.",
 }
 
 const defaultEmptyMessage = "No tweets found."

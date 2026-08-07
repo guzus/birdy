@@ -35,6 +35,7 @@ const SETS = {
   followingFeatures: 'buildFollowingFeatures',
   tweetCreateFeatures: 'buildTweetCreateFeatures',
   listsFeatures: 'buildListsFeatures',
+  exploreFeatures: 'buildExploreFeatures',
   articleFeatures: 'buildArticleFeatures',
 };
 
@@ -78,6 +79,7 @@ const OPERATIONS = [
   // for follow/unfollow; the REST path is tried first.
   'CreateTweet', 'CreateFriendship', 'DestroyFriendship', 'DeleteBookmark',
   'ListOwnerships', 'ListMemberships', 'Favoriters', 'Retweeters',
+  'GenericTimelineById',
   // Carries no feature set of its own; only its hash is needed.
   'AboutAccountQuery',
   // bird's read-time fallback for an article whose TweetDetail response gave a
