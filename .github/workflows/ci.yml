@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Lets CI be started by hand against any ref, which is the only lever left
+  # when GitHub stops dispatching push/pull_request events for the repo:
+  #   gh workflow run ci.yml --ref <branch>
+  # It also makes stacked PRs testable — their base is not main, so the
+  # pull_request trigger above never matches them.
+  workflow_dispatch:
 
 jobs:
   test:
