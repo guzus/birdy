@@ -141,12 +141,13 @@ func runWithIOContext(ctx context.Context, account *store.Account, args []string
 // findBird locates the bird binary.
 //
 // Lookup order:
-// - BIRDY_BIRD_PATH (explicit override)
-// - PATH: birdy-bird, then bird
-// - next to the running birdy binary:
-//   - bird/dist/cli.js (bundled npm package)
-//   - third_party/@steipete/bird/dist/cli.js (vendored for repo builds)
-//   - bird / birdy-bird
+//   - BIRDY_BIRD_PATH (explicit override)
+//   - PATH: birdy-bird, then bird
+//   - next to the running birdy binary (bird / birdy-bird), which covers a
+//     manual side-by-side install
+//   - third_party/@steipete/bird/dist/cli.js, which exists only in a repo
+//     checkout: it is the reference bird that scripts/diff-engines.sh and
+//     scripts/gen-features.mjs read, and is deliberately NOT in the release
 //   - bird_<goos>_<goarch> / birdy-bird_<goos>_<goarch>
 func findBird() (string, error) {
 	if p := strings.TrimSpace(os.Getenv("BIRDY_BIRD_PATH")); p != "" {
@@ -204,7 +205,14 @@ func findBird() (string, error) {
 	}
 
 	return "", fmt.Errorf(
-		"bird CLI not found.\n\nbirdy looks for:\n- `birdy-bird` on your PATH\n- a bundled bird package next to the birdy executable at `bird/dist/cli.js`\n- `bird` on your PATH\n\nInstall bird from https://github.com/steipete/bird, or reinstall birdy using the installer which bundles bird.",
+		"bird CLI not found, and --bird requires it.\n\n" +
+			"birdy no longer ships bird: every command is served natively, so the " +
+			"release is a single Go binary with no Node runtime.\n\n" +
+			"--bird exists to run the old engine side by side with the new one, " +
+			"which is how birdy's output is verified against it. If that is what " +
+			"you want, install bird and re-run:\n\n" +
+			"  npm install -g @steipete/bird\n\n" +
+			"birdy looks for `birdy-bird` then `bird` on PATH, or BIRDY_BIRD_PATH.",
 	)
 }
 

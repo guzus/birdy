@@ -17,18 +17,17 @@ builds:
       - -X github.com/guzus/birdy/cmd.date={{.Date}}
 
 archives:
+  # The archive is the birdy binary and nothing else. It used to carry the
+  # vendored bird CLI and its node_modules, which made a Go binary's release
+  # depend on a Node runtime being present to be useful. Every command birdy
+  # serves is native now, so the bundle bought nothing but weight.
+  #
+  # --bird still works: it resolves bird from BIRDY_BIRD_PATH or PATH, so a
+  # maintainer who wants to diff the two engines installs bird separately.
+  # That is deliberate — see docs/MIGRATION.md on why the escape hatch outlives
+  # the migration.
   - format: tar.gz
     name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
-    files:
-      # `*` matches top-level files (package.json, README.md, LICENSE,
-      # CHANGELOG.md) directly, and goreleaser/fileglob recursively expands
-      # any matching directories (dist/, node_modules/) via fs.WalkDir, so a
-      # single pattern covers everything. The previous `**/*` skipped
-      # top-level files, leaving package.json out and breaking the bird CLI
-      # with "Cannot use import statement outside a module" because Node
-      # could not see `"type": "module"`.
-      - src: "third_party/@steipete/bird/*"
-        dst: "bird"
     format_overrides:
       - goos: windows
         format: zip
