@@ -1,6 +1,7 @@
 package vpn
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/binary"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -219,11 +221,11 @@ func TestBridgeRejectsNonCONNECT(t *testing.T) {
 
 func TestParseSOCKS5URL(t *testing.T) {
 	cases := []struct {
-		in           string
-		host         string
-		port         int
-		user, pass   string
-		wantErr      bool
+		in         string
+		host       string
+		port       int
+		user, pass string
+		wantErr    bool
 	}{
 		{"socks5://user:pass@host:1080", "host", 1080, "user", "pass", false},
 		{"socks5://host:1080", "host", 1080, "", "", false},
@@ -247,5 +249,59 @@ func TestParseSOCKS5URL(t *testing.T) {
 			t.Errorf("parseSOCKS5URL(%q) = (%q,%d,%q,%q), want (%q,%d,%q,%q)",
 				c.in, h, p, u, pw, c.host, c.port, c.user, c.pass)
 		}
+	}
+}
+
+// DialContext is what makes --vpn work on the native path. A regression here is
+// silent: the command still succeeds, it just stops going through the exit.
+func TestDialContextRejectsEmptyServer(t *testing.T) {
+	if _, err := DialContext("", 1080, "u", "p"); err == nil {
+		t.Error("an empty server must not produce a dialer that silently connects directly")
+	}
+}
+
+func TestDialContextDefaultsThePort(t *testing.T) {
+	// Port 0 means "unset" in the config, not "port zero".
+	if _, err := DialContext("example.com", 0, "u", "p"); err != nil {
+		t.Errorf("port 0 should fall back to 1080, got %v", err)
+	}
+}
+
+// The dialer must actually carry traffic to the SOCKS5 endpoint rather than
+// dialing the destination directly.
+func TestDialContextTargetsTheProxy(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	reached := make(chan struct{}, 1)
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		reached <- struct{}{}
+		c.Close()
+	}()
+
+	host, portStr, _ := net.SplitHostPort(ln.Addr().String())
+	port, _ := strconv.Atoi(portStr)
+	dial, err := DialContext(host, port, "", "")
+	if err != nil {
+		t.Fatalf("DialContext: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	// The handshake will fail — this is not a real SOCKS5 server — but the
+	// connection must land on the proxy address, which is what we assert.
+	_, _ = dial(ctx, "tcp", "example.com:443")
+
+	select {
+	case <-reached:
+	case <-time.After(3 * time.Second):
+		t.Error("dialer never connected to the SOCKS5 endpoint")
 	}
 }

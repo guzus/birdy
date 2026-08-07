@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"slices"
@@ -415,4 +416,22 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "..."
+}
+
+// SetDialContext routes every request through the given dialer.
+//
+// This is how --vpn works on the native path. bird needed a whole apparatus for
+// the same job — a local HTTP CONNECT bridge, an embedded bootstrap.js, and an
+// npm-installed undici — because Node's built-in fetch honors neither SOCKS5
+// nor the proxy environment variables. Go's transport takes a dialer directly.
+func (c *Client) SetDialContext(dial func(ctx context.Context, network, addr string) (net.Conn, error)) {
+	transport := &http.Transport{
+		DialContext:           dial,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          10,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+	c.httpClient = &http.Client{Timeout: c.httpClient.Timeout, Transport: transport}
 }

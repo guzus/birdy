@@ -297,6 +297,22 @@ func runNative(ctx context.Context, account *store.Account, command string, args
 	if err != nil {
 		return err
 	}
+
+	// --vpn routes this invocation through the configured SOCKS5 exit.
+	//
+	// This has to happen here rather than in passthrough.go, where the bird-era
+	// setup lives: that code runs after the native dispatch has already
+	// returned, so once every command became native, --vpn silently stopped
+	// doing anything. A routing flag that is a no-op is worse than one that
+	// errors — the caller believes their egress IP changed when it did not.
+	if vpnFlag || vpnServerFlag != "" {
+		dial, err := vpnDialer(os.Stderr)
+		if err != nil {
+			return err
+		}
+		client.SetDialContext(dial)
+	}
+
 	parsed := parseNativeArgs(args)
 	if parsed.countErr != nil {
 		return parsed.countErr
