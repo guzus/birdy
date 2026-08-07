@@ -88,7 +88,6 @@ print_section() {
   printf '\n'
 }
 
-bird_version="$(sed -n 's/.*"version": "\([^"]*\)".*/\1/p' third_party/@steipete/bird/package.json | head -n1)"
 
 if ! subjects_raw="$(git log --no-merges --reverse --format='%s' "${range}")"; then
   printf 'error: failed to collect commits for range %q\n' "${range}" >&2
@@ -132,6 +131,21 @@ printf '# %s\n\n' "${release_name}"
 # or delete it to fall straight through to the generated sections.
 highlight_file="${RELEASE_HIGHLIGHT_FILE:-docs/release-highlight.md}"
 if [[ -s "${highlight_file}" ]]; then
+  # The highlight is replayed verbatim on every tag, so a version number
+  # written into it is wrong on the next release and every one after. v1.0.2
+  # shipped announcing "1.0.1" with a section titled "What 1.0.0 commits to",
+  # because the file was written for one release and then reused.
+  #
+  # Anything version-specific belongs in the generated sections below, which
+  # are derived from the actual commit range.
+  if stray="$(grep -nE '[0-9]+\.[0-9]+\.[0-9]+' "${highlight_file}" | grep -v "${release_name#v}" || true)"; then
+    if [[ -n "${stray}" ]]; then
+      printf 'error: %s mentions a version number; it is reused for every release\n' "${highlight_file}" >&2
+      printf '%s\n' "${stray}" >&2
+      exit 1
+    fi
+  fi
+
   cat "${highlight_file}"
   printf '\n'
 fi
@@ -139,9 +153,6 @@ fi
 printf '## Overview\n\n'
 if [[ -n "${previous_ref}" ]]; then
   printf -- '- Changes since `%s`\n' "${previous_ref}"
-fi
-if [[ -n "${bird_version}" ]]; then
-  printf -- '- Bundles upstream `bird` CLI `%s`\n' "${bird_version}"
 fi
 printf -- '- Generated from `git log --no-merges %s`\n\n' "${range}"
 
