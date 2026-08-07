@@ -10,7 +10,9 @@ import (
 	"sync"
 	"time"
 
+	"context"
 	"golang.org/x/net/proxy"
+	"strconv"
 )
 
 // Bridge is an in-process HTTP CONNECT proxy that forwards to a remote
@@ -164,4 +166,40 @@ func parseSOCKS5URL(raw string) (host string, port int, user, password string, e
 		password, _ = u.User.Password()
 	}
 	return host, port, user, password, nil
+}
+
+// DialContext returns a SOCKS5 dialer for the given endpoint, for callers that
+// speak Go's net stack and need no HTTP CONNECT bridge in between.
+//
+// The Bridge above exists only for the Node path. Once nothing shells out to
+// bird, this function is the whole of birdy's VPN support and the bridge,
+// bootstrap.js and undici can all go.
+func DialContext(server string, port int, user, password string) (func(ctx context.Context, network, addr string) (net.Conn, error), error) {
+	if strings.TrimSpace(server) == "" {
+		return nil, fmt.Errorf("vpn: empty SOCKS5 server")
+	}
+	if port == 0 {
+		port = 1080
+	}
+
+	var auth *proxy.Auth
+	if user != "" || password != "" {
+		auth = &proxy.Auth{User: user, Password: password}
+	}
+
+	target := net.JoinHostPort(server, strconv.Itoa(port))
+	dialer, err := proxy.SOCKS5("tcp", target, auth, proxy.Direct)
+	if err != nil {
+		return nil, fmt.Errorf("vpn: building SOCKS5 dialer: %w", err)
+	}
+
+	// x/net's SOCKS5 dialer implements ContextDialer, but the interface is only
+	// discoverable by assertion; fall back to the context-less form rather than
+	// failing when it does not.
+	if ctxDialer, ok := dialer.(proxy.ContextDialer); ok {
+		return ctxDialer.DialContext, nil
+	}
+	return func(_ context.Context, network, addr string) (net.Conn, error) {
+		return dialer.Dial(network, addr)
+	}, nil
 }

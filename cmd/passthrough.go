@@ -14,6 +14,7 @@ import (
 	"github.com/guzus/birdy/internal/vpn"
 	"github.com/guzus/birdy/internal/xapi"
 	"github.com/spf13/cobra"
+	"net"
 )
 
 func runPassthrough(cmd *cobra.Command, args []string) error {
@@ -153,6 +154,34 @@ func runPassthrough(cmd *cobra.Command, args []string) error {
 		os.Exit(res.ExitCode)
 	}
 	return nil
+}
+
+// vpnDialer resolves the configured SOCKS5 exit into a Go dialer.
+//
+// The native engine needs no HTTP CONNECT bridge and no undici: Go's transport
+// takes a dialer directly. startVPN below still exists for the --bird path,
+// which runs Node and does need the bridge.
+func vpnDialer(errOut io.Writer) (func(ctx context.Context, network, addr string) (net.Conn, error), error) {
+	cfg, err := vpn.Load()
+	if err != nil {
+		return nil, fmt.Errorf("loading vpn config: %w", err)
+	}
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	server, err := cfg.PickServer(vpnServerFlag)
+	if err != nil {
+		return nil, err
+	}
+
+	dial, err := vpn.DialContext(server, cfg.Port, cfg.User, cfg.Password)
+	if err != nil {
+		return nil, err
+	}
+	if verboseFlag {
+		fmt.Fprintf(errOut, "[birdy] vpn: routing through %s:%d\n", server, cfg.Port)
+	}
+	return dial, nil
 }
 
 // startVPN loads the VPN config, picks a server, starts the local
