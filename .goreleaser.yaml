@@ -36,9 +36,18 @@ brews:
   - repository:
       owner: guzus
       name: homebrew-tap
+      # Pushing a formula into another repository needs a token that can write
+      # to it; the workflow's default GITHUB_TOKEN is scoped to this one.
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     homepage: "https://github.com/guzus/birdy"
-    description: "Multi-account proxy for the bird CLI to reduce rate-limit risk"
+    description: "Multi-account X/Twitter CLI with account rotation, in one Go binary"
     license: "MIT"
+    # The formula installs a single binary — there is no Node runtime and no
+    # bundled bird to depend on.
+    install: |
+      bin.install "birdy"
+    test: |
+      assert_match "birdy", shell_output("#{bin}/birdy version")
 
 changelog:
   sort: asc

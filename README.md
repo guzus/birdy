@@ -335,6 +335,24 @@ NordVPN service credentials are different from your account login — find them 
 
 ## Install
 
+### Homebrew
+
+```bash
+brew tap guzus/tap
+brew trust guzus/tap      # Homebrew requires trusting third-party taps
+brew install birdy
+```
+
+Or in one line, still after trusting: `brew install guzus/tap/birdy`.
+
+`brew install birdy` on its own — with no tap — needs birdy to be in
+homebrew-core, which requires a level of notability the project has not reached
+yet. Until then the tap is the route.
+
+### Script
+
+
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/guzus/birdy/main/install.sh | bash
 ```
