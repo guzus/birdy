@@ -99,6 +99,15 @@ here rather than quietly diverging. The current list:
 - **`whoami`** does not print bird's `source:` line on stderr. birdy resolves
   credentials from its own account store, so there is no cookie source to name.
 - **`--limit`** is birdy's own alias for `-n`. bird has no such flag.
+- **`following` / `followers` `--json` carry more per-user data than bird's.**
+  Measured on the same account and the same user id: birdy emits
+  `description`, `followersCount` and `followingCount`; bird emits none of the
+  three. The likely cause is that birdy answers from the v1.1 list endpoint —
+  which returns a full user object — where bird answers from a GraphQL payload
+  that carried no `legacy` block. **Unconfirmed:** the account was rate-limited
+  before the path could be traced, so this is a hypothesis, not a finding.
+  birdy's output is a superset, so a consumer reading bird's fields still gets
+  them.
 
 ## Reporting a break
 
