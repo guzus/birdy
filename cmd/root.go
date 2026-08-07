@@ -46,12 +46,13 @@ var (
 
 var rootCmd = &cobra.Command{
 	Use:   "birdy",
-	Short: "Multi-account proxy for the bird CLI",
-	Long: `birdy manages multiple X/Twitter auth tokens and proxies commands
-to the bird CLI, rotating between accounts to reduce rate-limit risk.
+	Short: "Multi-account X/Twitter CLI",
+	Long: `birdy manages multiple X/Twitter auth tokens and calls X directly,
+rotating between accounts to reduce rate-limit risk. No Node, no bird
+CLI, no other runtime — the X commands are implemented in birdy itself.
 
-Any command not recognized by birdy is forwarded directly to bird
-using the next account in the rotation.
+--bird (or BIRDY_USE_BIRD=1) forces the bird CLI instead, if you have
+it installed; that path also catches any command birdy doesn't know.
 
 Examples:
   birdy read 1234567890           # read a tweet, auto-rotating accounts

@@ -7,10 +7,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// makeBirdCmd creates a lightweight cobra command that forwards to bird
-// via the existing passthrough logic.
+// makeBirdCmd creates a lightweight cobra command that hands the invocation to
+// runPassthrough, which picks the account and then serves the command natively
+// (or, under --bird, spawns the bird CLI).
 //
-// We set DisableFlagParsing on bird subcommands because bird has its own
+// We set DisableFlagParsing on these subcommands because they carry bird's own
 // flags (--max-pages, --json, -n, etc) that cobra would otherwise try to
 // validate. The side-effect is that birdy's own global flags (--account/-a,
 // --strategy/-s, --verbose/-v) also bypass cobra's parsing when they appear
@@ -180,7 +181,7 @@ func parseBoolFlag(s string) (bool, bool) {
 
 func init() {
 	rootCmd.AddGroup(
-		&cobra.Group{ID: "bird", Title: "Bird Commands (forwarded to bird):"},
+		&cobra.Group{ID: "bird", Title: "X Commands:"},
 		&cobra.Group{ID: "birdy", Title: "Birdy Commands:"},
 	)
 
