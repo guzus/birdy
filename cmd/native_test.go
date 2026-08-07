@@ -98,14 +98,14 @@ func TestNativeSupports(t *testing.T) {
 	for _, command := range []string{
 		"read", "thread", "search", "home", "user-tweets", "replies",
 		"bookmarks", "list-timeline", "whoami", "about", "likes",
-		"followers", "following",
+		"followers", "following", "tweet", "reply", "follow", "unfollow", "unbookmark",
 	} {
 		if !nativeSupports(command) {
 			t.Errorf("nativeSupports(%q) = false, want true", command)
 		}
 	}
 	// Not yet ported: these must still reach bird.
-	for _, command := range []string{"tweet", "reply", "follow", "lists", "news", "mentions", "check"} {
+	for _, command := range []string{"lists", "news", "mentions", "check", "activity", "query-ids"} {
 		if nativeSupports(command) {
 			t.Errorf("nativeSupports(%q) = true, but it has no native implementation", command)
 		}

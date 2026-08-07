@@ -446,12 +446,19 @@ birdy serves these commands itself, in Go, with no Node.js and no `bird` binary:
 
 `read` `thread` `replies` `search` `home` `user-tweets` `bookmarks`
 `list-timeline` `whoami` `about` `likes` `followers` `following`
+`tweet` `reply` `follow` `unfollow` `unbookmark`
 
 Everything else still forwards to [bird](https://github.com/steipete/bird) and
-still needs Node. That fallback is transitional and shrinks as commands are
-ported; the remaining set is dominated by the write operations (`tweet`,
-`reply`, `follow`, `unfollow`, `unbookmark`), which need a mutation path the
-Go client does not have yet.
+still needs Node: `activity` `check` `lists` `mentions` `news` `query-ids`.
+That fallback is transitional and shrinks as commands are ported.
+
+Posting, replying, following and unbookmarking are served natively, and they
+inherit the same guards as the bird path: `BIRDY_READ_ONLY=1` and per-account
+`read_only` are enforced before the engine is chosen, so making a command
+native is never a way around them. None of the write commands retry — a
+timed-out post may have landed, and a duplicate is worse than a reported
+failure. Media upload is not implemented, so a post carrying `--media` still
+falls back to bird rather than silently dropping the attachment.
 
 `whoami` resolves the account behind the current credentials, which is also what
 lets `likes` match bird's signature — bird's `likes` takes no handle and reads

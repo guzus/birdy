@@ -41,6 +41,13 @@ type APIError struct {
 	Message    string
 	// RateLimited reports an HTTP 429.
 	RateLimited bool
+	// Code is X's own error code from a v1.1 error envelope, when present.
+	Code int
+	// Terminal marks an answer that will not change on retry — blocked, user
+	// not found, already in the requested state. Callers use it to stop
+	// falling through to an alternate endpoint that would report the same
+	// thing less clearly.
+	Terminal bool
 }
 
 func (e *APIError) Error() string {
@@ -68,6 +75,9 @@ type Client struct {
 	// Overridable so tests can point them at a local server.
 	viewerEndpoints []string
 	viewer          viewerCache
+
+	// friendshipEndpoints overrides the v1.1 follow/unfollow URLs. Tests only.
+	friendshipEndpoints []string
 }
 
 // NewClient builds a client for the given credentials.
@@ -85,6 +95,12 @@ func NewClient(creds Credentials) (*Client, error) {
 		deviceID:        randomHex(16),
 		viewerEndpoints: defaultViewerEndpoints,
 	}, nil
+}
+
+// SetFriendshipEndpoints overrides the v1.1 follow/unfollow URLs.
+// Intended for tests; production callers should leave the defaults in place.
+func (c *Client) SetFriendshipEndpoints(endpoints []string) {
+	c.friendshipEndpoints = endpoints
 }
 
 // SetViewerEndpoints overrides the v1.1 account URLs CurrentUser tries.

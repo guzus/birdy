@@ -36,6 +36,11 @@ var nativeCommands = map[string]func(context.Context, *xapi.Client, nativeArgs, 
 	"likes":         nativeLikes,
 	"followers":     nativeFollowers,
 	"following":     nativeFollowing,
+	"tweet":         nativeTweet,
+	"reply":         nativeReply,
+	"follow":        nativeFollow,
+	"unfollow":      nativeUnfollow,
+	"unbookmark":    nativeUnbookmark,
 }
 
 // nativeSupports reports whether a command has a native implementation.
@@ -61,8 +66,11 @@ type nativeArgs struct {
 	// positional is the first non-flag argument: a tweet id/url, handle, query,
 	// or list id depending on the command.
 	positional string
-	count      int
-	json       bool
+	// positionals is every non-flag argument in order. reply takes two, and
+	// unbookmark is variadic.
+	positionals []string
+	count       int
+	json        bool
 	// plain and emoji mirror bird's output switches so rendering matches.
 	plain bool
 	emoji bool
@@ -120,6 +128,7 @@ func parseNativeArgs(args []string) nativeArgs {
 			if parsed.positional == "" {
 				parsed.positional = arg
 			}
+			parsed.positionals = append(parsed.positionals, arg)
 		}
 	}
 	return parsed
@@ -162,6 +171,21 @@ var commandUnsupportedFlags = map[string]map[string]bool{
 	// bird's `about` takes only --json; count and latest are meaningless here.
 	"about": {"-n": true, "--count": true, "--limit": true, "--latest": true},
 	"likes": {"--latest": true},
+	// The write commands take no output or paging flags. --json in particular
+	// is not one bird offers here, and answering it would be a divergence.
+	"tweet":      writeCommandFlags,
+	"reply":      writeCommandFlags,
+	"follow":     writeCommandFlags,
+	"unfollow":   writeCommandFlags,
+	"unbookmark": writeCommandFlags,
+}
+
+// writeCommandFlags are rejected by every mutating command, so anything beyond
+// the output switches falls back to bird. Media upload is deliberately in this
+// set: birdy has no upload path, and --media must not be silently dropped from
+// a post.
+var writeCommandFlags = map[string]bool{
+	"--json": true, "-n": true, "--count": true, "--limit": true, "--latest": true,
 }
 
 // nativeAcceptsFlags reports whether every flag in args is one the native path
