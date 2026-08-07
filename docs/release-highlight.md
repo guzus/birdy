@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/guzus/birdy/main/assets/birdy-dogfood.png" alt="Dogfooded in production by ai-research-arm: 9 divergences found, 0 caught by the test suite, 3 agents running read-only against live X" width="820">
+  <img src="https://raw.githubusercontent.com/guzus/birdy/main/assets/birdy-hero.png" alt="Birdy — Read X faster than light. brew install birdy" width="820">
 </p>
 
 ## 1.0.1 — one Go binary, no Node
