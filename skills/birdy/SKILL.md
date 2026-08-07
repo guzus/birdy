@@ -1,13 +1,13 @@
 ---
 name: birdy
-description: Install, operate, and troubleshoot birdy (multi-account proxy for the bird CLI on X/Twitter). Use when configuring birdy accounts/auth cookies, selecting rotation strategies, forwarding bird commands, setting up CI via BIRDY_ACCOUNTS, or debugging why bird/birdy-bird/bundled bird cannot be found or executed (Node 22+ requirement).
+description: Install, operate, and troubleshoot birdy (multi-account X/Twitter CLI that calls X directly, rotating between auth-cookie accounts). Use when configuring birdy accounts/auth cookies, selecting rotation strategies, running X commands (home, search, read, tweet, ...), setting up CI via BIRDY_ACCOUNTS, or debugging the optional --bird engine when bird cannot be found or executed.
 ---
 
 # Birdy
 
 ## Workflow
 
-Use birdy to run `bird` commands through a rotating pool of X/Twitter sessions (auth cookies), reducing rate-limit risk.
+Use birdy to run X/Twitter commands through a rotating pool of sessions (auth cookies), reducing rate-limit risk. birdy calls X itself — there is no Node runtime and no separate CLI to install.
 
 ### 0. Preflight (CLI Required)
 
@@ -20,23 +20,18 @@ birdy version
 
 ### 1. Install
 
-Prefer the installer (bundles bird as `birdy-bird`):
-
 ```bash
-curl -fsSL https://raw.githubusercontent.com/guzus/birdy/main/install.sh | bash
+brew trust guzus/tap && brew install guzus/tap/birdy
 ```
-
-Notes:
-
-- The installer requires GitHub CLI `gh`.
-- Bundled `birdy-bird` requires Node `>= 22`.
 
 Alternative installs:
 
 ```bash
-# Installs birdy only (no bundled bird); you must provide bird yourself.
+curl -fsSL https://raw.githubusercontent.com/guzus/birdy/main/install.sh | bash  # requires the GitHub CLI `gh`
 go install github.com/guzus/birdy@latest
 ```
+
+All three give a single self-contained binary: no Node, no bundled bird.
 
 ### 2. Add Accounts
 
@@ -66,7 +61,7 @@ Stored by default:
 - `~/.config/birdy/accounts.json`
 - `~/.config/birdy/state.json`
 
-### 3. Run Bird Commands Through Birdy
+### 3. Run X Commands Through Birdy
 
 birdy serves every command natively using the selected account. A flag birdy
 does not implement (`--all`, `--max-pages`, `--cursor`, `--json-full`,
@@ -98,20 +93,22 @@ export BIRDY_ACCOUNTS='[{"name":"bot1","auth_token":"xxx","ct0":"yyy"}]'
 birdy -v home
 ```
 
-### 5. Troubleshoot Bird Detection
+### 5. Troubleshoot The Optional `--bird` Engine
 
-birdy locates the underlying bird command in this order:
+Only relevant under `--bird` / `BIRDY_USE_BIRD=1`, which runs the original Node
+bird CLI instead of birdy's own implementation — useful for diffing the two
+engines. bird is not installed by birdy; you provide it. birdy resolves it in
+this order:
 
 1. `BIRDY_BIRD_PATH` (explicit override)
-2. `birdy-bird` on `PATH` (installed by the birdy installer)
-3. Bundled package next to the `birdy` binary at `bird/dist/cli.js`
-4. `bird` on `PATH`
+2. `birdy-bird`, then `bird`, on `PATH`
+3. next to the running `birdy` binary
+4. `third_party/@steipete/bird/dist/cli.js` (git clone only)
 
 Fixes:
 
-- If `birdy-bird` is installed but fails: ensure `node` is available and `node --version` is `>= 22`.
-- If you installed via `go install`: install bird separately, or point `BIRDY_BIRD_PATH` to a working `bird`.
-- If running from a git clone: the repo vendors bird at `third_party/@steipete/bird/dist/cli.js`.
+- `bird not found`: install bird yourself, or point `BIRDY_BIRD_PATH` at it — or just drop `--bird` and use the native engine.
+- bird found but failing to start: it is a Node program; ensure `node --version` is `>= 22`.
 
 ### Security
 
