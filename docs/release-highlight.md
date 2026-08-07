@@ -2,7 +2,7 @@
   <img src="https://raw.githubusercontent.com/guzus/birdy/main/assets/birdy-dogfood.png" alt="Dogfooded in production by ai-research-arm: 9 divergences found, 0 caught by the test suite, 3 agents running read-only against live X" width="820">
 </p>
 
-## 1.0.0 — one Go binary, no Node
+## 1.0.1 — one Go binary, no Node
 
 birdy began as a multi-account proxy in front of the Node
 [bird](https://github.com/steipete/bird) CLI. It now talks to X natively in Go.
@@ -12,7 +12,8 @@ All 24 commands, reads and writes, are served in-process.
 Node runtime. `install.sh` unpacks one file.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/guzus/birdy/main/install.sh | bash
+brew tap guzus/tap && brew trust guzus/tap && brew install birdy
+# or: curl -fsSL https://raw.githubusercontent.com/guzus/birdy/main/install.sh | bash
 birdy account add main && birdy tui
 ```
 
