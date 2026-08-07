@@ -104,6 +104,18 @@ else
   MODES=("--plain" "--json --plain" "")
 fi
 
+# counters blanks live engagement numbers so a deterministic command can still
+# be byte-compared. Everything else — labels, order, spacing — is preserved.
+counters() {
+  sed -E \
+    -e 's/"(likeCount|retweetCount|replyCount)": [0-9]+/"\1": N/g' \
+    -e 's/^likes: [0-9]+  retweets: [0-9]+  replies: [0-9]+$/likes: N  retweets: N  replies: N/' \
+    -e 's/^❤️ [0-9]+  🔁 [0-9]+  💬 [0-9]+$/❤️ N  🔁 N  💬 N/' \
+    -e 's/^Likes [0-9]+  Retweets [0-9]+  Replies [0-9]+$/Likes N  Retweets N  Replies N/' \
+    -e 's/^  (ℹ️|Info:|\[info\]) [0-9,]+ (followers|members)$/  \1 N \2/' \
+    "$1"
+}
+
 # shape reduces output to what should be stable regardless of which tweets came
 # back: an order-preserving fingerprint of the JSON structure, or the sequence
 # of line kinds.
@@ -214,11 +226,28 @@ for cmd in "${COMMANDS[@]}"; do
       continue
     fi
 
-    # A pass requires an actual answer. Two identical failures — a deleted
-    # fixture, a dead endpoint — diff clean and prove nothing.
-    if [ "$native_rc" -ne 0 ] || [ "$bird_rc" -ne 0 ]; then
-      echo "FAIL  $label  (native rc=$native_rc, bird rc=$bird_rc; neither may fail)"
+    # Both engines failing is only a pass when they failed the SAME way.
+    #
+    # Rejecting a flag neither supports (`check --json`) is correct parity and
+    # must not be reported as a divergence. A dead fixture is the case this
+    # guards against, and it looks different: both engines error, but with
+    # their own wording, because they each describe the miss in their own
+    # words. Comparing stderr separates the two.
+    if [ "$native_rc" -ne 0 ] && [ "$bird_rc" -ne 0 ]; then
+      if diff -q "$OUT/$slug.native.err" "$OUT/$slug.bird.err" >/dev/null 2>&1; then
+        echo "ok    $label  (both refused identically)"
+        pass=$((pass+1))
+        sleep "${BIRDY_DIFF_DELAY:-2}"
+        continue
+      fi
+      echo "FAIL  $label  (both failed, but differently)"
       head -2 "$OUT/$slug.native.err" "$OUT/$slug.bird.err" 2>/dev/null | sed 's/^/        /'
+      FAILED+=("$label")
+      fail=$((fail+1))
+      continue
+    fi
+    if [ "$native_rc" -ne "$bird_rc" ]; then
+      echo "FAIL  $label  (exit $native_rc vs $bird_rc)"
       FAILED+=("$label")
       fail=$((fail+1))
       continue
@@ -248,12 +277,18 @@ for cmd in "${COMMANDS[@]}"; do
 
     verb="${cmd%% *}"
     if [[ " $DETERMINISTIC " == *" $verb "* ]]; then
-      if diff -q "$OUT/$slug.native" "$OUT/$slug.bird" >/dev/null 2>&1; then
+      # Blank the counter VALUES before comparing. Their presence, position and
+      # formatting still have to match; only the numbers are allowed to move,
+      # because a live tweet gains likes between the two calls and a viral one
+      # gains them between adjacent seconds.
+      counters "$OUT/$slug.native" >"$OUT/$slug.native.cmp"
+      counters "$OUT/$slug.bird" >"$OUT/$slug.bird.cmp"
+      if diff -q "$OUT/$slug.native.cmp" "$OUT/$slug.bird.cmp" >/dev/null 2>&1; then
         echo "ok    $label"
         pass=$((pass+1))
       else
         echo "FAIL  $label"
-        diff "$OUT/$slug.native" "$OUT/$slug.bird" | head -15 | sed 's/^/        /'
+        diff "$OUT/$slug.native.cmp" "$OUT/$slug.bird.cmp" | head -15 | sed 's/^/        /'
         FAILED+=("$label")
         fail=$((fail+1))
       fi
