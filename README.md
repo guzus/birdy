@@ -4,7 +4,15 @@
 
 # birdy
 
-Multi-account proxy for the [bird](https://github.com/steipete/bird) CLI. Store multiple X/Twitter auth tokens and automatically rotate between accounts to reduce rate-limit risk.
+Multi-account X/Twitter CLI. Store multiple auth tokens and automatically rotate
+between accounts to reduce rate-limit risk.
+
+birdy talks to X natively in Go. The release is a single binary — no Node
+runtime, no `node_modules`. It began as a proxy for the
+[bird](https://github.com/steipete/bird) CLI and still speaks its output format
+byte-for-byte; `--bird` runs that original engine side by side when you have it
+installed, which is how birdy's output is verified. See
+[`docs/MIGRATION.md`](docs/MIGRATION.md).
 
 ## First Run (Install + Open TUI)
 

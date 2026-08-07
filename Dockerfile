@@ -20,9 +20,10 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o
 
 FROM node:22-bookworm-slim
 
+# Node stays because Claude Code is a Node application. bird does not: birdy
+# serves every command natively, so the image no longer installs it.
 ARG CLAUDE_CODE_VERSION=2.1.207
-ARG BIRD_VERSION=0.8.0
-RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" "@steipete/bird@${BIRD_VERSION}" \
+RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
     && npm cache clean --force
 
 WORKDIR /app
@@ -39,12 +40,10 @@ COPY scripts/entrypoint-railway.sh /usr/local/bin/entrypoint-railway
 
 RUN /usr/local/bin/birdy version >/dev/null \
     && chmod +x /usr/local/bin/entrypoint-railway \
-    /usr/local/lib/node_modules/@steipete/bird/dist/cli.js \
     && mkdir -p /data/.config/birdy
 
 ENV HOME=/data
 ENV XDG_CONFIG_HOME=/data/.config
-ENV BIRDY_BIRD_PATH=/usr/local/lib/node_modules/@steipete/bird/dist/cli.js
 ENV BIRDY_E2B_RUNNER_PATH=/app/e2b-runner/claude.mjs
 ENV NODE_ENV=production
 

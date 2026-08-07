@@ -15,6 +15,7 @@ A breaking change to any of these requires a major version bump.
 | CLI commands | Names of commands birdy serves, and their positional arguments |
 | CLI flags | Global flags (`--account`, `--strategy`, `--bird`, `--verbose`, `--vpn`, `--vpn-server`) and per-command flags birdy implements |
 | Output formats | The shape of `--json` output, and the presence of `--plain` / `--no-emoji` |
+| Struct layout | `pkg/tweet` field **order** is not covered. It tracks bird's JSON key order, which can change; use keyed struct literals |
 | Account store | The `~/.config/birdy/accounts.json` schema and the `BIRDY_ACCOUNTS` JSON shape |
 | Exit codes | `0` success, non-zero failure |
 
@@ -37,12 +38,11 @@ These can change in any release, including a patch.
   A stable `pkg/tweet` signature guarantees your code keeps *compiling*; it
   cannot guarantee X keeps answering. Treat every call as fallible and expect
   `Read`/`Thread` to return errors that did not occur yesterday.
-- **Commands forwarded to `bird`.** Their flags, output, and semantics belong to
-  [steipete/bird](https://github.com/steipete/bird) upstream, not to birdy. See
-  the section below for what *is* promised about them.
-- **Pinned third-party versions.** The Bird Box image pins exact versions
-  (`@anthropic-ai/claude-code`, `@steipete/bird`, `undici`). These are bumped in
-  minor and patch releases.
+- **The `--bird` engine.** birdy no longer ships bird, so `--bird` works only
+  when bird is installed separately. It is a verification and debugging tool,
+  not part of the supported surface.
+- **Pinned third-party versions.** The Bird Box image pins an exact
+  `@anthropic-ai/claude-code`. It is bumped in minor and patch releases.
 - **Bird Box, `birdy host`, and Birdy Web.** The hosted surface, its HTTP routes
   (`/api/chat`, SSE event names), the React UI, and the invite flow are
   pre-1.0 and evolve independently of the CLI's version.
@@ -90,7 +90,15 @@ here rather than quietly diverging. The current list:
   why each hash was chosen (`generated`, `discovered`, or the
   `BIRDY_<OPERATION>_QUERY_ID` variable that overrode it).
 - **`--media`** is not implemented on `tweet`/`reply`. Those invocations fall
-  back to bird rather than silently dropping the attachment.
+  back to bird rather than silently dropping the attachment, which means they
+  now require bird to be installed separately.
+- **A tweet with `note_tweet` but no `legacy`** gets `replyCount`,
+  `retweetCount` and `likeCount` emitted as `0`, where bird omits them
+  entirely. Accepted rather than fixed: matching it would mean making the three
+  counts pointers throughout, and no consumer distinguishes the two.
+- **`whoami`** does not print bird's `source:` line on stderr. birdy resolves
+  credentials from its own account store, so there is no cookie source to name.
+- **`--limit`** is birdy's own alias for `-n`. bird has no such flag.
 
 ## Reporting a break
 
