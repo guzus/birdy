@@ -9,8 +9,8 @@ This release is the first that [ai-research-arm](https://github.com/guzus/ai-res
 — birdy's heaviest consumer, whose hourly pipeline pulls X through it — put through a
 full differential run against live X.
 
-Because both engines still ship in the same binary, every command can be answered twice
-and compared:
+Because both engines can run side by side, every command can be answered twice and
+compared:
 
 ```bash
 birdy read <id> --json        # native Go
@@ -38,7 +38,11 @@ default fixture tweet had been deleted, so four commands reported `ok` while bot
 were failing identically. A passing comparison now requires a real answer from both sides.
 
 **This release does not claim parity.** Several divergences are still open and tracked in
-[`COMPATIBILITY.md`](https://github.com/guzus/birdy/blob/main/COMPATIBILITY.md), and
-`--bird` remains available for every command precisely so the comparison stays possible.
-The method, and why the escape hatch outlives the migration, is written up in
+[`COMPATIBILITY.md`](https://github.com/guzus/birdy/blob/main/COMPATIBILITY.md).
+
+`--bird` is also why this release can drop Node without losing the ability to check itself.
+The archive is now a single Go binary — no bundled `bird`, no `node_modules` — but the flag
+survives, resolving `bird` from your `PATH` when you install it separately. Users get a
+Node-free binary; anyone who wants to re-run the comparison above still can. The method, and
+why that escape hatch outlives the migration, is in
 [`docs/MIGRATION.md`](https://github.com/guzus/birdy/blob/main/docs/MIGRATION.md).
