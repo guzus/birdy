@@ -392,6 +392,22 @@ copy is a build-time and verification input — `scripts/gen-features.mjs`
 generates from it and `scripts/diff-engines.sh` compares against it — not
 something birdy runs.
 
+## Updating
+
+```bash
+birdy update            # download and install the latest release
+birdy update --check    # report whether one exists, change nothing
+```
+
+`update` refuses to touch a binary a package manager owns. Installed through
+Homebrew, it tells you to run `brew upgrade birdy` instead — overwriting the
+Cellar copy would leave brew's manifest describing a file that is no longer
+there, and its next upgrade would silently undo the update.
+
+Downloads are checked against the release's published SHA-256 before anything
+is installed, and the swap is atomic, so an interrupted update leaves the
+existing binary in place.
+
 ## Prerequisites
 
 - The installer places a single binary. Nothing else is unpacked and no Node
