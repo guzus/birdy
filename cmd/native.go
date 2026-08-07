@@ -51,6 +51,7 @@ var nativeCommands = map[string]func(context.Context, *xapi.Client, nativeArgs, 
 // defaultCounts overrides the common default of 20 where bird differs.
 var defaultCounts = map[string]int{
 	"mentions": 10,
+	"search":   10,
 	"lists":    100,
 }
 
@@ -98,6 +99,9 @@ type nativeArgs struct {
 	// `check`, which reports on them rather than calling X.
 	authToken string
 	ct0       string
+	// countErr carries a rejected --count so the command can fail the way bird
+	// does instead of quietly falling back to a default.
+	countErr error
 	// countSet records whether the caller passed a count, so a command with a
 	// different default does not silently override an explicit -n.
 	countSet bool
@@ -146,17 +150,11 @@ func parseNativeArgs(args []string) nativeArgs {
 			parsed.user = arg[len("-u="):]
 		case arg == "-n" || arg == "--count" || arg == "--limit":
 			if i+1 < len(args) {
-				if n, err := strconv.Atoi(args[i+1]); err == nil {
-					parsed.count = n
-					parsed.countSet = true
-				}
+				parsed.count, parsed.countSet, parsed.countErr = parseCount(args[i+1])
 				i++
 			}
 		case strings.HasPrefix(arg, "--count=") || strings.HasPrefix(arg, "--limit="):
-			if n, err := strconv.Atoi(arg[strings.IndexByte(arg, '=')+1:]); err == nil {
-				parsed.count = n
-				parsed.countSet = true
-			}
+			parsed.count, parsed.countSet, parsed.countErr = parseCount(arg[strings.IndexByte(arg, '=')+1:])
 		case strings.HasPrefix(arg, "-"):
 			// Ignored here; nativeAcceptsFlags rejects the command first.
 		default:
@@ -169,18 +167,33 @@ func parseNativeArgs(args []string) nativeArgs {
 	return parsed
 }
 
+// parseCount mirrors bird's validation: a count must parse and be positive.
+// Falling back to the default on garbage would answer a different question than
+// the one asked.
+func parseCount(raw string) (int, bool, error) {
+	n, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || n <= 0 {
+		return 0, false, fmt.Errorf("Invalid --count. Expected a positive integer.")
+	}
+	return n, true, nil
+}
+
 // nativeSupportedFlags are the flags the native path understands. A command
 // carrying anything else is handed to bird, so a flag birdy has not implemented
 // yet keeps working instead of being quietly dropped.
 var nativeSupportedFlags = map[string]bool{
 	"--json": true, "--plain": true, "--no-emoji": true, "--no-color": true,
-	"--latest": true, "-n": true, "--count": true, "--limit": true,
+	"-n": true, "--count": true, "--limit": true,
 }
 
 // commandExtraFlags widens the common set for commands that accept a flag no
 // other command does. --user is bird's target selector on the listing
 // commands, which take a numeric id instead of a positional handle.
 var commandExtraFlags = map[string]map[string]bool{
+	// --latest selects the chronological home feed. It is meaningful nowhere
+	// else, and bird has no such flag at all, so accepting it elsewhere meant
+	// silently ignoring a flag the user passed deliberately.
+	"home":      {"--latest": true},
 	"followers": {"--user": true},
 	"following": {"--user": true},
 	// mentions also takes --user, but as a handle rather than a numeric id.
@@ -204,19 +217,13 @@ var flagsTakingValue = map[string]bool{
 // output — a silent divergence rather than a fallback. Routing it to bird
 // reproduces bird's error, which is the behavior callers already handle.
 var commandUnsupportedFlags = map[string]map[string]bool{
-	"whoami": {"--json": true, "-n": true, "--count": true, "--limit": true, "--latest": true},
+	"whoami": {"--json": true, "-n": true, "--count": true, "--limit": true},
 	// bird's listing commands page with a cursor; --latest is a timeline flag.
-	"followers": {"--latest": true},
-	"following": {"--latest": true},
 	// bird's `about` takes only --json; count and latest are meaningless here.
-	"about": {"-n": true, "--count": true, "--limit": true, "--latest": true},
-	"likes": {"--latest": true},
+	"about": {"-n": true, "--count": true, "--limit": true},
 	// `check` reads no timeline and bird gives it no options at all.
-	"check":     {"--json": true, "-n": true, "--count": true, "--limit": true, "--latest": true},
-	"mentions":  {"--latest": true},
-	"lists":     {"--latest": true},
-	"activity":  {"--latest": true},
-	"query-ids": {"-n": true, "--count": true, "--limit": true, "--latest": true},
+	"check":     {"--json": true, "-n": true, "--count": true, "--limit": true},
+	"query-ids": {"-n": true, "--count": true, "--limit": true},
 	// The write commands take no output or paging flags. --json in particular
 	// is not one bird offers here, and answering it would be a divergence.
 	"tweet":      writeCommandFlags,
@@ -277,6 +284,9 @@ func runNative(ctx context.Context, account *store.Account, command string, args
 		return err
 	}
 	parsed := parseNativeArgs(args)
+	if parsed.countErr != nil {
+		return parsed.countErr
+	}
 	parsed.command = command
 	parsed.authToken = account.AuthToken
 	parsed.ct0 = account.CT0

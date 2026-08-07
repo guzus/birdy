@@ -43,17 +43,32 @@ if [ ! -x "$BIRDY" ]; then
   exit 2
 fi
 
+# Without a pinned account each invocation takes the next slot in the rotation,
+# so the two engines get compared as two different users and every personalised
+# command fails for a reason unrelated to the port.
+if [ -z "$ACCOUNT" ]; then
+  first=$("$BIRDY" account list 2>/dev/null | awk 'NR==2{print $1}')
+  if [ -z "$first" ]; then
+    echo "no accounts configured; add one or pass --account" >&2
+    exit 2
+  fi
+  ACCOUNT="--account $first"
+  echo "pinning both engines to account: $first"
+fi
+
 mkdir -p "$OUT"
 
 # A tweet and a handle that will still exist tomorrow. Override when they rot;
 # a deleted fixture shows up as both engines erroring identically, which passes
 # and proves nothing.
-TWEET_ID="${BIRDY_DIFF_TWEET_ID:-1936940680193466694}"
+TWEET_ID="${BIRDY_DIFF_TWEET_ID:-2085594813840216212}"
 HANDLE="${BIRDY_DIFF_HANDLE:-@steipete}"
 
 # Commands whose result is stable between two calls seconds apart. Only these
 # can be compared byte-for-byte.
-DETERMINISTIC="read thread replies about whoami check activity user-tweets"
+# activity is NOT here: its nextCursor embeds a timestamp, so two calls seconds
+# apart differ on every run.
+DETERMINISTIC="read thread replies about whoami check user-tweets"
 
 # Everything else is a live, ranked, or personalised feed: home returns
 # different tweets on consecutive calls, search re-ranks, bookmarks and likes
@@ -101,7 +116,10 @@ def paths(node, prefix=""):
         for k in sorted(node):
             yield from paths(node[k], f"{prefix}.{k}")
     elif isinstance(node, list):
-        for item in node[:1]:            # one element is enough to fix the shape
+        # Every element, not just the first: a field only some entries carry
+        # (quotedTweet, media) is invisible if element 0 lacks it.
+        yield f"{prefix}[]:len={len(node)}"
+        for item in node:
             yield from paths(item, f"{prefix}[]")
     else:
         yield f"{prefix}:{type(node).__name__}"
@@ -123,6 +141,9 @@ PYEOF
       -e 's#^likes: [0-9]+.*#STATS#' \
       -e 's#^❤️ .*#STATS#' \
       -e 's#^.+$#TEXT#' "$file" | grep -v '^$' | uniq
+    # Entry count is part of the shape: a parser that drops or adds whole
+    # records leaves the per-line kinds identical.
+    printf 'ENTRIES=%s\n' "$(grep -c '──────────' "$file" 2>/dev/null || echo 0)"
   fi
 }
 
@@ -149,10 +170,35 @@ for cmd in "${COMMANDS[@]}"; do
       continue
     fi
 
+    # A pass requires an actual answer. Two identical failures — a deleted
+    # fixture, a dead endpoint — diff clean and prove nothing.
+    if [ "$native_rc" -ne 0 ] || [ "$bird_rc" -ne 0 ]; then
+      echo "FAIL  $label  (native rc=$native_rc, bird rc=$bird_rc; neither may fail)"
+      head -2 "$OUT/$slug.native.err" "$OUT/$slug.bird.err" 2>/dev/null | sed 's/^/        /'
+      FAILED+=("$label")
+      fail=$((fail+1))
+      continue
+    fi
+    if [ ! -s "$OUT/$slug.native" ] || [ ! -s "$OUT/$slug.bird" ]; then
+      echo "FAIL  $label  (empty output from one or both engines)"
+      FAILED+=("$label")
+      fail=$((fail+1))
+      continue
+    fi
+
     if [ "$native_rc" -ne "$bird_rc" ]; then
       echo "FAIL  $label  (exit $native_rc vs $bird_rc)"
       FAILED+=("$label")
       fail=$((fail+1))
+      continue
+    fi
+
+    # shellcheck disable=SC2086
+    engine=$("$BIRDY" $ACCOUNT -v $cmd $mode 2>&1 >/dev/null | sed -n 's/.*engine: //p' | head -1)
+    if [ "$engine" != "native (go)" ]; then
+      echo "SKIP  $label  (served by ${engine:-unknown}, not native — nothing to compare)"
+      skip=$((skip+1))
+      sleep "${BIRDY_DIFF_DELAY:-2}"
       continue
     fi
 
