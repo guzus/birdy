@@ -128,3 +128,63 @@ func TestCurrentUserReportsWhenNothingResolves(t *testing.T) {
 		t.Fatal("expected an error when no endpoint yields a username and id")
 	}
 }
+
+// Every v1.1 account endpoint answers 404 for a cookie session as of
+// 2026-08-07, so the settings-page scrape is the only path that resolves the
+// viewer. This is a regression test for a real outage: the scrape was
+// originally left unported on the theory that reading verify_credentials'
+// top-level id_str made it redundant. It does not — the endpoint is gone, and
+// whoami/likes/mentions/lists all broke against live X until it came back.
+func TestCurrentUserFallsBackToSettingsPage(t *testing.T) {
+	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`{"errors":[{"message":"Sorry, that page does not exist","code":34}]}`))
+	}))
+	defer dead.Close()
+
+	var sawBearer bool
+	settings := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("authorization") != "" || r.Header.Get("x-csrf-token") != "" {
+			sawBearer = true
+		}
+		w.Write([]byte(`<html><script>{"screen_name":"guzus","user_id":"123","name":"Guzus"}</script></html>`))
+	}))
+	defer settings.Close()
+
+	c := newViewerTestClient(t, []string{dead.URL})
+	c.SetSettingsPages([]string{settings.URL})
+
+	viewer, err := c.CurrentUser(context.Background())
+	if err != nil {
+		t.Fatalf("CurrentUser: %v", err)
+	}
+	if viewer.Username != "guzus" || viewer.ID != "123" || viewer.Name != "Guzus" {
+		t.Errorf("scraped viewer wrong: %+v", viewer)
+	}
+	// The settings page is served to a browser session; sending the API bearer
+	// and CSRF headers gets it rejected.
+	if sawBearer {
+		t.Error("settings page must be fetched with cookies only, not API headers")
+	}
+}
+
+func TestParseViewerHTML(t *testing.T) {
+	// A display name with an escaped quote arrives JSON-escaped in the markup.
+	viewer, ok := parseViewerHTML(`{"screen_name":"a","user_id":"1","name":"He said \"hi\""}`)
+	if !ok {
+		t.Fatal("expected a parse")
+	}
+	if viewer.Name != `He said "hi"` {
+		t.Errorf("name = %q, want the unescaped form", viewer.Name)
+	}
+
+	// Without both a username and an id there is nothing usable.
+	if _, ok := parseViewerHTML(`{"screen_name":"a"}`); ok {
+		t.Error("a page with no user_id must not parse")
+	}
+	// Falls back to the username when no display name is present.
+	viewer, _ = parseViewerHTML(`{"screen_name":"solo","user_id":"9"}`)
+	if viewer.Name != "solo" {
+		t.Errorf("name = %q, want the username fallback", viewer.Name)
+	}
+}

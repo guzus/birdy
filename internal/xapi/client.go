@@ -74,7 +74,10 @@ type Client struct {
 	// viewerEndpoints are the v1.1 account URLs CurrentUser tries, in order.
 	// Overridable so tests can point them at a local server.
 	viewerEndpoints []string
-	viewer          viewerCache
+	// settingsPages are the HTML pages CurrentUser scrapes when the JSON
+	// endpoints fail, which as of 2026-08-07 is always.
+	settingsPages []string
+	viewer        viewerCache
 
 	// friendshipEndpoints overrides the v1.1 follow/unfollow URLs. Tests only.
 	friendshipEndpoints []string
@@ -94,6 +97,7 @@ func NewClient(creds Credentials) (*Client, error) {
 		clientUUID:      randomHex(16),
 		deviceID:        randomHex(16),
 		viewerEndpoints: defaultViewerEndpoints,
+		settingsPages:   defaultSettingsPages,
 	}, nil
 }
 
@@ -107,6 +111,15 @@ func (c *Client) SetFriendshipEndpoints(endpoints []string) {
 // Intended for tests; production callers should leave the defaults in place.
 func (c *Client) SetViewerEndpoints(endpoints []string) {
 	c.viewerEndpoints = endpoints
+	c.settingsPages = nil
+	c.viewer.mu.Lock()
+	c.viewer.seen = nil
+	c.viewer.mu.Unlock()
+}
+
+// SetSettingsPages overrides the HTML pages CurrentUser scrapes. Tests only.
+func (c *Client) SetSettingsPages(pages []string) {
+	c.settingsPages = pages
 	c.viewer.mu.Lock()
 	c.viewer.seen = nil
 	c.viewer.mu.Unlock()

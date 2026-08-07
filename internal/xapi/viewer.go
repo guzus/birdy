@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -17,18 +20,33 @@ type Viewer struct {
 
 // defaultViewerEndpoints mirrors bird's candidate list, in the same order.
 //
-// This is the one lookup that is not GraphQL: X still answers the v1.1 account
-// endpoints for cookie sessions, and there is no GraphQL operation that reports
-// "who am I" without already knowing the user id. settings.json usually omits
-// the numeric id, so in practice the verify_credentials entries are what
-// resolve it — the earlier URLs are kept because they are cheaper when they do
-// carry both fields.
+// This is the one lookup that is not GraphQL, and as of 2026-08-07 every one of
+// these endpoints answers 404 ("Sorry, that page does not exist", code 34) for
+// a cookie session. They are kept because they cost one request each, are the
+// documented way to ask, and would be the right answer if X restores them —
+// but the settings-page fallback below is what actually resolves the viewer
+// today. Do not remove it on the theory that reading the REST response more
+// carefully makes it redundant; the responses are 404s, not misread payloads.
 var defaultViewerEndpoints = []string{
 	"https://x.com/i/api/account/settings.json",
 	"https://api.twitter.com/1.1/account/settings.json",
 	"https://x.com/i/api/account/verify_credentials.json?skip_status=true&include_entities=false",
 	"https://api.twitter.com/1.1/account/verify_credentials.json?skip_status=true&include_entities=false",
 }
+
+// settingsPages carry the viewer's identity inline in the HTML. This is the
+// working path, not a last resort.
+var defaultSettingsPages = []string{
+	"https://x.com/settings/account",
+	"https://twitter.com/settings/account",
+}
+
+// The identity fields X embeds in the settings page markup.
+var (
+	settingsScreenName = regexp.MustCompile(`"screen_name":"([^"]+)"`)
+	settingsUserID     = regexp.MustCompile(`"user_id"\s*:\s*"(\d+)"`)
+	settingsName       = regexp.MustCompile(`"name":"([^"\\]*(?:\\.[^"\\]*)*)"`)
+)
 
 // viewerCache memoizes CurrentUser per client. The answer cannot change for a
 // fixed pair of cookies, and `likes` would otherwise repeat the lookup.
@@ -125,10 +143,78 @@ func (c *Client) CurrentUser(ctx context.Context) (*Viewer, error) {
 		return viewer, nil
 	}
 
-	if lastErr != nil {
-		return nil, fmt.Errorf("x api: determining current user: %w", lastErr)
+	// Every JSON endpoint failed. Scrape the authenticated settings page, which
+	// embeds the same identity in its markup and is currently the only path
+	// that works.
+	viewer, err := c.viewerFromSettingsPage(ctx)
+	if err == nil {
+		c.viewer.seen = viewer
+		return viewer, nil
 	}
-	return nil, &APIError{Message: "determining current user: no endpoints configured"}
+	if lastErr == nil {
+		lastErr = err
+	}
+	return nil, fmt.Errorf("x api: determining current user: %w", lastErr)
+}
+
+// viewerFromSettingsPage reads the viewer out of the settings page HTML.
+//
+// This request is deliberately not sent with setHeaders: the page is served to
+// a browser session, and the API bearer and CSRF headers get it rejected. Only
+// the cookie and a browser user-agent go out.
+func (c *Client) viewerFromSettingsPage(ctx context.Context) (*Viewer, error) {
+	var lastErr error
+	for _, page := range c.settingsPages {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, page, nil)
+		if err != nil {
+			return nil, fmt.Errorf("x api: building request: %w", err)
+		}
+		req.Header.Set("cookie", fmt.Sprintf("auth_token=%s; ct0=%s", c.creds.AuthToken, c.creds.CT0))
+		req.Header.Set("user-agent", c.userAgent)
+
+		body, err := c.do(req)
+		if err != nil {
+			lastErr = err
+			if IsRateLimited(err) {
+				return nil, err
+			}
+			continue
+		}
+
+		viewer, ok := parseViewerHTML(string(body))
+		if !ok {
+			lastErr = &APIError{Message: "could not parse settings page for user info"}
+			continue
+		}
+		return viewer, nil
+	}
+	if lastErr == nil {
+		lastErr = &APIError{Message: "no settings pages configured"}
+	}
+	return nil, lastErr
+}
+
+func parseViewerHTML(html string) (*Viewer, bool) {
+	username := firstSubmatch(settingsScreenName, html)
+	id := firstSubmatch(settingsUserID, html)
+	if username == "" || id == "" {
+		return nil, false
+	}
+
+	name := firstSubmatch(settingsName, html)
+	// The markup is JSON-escaped, so an embedded quote arrives as \".
+	name = strings.ReplaceAll(name, `\"`, `"`)
+	if name == "" {
+		name = username
+	}
+	return &Viewer{ID: id, Username: username, Name: name}, true
+}
+
+func firstSubmatch(re *regexp.Regexp, s string) string {
+	if m := re.FindStringSubmatch(s); len(m) > 1 {
+		return m[1]
+	}
+	return ""
 }
 
 func parseViewer(body []byte) (*Viewer, bool) {

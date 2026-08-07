@@ -80,10 +80,6 @@ here rather than quietly diverging. The current list:
   would describe a file birdy never reads. birdy's adds a `source` field naming
   why each hash was chosen (`generated`, `discovered`, or the
   `BIRDY_<OPERATION>_QUERY_ID` variable that overrode it).
-- **`whoami`** resolves the account id from `verify_credentials.json`'s
-  top-level `id_str`. bird does not read that field and falls through to
-  scraping the HTML settings page; birdy reads what X sends and does not
-  implement the scrape. The printed output is the same.
 - **`--media`** is not implemented on `tweet`/`reply`. Those invocations fall
   back to bird rather than silently dropping the attachment.
 
