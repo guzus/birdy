@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/guzus/birdy/internal/store"
+	"strings"
 )
 
 func TestParseStrategy(t *testing.T) {
@@ -214,5 +215,37 @@ func TestPickQuotaAwareNeverHitFallsBackToLeastUsed(t *testing.T) {
 	a, _ := Pick(accounts, QuotaAware, "")
 	if a.Name != "untouched" {
 		t.Errorf("expected 'untouched' (least used, all cold), got %q", a.Name)
+	}
+}
+
+// A disabled account is out of rotation but not gone. Filtering happens in
+// Pick so no strategy can reach one by accident.
+func TestPickSkipsDisabledAccounts(t *testing.T) {
+	accounts := []store.Account{
+		{Name: "hot", Disabled: true},
+		{Name: "cold"},
+	}
+	for _, strategy := range []Strategy{RoundRobin, LeastRecentlyUsed, LeastUsed, Random} {
+		for i := 0; i < 10; i++ {
+			got, err := Pick(accounts, strategy, "cold")
+			if err != nil {
+				t.Fatalf("%s: %v", strategy, err)
+			}
+			if got.Name == "hot" {
+				t.Fatalf("%s picked a disabled account", strategy)
+			}
+		}
+	}
+}
+
+func TestPickReportsWhenEveryAccountIsDisabled(t *testing.T) {
+	_, err := Pick([]store.Account{{Name: "a", Disabled: true}}, RoundRobin, "")
+	if err == nil {
+		t.Fatal("expected an error when nothing is left in rotation")
+	}
+	// The message has to say how to undo it; "no accounts available" would
+	// send someone looking for a missing account file.
+	if !strings.Contains(err.Error(), "account enable") {
+		t.Errorf("error should name the fix, got %v", err)
 	}
 }

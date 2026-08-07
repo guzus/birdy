@@ -43,18 +43,33 @@ if [ ! -x "$BIRDY" ]; then
   exit 2
 fi
 
-# Without a pinned account each invocation takes the next slot in the rotation,
-# so the two engines get compared as two different users and every personalised
-# command fails for a reason unrelated to the port.
-if [ -z "$ACCOUNT" ]; then
-  first=$("$BIRDY" account list 2>/dev/null | awk 'NR==2{print $1}')
-  if [ -z "$first" ]; then
+# Account handling has two competing requirements, and the first version of this
+# script only satisfied one.
+#
+# Within a case, both engines must run as the SAME account, or a personalised
+# command compares two different users and fails for a reason unrelated to the
+# port. Across cases, the account must ROTATE, or the whole matrix — 48 cases,
+# two engines each — lands on one account and rate-limits it while the others
+# sit idle. That is exactly what happened on the first full run: one account
+# reached 1122 uses and 22 rate limits while another had 307 uses and none.
+#
+# So: pin per case, rotate between cases. --account still forces a single one.
+POOL=()
+if [ -n "$ACCOUNT" ]; then
+  POOL=("${ACCOUNT#--account }")
+else
+  # Column 3 is rotation state; a disabled account is excluded here for the
+  # same reason rotation excludes it.
+  while read -r name state; do
+    [ -n "$name" ] && [ "$state" != "disabled" ] && POOL+=("$name")
+  done < <("$BIRDY" account list 2>/dev/null | awk 'NR>1{print $1, $3}')
+  if [ ${#POOL[@]} -eq 0 ]; then
     echo "no accounts configured; add one or pass --account" >&2
     exit 2
   fi
-  ACCOUNT="--account $first"
-  echo "pinning both engines to account: $first"
+  echo "rotating across ${#POOL[@]} accounts: ${POOL[*]}"
 fi
+pool_index=0
 
 mkdir -p "$OUT"
 
@@ -210,6 +225,12 @@ for cmd in "${COMMANDS[@]}"; do
   for mode in "${MODES[@]}"; do
     label="$cmd ${mode:-<emoji>}"
     slug=$(echo "$label" | tr -c 'a-zA-Z0-9' '-')
+
+    # One account for both engines in this case; the next case takes the next
+    # account.
+    acct="${POOL[$((pool_index % ${#POOL[@]}))]}"
+    pool_index=$((pool_index + 1))
+    ACCOUNT="--account $acct"
 
     # shellcheck disable=SC2086
     "$BIRDY" $ACCOUNT $cmd $mode >"$OUT/$slug.native" 2>"$OUT/$slug.native.err"
