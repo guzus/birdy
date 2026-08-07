@@ -25,9 +25,12 @@ the egress IP differs from this machine's. Useful for working around
 Cloudflare bot blocks that key on IP reputation (see docs).
 
 Configuration lives at ~/.config/birdy/vpn.json (perms 0600) and is
-distinct from accounts.json. Use 'birdy vpn install-deps' once before
-the first --vpn invocation to install the Node 'undici' module that
-birdy's bootstrap.js needs to override Node's global fetch dispatcher.`,
+distinct from accounts.json.
+
+birdy dials SOCKS5 directly, so --vpn needs no setup beyond 'vpn set' and a
+server pool. 'birdy vpn install-deps' is only for the --bird path: Node's
+fetch honours neither SOCKS5 nor the proxy environment variables, so routing
+it needs a local bridge and a userspace undici.`,
 }
 
 var (

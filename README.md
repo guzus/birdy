@@ -4,15 +4,20 @@
 
 # birdy
 
-Multi-account X/Twitter CLI. Store multiple auth tokens and automatically rotate
-between accounts to reduce rate-limit risk.
+Lightweight multi-account X/Twitter CLI. Store multiple auth tokens and rotate
+between accounts automatically to spread rate-limit pressure.
 
-birdy talks to X natively in Go. The release is a single binary — no Node
-runtime, no `node_modules`. It began as a proxy for the
-[bird](https://github.com/steipete/bird) CLI and still speaks its output format
-byte-for-byte; `--bird` runs that original engine side by side when you have it
-installed, which is how birdy's output is verified. See
-[`docs/MIGRATION.md`](docs/MIGRATION.md).
+One Go binary. No Node runtime, no `node_modules`, nothing to install alongside
+it.
+
+```bash
+brew tap guzus/tap && brew trust guzus/tap && brew install birdy
+```
+
+birdy began as a proxy in front of the [bird](https://github.com/steipete/bird)
+CLI and still speaks its output format byte-for-byte. `--bird` runs that
+original engine side by side when you install it separately, which is how
+birdy's own output is verified — see [`docs/MIGRATION.md`](docs/MIGRATION.md).
 
 ## First Run (Install + Open TUI)
 
@@ -295,7 +300,8 @@ https://<your-service-domain>
 
 - Keep this service at `1` replica so account rotation and persisted rate-limit
   state remain coherent. Browser conversations remain client-side.
-- The container uses Node 22 + Claude Code CLI + bundled bird CLI.
+- The container uses Node 22 + the Claude Code CLI. Node is there because Claude
+  Code is a Node application, not because birdy needs it.
 - Rotate `BIRDY_HOST_INVITE_CODE` if it leaks.
 
 ## How it works
@@ -309,11 +315,14 @@ birdy sits in front of the `bird` CLI. When you run a bird command through birdy
 
 ## VPN routing (`--vpn`)
 
-X's bot detection blocks by IP, so rotating auth tokens across 5 accounts from the same machine still trips Cloudflare after ~30 lookups. `--vpn` routes each bird call through a SOCKS5 endpoint (NordVPN's service credentials work out of the box), with per-invocation server selection so you can rotate exits as well as accounts.
+X's bot detection blocks by IP, so rotating auth tokens across several accounts
+from one machine still trips Cloudflare after ~30 lookups. `--vpn` routes each
+call through a SOCKS5 endpoint (NordVPN's service credentials work out of the
+box), with per-invocation server selection so you can rotate exits as well as
+accounts.
 
 ```bash
 # One-time setup
-birdy vpn install-deps                              # installs Node 'undici' into ~/.cache/birdy
 birdy vpn set --user <NORDVPN_SERVICE_USERNAME> --pass <NORDVPN_SERVICE_PASSWORD>
 birdy vpn pool add us9876.nordvpn.com               # add as many as you want
 birdy vpn pool add jp14.nordvpn.com
@@ -325,11 +334,14 @@ birdy vpn test                                      # show the egress IP
 birdy vpn status                                    # config (password masked)
 ```
 
-How it works under the hood:
+How it works: birdy dials the SOCKS5 endpoint directly and hands the resulting
+dialer to Go's HTTP transport, so every request for that invocation egresses
+through the exit. `-v` prints which one it picked.
 
-1. `--vpn` spins up an in-process HTTP CONNECT proxy on `127.0.0.1:<random>` that forwards to the chosen SOCKS5 endpoint.
-2. The bird subprocess gets `HTTPS_PROXY=http://127.0.0.1:<port>` + `NODE_OPTIONS=--require=<bootstrap.js>` + `BIRDY_UNDICI_PATH=<undici install dir>`.
-3. The bootstrap loads userspace undici (installed by `install-deps`), calls `setGlobalDispatcher(new ProxyAgent(HTTPS_PROXY))`, and **overwrites `globalThis.fetch` with the userspace undici's fetch**. The override is critical: Node 22+'s built-in `fetch()` uses an *internal* undici instance that ignores user-space `setGlobalDispatcher`. Without overwriting `globalThis.fetch`, the bootstrap loads but the proxy is silently bypassed (verified empirically on Node 26).
+The `--bird` path is the exception. Node's `fetch` honours neither SOCKS5 nor
+the proxy environment variables, so routing it needs a local HTTP CONNECT
+bridge and a userspace `undici` (`birdy vpn install-deps`). None of that is
+involved unless you explicitly combine `--bird` with `--vpn`.
 
 NordVPN service credentials are different from your account login — find them in the NordVPN dashboard under **Services → NordVPN → Set up NordVPN manually**.
 
@@ -372,13 +384,18 @@ git clone https://github.com/guzus/birdy.git && cd birdy && make build
 make verify
 ```
 
-If you install via `go install`, only the `birdy` binary is installed, so you still need [bird](https://github.com/steipete/bird) available on your PATH (or set `BIRDY_BIRD_PATH`).
+`go install` gives you the same single binary as any other route — birdy needs
+nothing else to run.
 
-If you build from a git clone, bird is vendored under `third_party/@steipete/bird/` (requires Node `>= 22`).
+A git clone additionally vendors bird under `third_party/@steipete/bird/`. That
+copy is a build-time and verification input — `scripts/gen-features.mjs`
+generates from it and `scripts/diff-engines.sh` compares against it — not
+something birdy runs.
 
 ## Prerequisites
 
-- The installer bundles the upstream [bird](https://github.com/steipete/bird) CLI and installs it as `birdy-bird` (birdy will auto-detect it). The bundled bird requires Node `>= 22`.
+- The installer places a single binary. Nothing else is unpacked and no Node
+  runtime is required.
 - [Claude Code](https://claude.ai/claude-code) (`claude` CLI) or [Codex CLI](https://github.com/openai/codex) (`codex` CLI) — required for the interactive TUI (`birdy tui`)
 
 Optional:
