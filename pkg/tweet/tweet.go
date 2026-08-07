@@ -14,6 +14,14 @@
 // normally supplied through the BIRDY_ACCOUNTS environment variable:
 //
 //	BIRDY_ACCOUNTS=[{"name":"main","auth_token":"...","ct0":"..."}]
+//
+// # Stability
+//
+// The identifiers and struct fields in this package are covered by birdy's
+// semver promise; see COMPATIBILITY.md in the repository root. That promise is
+// about this package's shape, not about X: X's GraphQL API is unversioned and
+// undocumented, so a stable signature guarantees your code keeps compiling, not
+// that a call keeps succeeding. Handle errors from every call.
 package tweet
 
 import (
@@ -28,12 +36,7 @@ import (
 	"github.com/guzus/birdy/internal/xapi"
 )
 
-// Tweet, Media, and Author describe a post and its attachments.
-type (
-	Tweet  = xapi.Tweet
-	Media  = xapi.Media
-	Author = xapi.Author
-)
+// Tweet, Media, and Author are declared in types.go.
 
 // Options configures a Client.
 type Options struct {
@@ -147,7 +150,8 @@ func (c *Client) Read(ctx context.Context, ref string) (*Tweet, error) {
 		if err != nil {
 			return err
 		}
-		result = t
+		converted := convertTweet(*t)
+		result = &converted
 		return nil
 	})
 	return result, err
@@ -171,7 +175,7 @@ func (c *Client) Thread(ctx context.Context, ref string) ([]Tweet, error) {
 		if err != nil {
 			return err
 		}
-		result = tweets
+		result = convertTweets(tweets)
 		return nil
 	})
 	return result, err
