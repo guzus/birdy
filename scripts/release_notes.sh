@@ -125,6 +125,17 @@ if [[ "${current_ref}" == "HEAD" ]]; then
 fi
 
 printf '# %s\n\n' "${release_name}"
+
+# A hand-written lede for the release, when there is one. Everything below this
+# is generated from git log, which is fine for a changelog and useless for
+# saying why a release matters. Edit docs/release-highlight.md before tagging,
+# or delete it to fall straight through to the generated sections.
+highlight_file="${RELEASE_HIGHLIGHT_FILE:-docs/release-highlight.md}"
+if [[ -s "${highlight_file}" ]]; then
+  cat "${highlight_file}"
+  printf '\n'
+fi
+
 printf '## Overview\n\n'
 if [[ -n "${previous_ref}" ]]; then
   printf -- '- Changes since `%s`\n' "${previous_ref}"
