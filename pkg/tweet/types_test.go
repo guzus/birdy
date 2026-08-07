@@ -51,6 +51,7 @@ func TestPublicTypesCoverParserFields(t *testing.T) {
 		{"Tweet", reflect.TypeOf(Tweet{}), reflect.TypeOf(xapi.Tweet{})},
 		{"Media", reflect.TypeOf(Media{}), reflect.TypeOf(xapi.Media{})},
 		{"Author", reflect.TypeOf(Author{}), reflect.TypeOf(xapi.Author{})},
+		{"Article", reflect.TypeOf(Article{}), reflect.TypeOf(xapi.Article{})},
 	}
 
 	for _, tc := range cases {
@@ -81,6 +82,50 @@ func TestPublicTypesCoverParserFields(t *testing.T) {
 	}
 }
 
+// TestPublicTypesKeepParserFieldOrder pins declaration order across the
+// boundary.
+//
+// Go's encoding/json emits struct fields in declaration order, and birdy's
+// --json is a byte-for-byte contract with bird — so the ORDER is part of the
+// public API, not just the set of tags. TestPublicTypesCoverParserFields
+// compares maps and is order-blind; this is the half it cannot see.
+func TestPublicTypesKeepParserFieldOrder(t *testing.T) {
+	cases := []struct {
+		name     string
+		public   reflect.Type
+		internal reflect.Type
+	}{
+		{"Tweet", reflect.TypeOf(Tweet{}), reflect.TypeOf(xapi.Tweet{})},
+		{"Media", reflect.TypeOf(Media{}), reflect.TypeOf(xapi.Media{})},
+		{"Author", reflect.TypeOf(Author{}), reflect.TypeOf(xapi.Author{})},
+		{"Article", reflect.TypeOf(Article{}), reflect.TypeOf(xapi.Article{})},
+	}
+
+	names := func(t reflect.Type) []string {
+		var out []string
+		for i := range t.NumField() {
+			if f := t.Field(i); f.IsExported() {
+				out = append(out, f.Name)
+			}
+		}
+		return out
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pub, inner := names(tc.public), names(tc.internal)
+			if len(pub) != len(inner) {
+				t.Fatalf("field counts differ: public %v, parser %v", pub, inner)
+			}
+			for i := range pub {
+				if pub[i] != inner[i] {
+					t.Fatalf("field order differs at %d: public %v, parser %v", i, pub, inner)
+				}
+			}
+		})
+	}
+}
+
 // TestConvertTweetCopiesEveryField fails when a field is added to the public
 // type but not wired into convertTweet, which would otherwise leave it
 // permanently zero at runtime with every other test still passing.
@@ -105,9 +150,29 @@ func TestConvertTweetCopiesEveryField(t *testing.T) {
 		ReplyCount:   5,
 		RetweetCount: 6,
 		LikeCount:    7,
+		QuotedTweet: &xapi.Tweet{
+			ID:     "8",
+			Text:   "quoted",
+			Author: xapi.Author{Username: "other", Name: "Other"},
+		},
+		Article: &xapi.Article{Title: "An Article", PreviewText: "preview"},
 	}
 
 	got := convertTweet(src)
+
+	// The article must cross the boundary as its own value, so mutating the
+	// parser's copy afterwards cannot reach a caller's.
+	if got.Article == nil {
+		t.Fatal("Article dropped by convertTweet")
+	}
+	if got.Article == (*Article)(nil) || got.Article.Title != "An Article" || got.Article.PreviewText != "preview" {
+		t.Errorf("article not converted: %+v", got.Article)
+	}
+	src.Article.Title = "mutated"
+	if got.Article.Title != "An Article" {
+		t.Error("convertArticle aliased the parser's value instead of copying it")
+	}
+	src.Article.Title = "An Article"
 
 	v := reflect.ValueOf(got)
 	for i := range v.NumField() {
@@ -126,6 +191,33 @@ func TestConvertTweetCopiesEveryField(t *testing.T) {
 
 	if got.Author.Username != "guzus" || got.Author.Name != "Guzus" {
 		t.Errorf("Author not copied: %+v", got.Author)
+	}
+
+	// A quote must survive the boundary as its own converted value, not as a
+	// pointer back into the parser's tree.
+	if got.QuotedTweet == nil {
+		t.Fatal("QuotedTweet dropped by convertTweet")
+	}
+	if got.QuotedTweet.ID != "8" || got.QuotedTweet.Author.Username != "other" {
+		t.Errorf("quoted tweet not converted: %+v", got.QuotedTweet)
+	}
+}
+
+// A quote chain must terminate rather than recursing forever, and the parser
+// bounds it before this package ever sees it.
+func TestConvertQuotedHandlesNesting(t *testing.T) {
+	inner := &xapi.Tweet{ID: "3", Text: "inner", Author: xapi.Author{Username: "c"}}
+	mid := &xapi.Tweet{ID: "2", Text: "mid", Author: xapi.Author{Username: "b"}, QuotedTweet: inner}
+	got := convertTweet(xapi.Tweet{ID: "1", Text: "top", Author: xapi.Author{Username: "a"}, QuotedTweet: mid})
+
+	if got.QuotedTweet == nil || got.QuotedTweet.QuotedTweet == nil {
+		t.Fatalf("nested quote lost: %+v", got.QuotedTweet)
+	}
+	if got.QuotedTweet.QuotedTweet.ID != "3" {
+		t.Errorf("inner quote wrong: %+v", got.QuotedTweet.QuotedTweet)
+	}
+	if got.QuotedTweet.QuotedTweet.QuotedTweet != nil {
+		t.Error("chain should end where the parser ended it")
 	}
 }
 

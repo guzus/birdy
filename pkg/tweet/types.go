@@ -27,14 +27,23 @@ type Author struct {
 }
 
 // Media is one attachment on a tweet: a photo, video, or animated GIF.
+//
+// Field order is part of the contract: `birdy --json` must byte-match bird's
+// output, and Go marshals struct fields in declaration order.
 type Media struct {
 	Type       string `json:"type"`
 	URL        string `json:"url"`
-	PreviewURL string `json:"previewUrl,omitempty"`
-	VideoURL   string `json:"videoUrl,omitempty"`
 	Width      int    `json:"width,omitempty"`
 	Height     int    `json:"height,omitempty"`
+	PreviewURL string `json:"previewUrl,omitempty"`
+	VideoURL   string `json:"videoUrl,omitempty"`
 	DurationMs int64  `json:"durationMs,omitempty"`
+}
+
+// Article is the header of an X "Article" (long-form) post.
+type Article struct {
+	Title       string `json:"title"`
+	PreviewText string `json:"previewText,omitempty"`
 }
 
 // IsVideo reports whether this attachment has playable video.
@@ -54,19 +63,30 @@ func (m Media) DownloadURL() string {
 // Tweet is a single post and its attachments.
 //
 // Engagement counts are best-effort: X omits them in some timeline responses,
-// so a zero means "not reported here", not necessarily "zero".
+// so a zero means "not reported here", not necessarily "zero". They are always
+// emitted in JSON, including when zero, because bird emits them unconditionally
+// and consumers diff the bytes.
+//
+// Field order mirrors bird's object literal and is part of the wire contract.
 type Tweet struct {
-	ID                string  `json:"id"`
-	Text              string  `json:"text"`
-	CreatedAt         string  `json:"createdAt,omitempty"`
-	ConversationID    string  `json:"conversationId,omitempty"`
-	InReplyToStatusID string  `json:"inReplyToStatusId,omitempty"`
-	Author            Author  `json:"author"`
-	AuthorID          string  `json:"authorId,omitempty"`
-	Media             []Media `json:"media,omitempty"`
-	ReplyCount        int     `json:"replyCount,omitempty"`
-	RetweetCount      int     `json:"retweetCount,omitempty"`
-	LikeCount         int     `json:"likeCount,omitempty"`
+	ID                string `json:"id"`
+	Text              string `json:"text"`
+	CreatedAt         string `json:"createdAt,omitempty"`
+	ReplyCount        int    `json:"replyCount"`
+	RetweetCount      int    `json:"retweetCount"`
+	LikeCount         int    `json:"likeCount"`
+	ConversationID    string `json:"conversationId,omitempty"`
+	InReplyToStatusID string `json:"inReplyToStatusId,omitempty"`
+	Author            Author `json:"author"`
+	AuthorID          string `json:"authorId,omitempty"`
+	// QuotedTweet is the tweet this one quotes, when it quotes one. Roughly a
+	// third of a live timeline carries one, so a caller that ignores it is
+	// reading the quoting text without the thing it refers to.
+	QuotedTweet *Tweet  `json:"quotedTweet,omitempty"`
+	Media       []Media `json:"media,omitempty"`
+	// Article is set when the post is an X Article. Text then carries the
+	// rendered article body rather than the tweet's shortlink.
+	Article *Article `json:"article,omitempty"`
 }
 
 // IsReply reports whether this tweet sits below the root of a conversation.
@@ -106,7 +126,28 @@ func convertTweet(t xapi.Tweet) Tweet {
 		ReplyCount:   t.ReplyCount,
 		RetweetCount: t.RetweetCount,
 		LikeCount:    t.LikeCount,
+		QuotedTweet:  convertQuoted(t.QuotedTweet),
+		Article:      convertArticle(t.Article),
 	}
+}
+
+// convertArticle copies the article header, so mutating the parser's value
+// afterwards cannot reach through into the public one.
+func convertArticle(a *xapi.Article) *Article {
+	if a == nil {
+		return nil
+	}
+	return &Article{Title: a.Title, PreviewText: a.PreviewText}
+}
+
+// convertQuoted walks the quote chain. It is depth-bounded upstream, in the
+// parser, so this recursion terminates on whatever the parser produced.
+func convertQuoted(q *xapi.Tweet) *Tweet {
+	if q == nil {
+		return nil
+	}
+	converted := convertTweet(*q)
+	return &converted
 }
 
 // convertTweets converts a slice, preserving order and distinguishing a nil

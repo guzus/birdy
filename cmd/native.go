@@ -22,10 +22,6 @@ import (
 // Anything not listed here still forwards to bird. The --bird flag (or
 // BIRDY_USE_BIRD=1) forces the bird path even for commands that are listed,
 // which is the escape hatch when a native implementation misbehaves.
-// `likes` is deliberately absent: bird's takes no argument (it reads the
-// authenticated account's likes) and birdy cannot resolve the current user
-// without a viewer lookup yet. Serving it with a handle-shaped signature would
-// silently diverge from bird, so it falls back until that exists.
 var nativeCommands = map[string]func(context.Context, *xapi.Client, nativeArgs, io.Writer) error{
 	"read":          nativeRead,
 	"thread":        nativeThread,
@@ -35,6 +31,28 @@ var nativeCommands = map[string]func(context.Context, *xapi.Client, nativeArgs, 
 	"user-tweets":   nativeUserTweets,
 	"bookmarks":     nativeBookmarks,
 	"list-timeline": nativeListTimeline,
+	"whoami":        nativeWhoami,
+	"about":         nativeAbout,
+	"likes":         nativeLikes,
+	"followers":     nativeFollowers,
+	"following":     nativeFollowing,
+	"tweet":         nativeTweet,
+	"reply":         nativeReply,
+	"follow":        nativeFollow,
+	"unfollow":      nativeUnfollow,
+	"unbookmark":    nativeUnbookmark,
+	"check":         nativeCheck,
+	"mentions":      nativeMentions,
+	"query-ids":     nativeQueryIDs,
+	"lists":         nativeLists,
+	"activity":      nativeActivity,
+}
+
+// defaultCounts overrides the common default of 20 where bird differs.
+var defaultCounts = map[string]int{
+	"mentions": 10,
+	"search":   10,
+	"lists":    100,
 }
 
 // nativeSupports reports whether a command has a native implementation.
@@ -60,13 +78,33 @@ type nativeArgs struct {
 	// positional is the first non-flag argument: a tweet id/url, handle, query,
 	// or list id depending on the command.
 	positional string
-	count      int
-	json       bool
+	// positionals is every non-flag argument in order. reply takes two, and
+	// unbookmark is variadic.
+	positionals []string
+	count       int
+	json        bool
 	// plain and emoji mirror bird's output switches so rendering matches.
 	plain bool
 	emoji bool
 	// latest selects the chronological home timeline.
 	latest bool
+	// user is what --user carried. followers/following take a numeric account
+	// id here; mentions takes a handle. The commands interpret it themselves.
+	user string
+	// memberOf switches `lists` from owned lists to memberships.
+	memberOf bool
+	// types is `activity`'s --types selector.
+	types string
+	// authToken and ct0 are the selected account's credentials, needed by
+	// `check`, which reports on them rather than calling X.
+	authToken string
+	ct0       string
+	// countErr carries a rejected --count so the command can fail the way bird
+	// does instead of quietly falling back to a default.
+	countErr error
+	// countSet records whether the caller passed a count, so a command with a
+	// different default does not silently override an explicit -n.
+	countSet bool
 	// command is the birdy subcommand being served, used to pick the wording
 	// for an empty result.
 	command string
@@ -92,26 +130,52 @@ func parseNativeArgs(args []string) nativeArgs {
 			// Accepted for compatibility; native output is never colorized.
 		case arg == "--latest":
 			parsed.latest = true
+		case arg == "--member-of":
+			parsed.memberOf = true
+		case arg == "--types":
+			if i+1 < len(args) {
+				parsed.types = args[i+1]
+				i++
+			}
+		case strings.HasPrefix(arg, "--types="):
+			parsed.types = arg[len("--types="):]
+		case arg == "--user" || arg == "-u":
+			if i+1 < len(args) {
+				parsed.user = args[i+1]
+				i++
+			}
+		case strings.HasPrefix(arg, "--user="):
+			parsed.user = arg[len("--user="):]
+		case strings.HasPrefix(arg, "-u="):
+			parsed.user = arg[len("-u="):]
 		case arg == "-n" || arg == "--count" || arg == "--limit":
 			if i+1 < len(args) {
-				if n, err := strconv.Atoi(args[i+1]); err == nil {
-					parsed.count = n
-				}
+				parsed.count, parsed.countSet, parsed.countErr = parseCount(args[i+1])
 				i++
 			}
 		case strings.HasPrefix(arg, "--count=") || strings.HasPrefix(arg, "--limit="):
-			if n, err := strconv.Atoi(arg[strings.IndexByte(arg, '=')+1:]); err == nil {
-				parsed.count = n
-			}
+			parsed.count, parsed.countSet, parsed.countErr = parseCount(arg[strings.IndexByte(arg, '=')+1:])
 		case strings.HasPrefix(arg, "-"):
 			// Ignored here; nativeAcceptsFlags rejects the command first.
 		default:
 			if parsed.positional == "" {
 				parsed.positional = arg
 			}
+			parsed.positionals = append(parsed.positionals, arg)
 		}
 	}
 	return parsed
+}
+
+// parseCount mirrors bird's validation: a count must parse and be positive.
+// Falling back to the default on garbage would answer a different question than
+// the one asked.
+func parseCount(raw string) (int, bool, error) {
+	n, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || n <= 0 {
+		return 0, false, fmt.Errorf("Invalid --count. Expected a positive integer.")
+	}
+	return n, true, nil
 }
 
 // nativeSupportedFlags are the flags the native path understands. A command
@@ -119,12 +183,69 @@ func parseNativeArgs(args []string) nativeArgs {
 // yet keeps working instead of being quietly dropped.
 var nativeSupportedFlags = map[string]bool{
 	"--json": true, "--plain": true, "--no-emoji": true, "--no-color": true,
-	"--latest": true, "-n": true, "--count": true, "--limit": true,
+	"-n": true, "--count": true, "--limit": true,
+}
+
+// commandExtraFlags widens the common set for commands that accept a flag no
+// other command does. --user is bird's target selector on the listing
+// commands, which take a numeric id instead of a positional handle.
+var commandExtraFlags = map[string]map[string]bool{
+	// --latest selects the chronological home feed. It is meaningful nowhere
+	// else, and bird has no such flag at all, so accepting it elsewhere meant
+	// silently ignoring a flag the user passed deliberately.
+	"home":      {"--latest": true},
+	"followers": {"--user": true},
+	"following": {"--user": true},
+	// mentions also takes --user, but as a handle rather than a numeric id.
+	"mentions": {"--user": true, "-u": true},
+	"lists":    {"--member-of": true},
+	"activity": {"--types": true},
+}
+
+// flagsTakingValue consume the following argument, which must not then be
+// mistaken for a flag in its own right.
+var flagsTakingValue = map[string]bool{
+	"-n": true, "--count": true, "--limit": true, "--user": true, "-u": true,
+	"--types": true,
+}
+
+// commandUnsupportedFlags narrows nativeSupportedFlags for commands that accept
+// less than the common set.
+//
+// bird's `whoami` declares no options at all, so `bird whoami --json` is a
+// usage error. Serving it natively would turn that error into human-readable
+// output — a silent divergence rather than a fallback. Routing it to bird
+// reproduces bird's error, which is the behavior callers already handle.
+var commandUnsupportedFlags = map[string]map[string]bool{
+	"whoami": {"--json": true, "-n": true, "--count": true, "--limit": true},
+	// bird's listing commands page with a cursor; --latest is a timeline flag.
+	// bird's `about` takes only --json; count and latest are meaningless here.
+	"about": {"-n": true, "--count": true, "--limit": true},
+	// `check` reads no timeline and bird gives it no options at all.
+	"check":     {"--json": true, "-n": true, "--count": true, "--limit": true},
+	"query-ids": {"-n": true, "--count": true, "--limit": true},
+	// The write commands take no output or paging flags. --json in particular
+	// is not one bird offers here, and answering it would be a divergence.
+	"tweet":      writeCommandFlags,
+	"reply":      writeCommandFlags,
+	"follow":     writeCommandFlags,
+	"unfollow":   writeCommandFlags,
+	"unbookmark": writeCommandFlags,
+}
+
+// writeCommandFlags are rejected by every mutating command, so anything beyond
+// the output switches falls back to bird. Media upload is deliberately in this
+// set: birdy has no upload path, and --media must not be silently dropped from
+// a post.
+var writeCommandFlags = map[string]bool{
+	"--json": true, "-n": true, "--count": true, "--limit": true, "--latest": true,
 }
 
 // nativeAcceptsFlags reports whether every flag in args is one the native path
-// implements.
-func nativeAcceptsFlags(args []string) bool {
+// implements for this command.
+func nativeAcceptsFlags(command string, args []string) bool {
+	unsupported := commandUnsupportedFlags[command]
+	extra := commandExtraFlags[command]
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if !strings.HasPrefix(arg, "-") || arg == "-" {
@@ -134,13 +255,14 @@ func nativeAcceptsFlags(args []string) bool {
 		if eq := strings.IndexByte(arg, '='); eq > 0 {
 			name = arg[:eq]
 		}
-		if !nativeSupportedFlags[name] {
+		if !nativeSupportedFlags[name] && !extra[name] {
 			return false
 		}
-		if name == "-n" || name == "--count" || name == "--limit" {
-			if !strings.Contains(arg, "=") {
-				i++ // skip the value
-			}
+		if unsupported[name] {
+			return false
+		}
+		if flagsTakingValue[name] && !strings.Contains(arg, "=") {
+			i++ // skip the value
 		}
 	}
 	return true
@@ -162,7 +284,15 @@ func runNative(ctx context.Context, account *store.Account, command string, args
 		return err
 	}
 	parsed := parseNativeArgs(args)
+	if parsed.countErr != nil {
+		return parsed.countErr
+	}
 	parsed.command = command
+	parsed.authToken = account.AuthToken
+	parsed.ct0 = account.CT0
+	if n, ok := defaultCounts[command]; ok && !parsed.countSet {
+		parsed.count = n
+	}
 	return handler(ctx, client, parsed, out)
 }
 
@@ -250,16 +380,66 @@ func nativeHome(ctx context.Context, c *xapi.Client, args nativeArgs, out io.Wri
 	return renderTweets(out, tweets, args)
 }
 
+// nativeUserTweets is the one listing command whose JSON shape depends on -n.
+//
+// bird wraps the array in {tweets, nextCursor} whenever the count exceeds one
+// page (commands/user-tweets.js:84), rejects a count above its 10-page safety
+// cap before making any request, and prints a resume hint to stderr. All three
+// are reachable from a plain `-n`, with no paging flag involved.
 func nativeUserTweets(ctx context.Context, c *xapi.Client, args nativeArgs, out io.Writer) error {
 	if args.positional == "" {
 		return fmt.Errorf("user-tweets: missing username")
 	}
-	tweets, err := c.UserTweets(ctx, args.positional, args.count)
+	// Validated before the network call, exactly where bird validates it.
+	if args.count > userTweetsMaxCount {
+		return fmt.Errorf("Invalid --count. Max %d tweets per run (safety cap: %d pages). Use --cursor to continue.",
+			userTweetsMaxCount, userTweetsMaxCount/userTweetsPageSize)
+	}
+
+	tweets, nextCursor, err := c.UserTweets(ctx, args.positional, args.count)
 	if err != nil {
 		return err
 	}
-	return renderTweets(out, tweets, args)
+
+	if args.json && args.count > userTweetsPageSize {
+		if tweets == nil {
+			tweets = []xapi.Tweet{}
+		}
+		var cursor *string
+		if nextCursor != "" {
+			cursor = &nextCursor
+		}
+		return writeNativeJSON(out, tweetsEnvelope{Tweets: tweets, NextCursor: cursor})
+	}
+
+	if err := renderTweets(out, tweets, args); err != nil {
+		return err
+	}
+	if !args.json && nextCursor != "" {
+		fmt.Fprintf(nativeStderr, "%s More tweets available. Use --cursor %q to continue.\n",
+			status("info", "ℹ️", "Info:", args), nextCursor)
+	}
+	return nil
 }
+
+// bird's user-tweets page budget, and the count ceiling it implies.
+const (
+	userTweetsPageSize = 20
+	userTweetsMaxCount = 200
+)
+
+// tweetsEnvelope is bird's paginated JSON shape. Field order matters: bird
+// emits tweets first and nextCursor second, and nextCursor is JSON null rather
+// than absent when the timeline ran out. A map[string]any would sort the keys
+// and emit nextCursor first.
+type tweetsEnvelope struct {
+	Tweets     []xapi.Tweet `json:"tweets"`
+	NextCursor *string      `json:"nextCursor"`
+}
+
+// nativeStderr is where the native commands write bird's stderr-only notes.
+// Indirected so tests can capture them without touching the process's stderr.
+var nativeStderr io.Writer = os.Stderr
 
 func nativeBookmarks(ctx context.Context, c *xapi.Client, args nativeArgs, out io.Writer) error {
 	tweets, err := c.Bookmarks(ctx, args.count)
@@ -274,6 +454,91 @@ func nativeListTimeline(ctx context.Context, c *xapi.Client, args nativeArgs, ou
 		return fmt.Errorf("list-timeline: missing list id")
 	}
 	tweets, err := c.ListTimeline(ctx, args.positional, args.count)
+	if err != nil {
+		return err
+	}
+	return renderTweets(out, tweets, args)
+}
+
+// nativeWhoami reports which account the selected credentials belong to.
+//
+// birdy always hands bird the credentials through AUTH_TOKEN/CT0 (see
+// runner.buildEnv), so bird's credential source is invariably "env AUTH_TOKEN".
+// Reproducing that string keeps the output identical rather than inventing a
+// birdy-specific label that would break anything parsing this.
+//
+// The engine line says "graphql" for the same reason. It is bird's name for
+// cookie-session auth as opposed to API keys, not a claim about which endpoint
+// served the request — this lookup is v1.1 REST in both engines.
+func nativeWhoami(ctx context.Context, c *xapi.Client, args nativeArgs, out io.Writer) error {
+	viewer, err := c.CurrentUser(ctx)
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintf(out, "%s @%s (%s)\n", label("user", "🙋", "User:", args), viewer.Username, viewer.Name)
+	fmt.Fprintf(out, "%s %s\n", label("user_id", "🪪", "User ID:", args), viewer.ID)
+	fmt.Fprintf(out, "%s graphql\n", label("engine", "⚙️", "Engine:", args))
+	fmt.Fprintf(out, "%s %s\n", label("credentials", "🔑", "Credentials:", args), birdCredentialSource)
+	return nil
+}
+
+// birdCredentialSource is what bird prints for credentials supplied through the
+// environment, which is the only way birdy supplies them.
+const birdCredentialSource = "env AUTH_TOKEN"
+
+// nativeAbout prints X's "About this account" panel for a handle.
+//
+// Every line after the header is conditional: bird omits a field X did not
+// report rather than printing an empty or default value, and the two booleans
+// are tri-state for that reason.
+func nativeAbout(ctx context.Context, c *xapi.Client, args nativeArgs, out io.Writer) error {
+	if args.positional == "" {
+		return fmt.Errorf("about: missing username")
+	}
+	handle := xapi.NormalizeHandle(args.positional)
+	if handle == "" {
+		return fmt.Errorf("invalid username: %s", args.positional)
+	}
+
+	profile, err := c.AboutAccount(ctx, handle)
+	if err != nil {
+		return err
+	}
+	if args.json {
+		return writeNativeJSON(out, profile)
+	}
+
+	fmt.Fprintf(out, "%s Account information for @%s:\n", status("info", "ℹ️", "Info:", args), handle)
+	if profile.AccountBasedIn != "" {
+		fmt.Fprintf(out, "  Account based in: %s\n", profile.AccountBasedIn)
+	}
+	if profile.CreatedCountryAccurate != nil {
+		fmt.Fprintf(out, "  Creation country accurate: %s\n", yesNo(*profile.CreatedCountryAccurate))
+	}
+	if profile.LocationAccurate != nil {
+		fmt.Fprintf(out, "  Location accurate: %s\n", yesNo(*profile.LocationAccurate))
+	}
+	if profile.Source != "" {
+		fmt.Fprintf(out, "%s %s\n", label("source", "📍", "Source:", args), profile.Source)
+	}
+	if profile.LearnMoreURL != "" {
+		fmt.Fprintf(out, "  Learn more: %s\n", profile.LearnMoreURL)
+	}
+	return nil
+}
+
+func yesNo(v bool) string {
+	if v {
+		return "Yes"
+	}
+	return "No"
+}
+
+// nativeLikes reads the authenticated account's likes. bird's `likes` takes no
+// handle, so neither does this; a positional argument would be a divergence.
+func nativeLikes(ctx context.Context, c *xapi.Client, args nativeArgs, out io.Writer) error {
+	tweets, err := c.ViewerLikes(ctx, args.count)
 	if err != nil {
 		return err
 	}
@@ -302,6 +567,8 @@ var emptyMessages = map[string]string{
 	"thread":        "No thread tweets found.",
 	"list-timeline": "No tweets found in this list.",
 	"bookmarks":     "No bookmarks found.",
+	"likes":         "No liked tweets found.",
+	"mentions":      "No mentions found.",
 }
 
 const defaultEmptyMessage = "No tweets found."
@@ -343,12 +610,30 @@ func renderTweet(out io.Writer, tweet xapi.Tweet, args nativeArgs, withStats boo
 
 	b.WriteString("\n")
 	fmt.Fprintf(&b, "@%s (%s):\n", tweet.Author.Username, tweet.Author.Name)
-	b.WriteString(tweet.Text)
-	b.WriteString("\n")
+
+	if tweet.Article != nil {
+		// bird: text that already begins with the title is the rendered body,
+		// so it prints whole. Otherwise only the title is known (a timeline
+		// response gives no body) and the preview goes beneath it, indented by
+		// three spaces once — a multi-line preview is printed raw.
+		if strings.HasPrefix(tweet.Text, tweet.Article.Title) {
+			fmt.Fprintf(&b, "%s %s\n", articleLabel(args), tweet.Text)
+		} else {
+			fmt.Fprintf(&b, "%s %s\n", articleLabel(args), tweet.Article.Title)
+			if tweet.Article.PreviewText != "" {
+				fmt.Fprintf(&b, "   %s\n", tweet.Article.PreviewText)
+			}
+		}
+	} else {
+		b.WriteString(tweet.Text)
+		b.WriteString("\n")
+	}
 
 	for _, media := range tweet.Media {
 		fmt.Fprintf(&b, "%s %s\n", mediaLabel(media, args), media.URL)
 	}
+
+	renderQuoted(&b, tweet.QuotedTweet, args)
 
 	if tweet.CreatedAt != "" {
 		fmt.Fprintf(&b, "%s %s\n", label("date", "📅", "Date:", args), tweet.CreatedAt)
@@ -389,6 +674,17 @@ func mediaLabel(media xapi.Media, args nativeArgs) string {
 	}
 }
 
+// articleLabel mirrors bird's articleLabel (cli/shared.js:238), which is derived
+// from (emoji && !plain) exactly like the media labels — NOT from the l()/label()
+// helper. That distinction is load-bearing: label() lowercases in plain mode, so
+// routing this through it would print "article:" where bird prints "Article:".
+func articleLabel(args nativeArgs) string {
+	if args.emoji && !args.plain {
+		return "📰"
+	}
+	return "Article:"
+}
+
 // label renders a field prefix in whichever of bird's three output modes applies.
 func label(plainName, emoji, text string, args nativeArgs) string {
 	if args.plain {
@@ -398,6 +694,55 @@ func label(plainName, emoji, text string, args nativeArgs) string {
 		return emoji
 	}
 	return text
+}
+
+// status mirrors bird's status prefixes, which bracket their plain form
+// (`[info]`) where labels suffix theirs with a colon (`source:`).
+func status(plainName, emoji, text string, args nativeArgs) string {
+	if args.plain {
+		return "[" + plainName + "]"
+	}
+	if args.emoji {
+		return emoji
+	}
+	return text
+}
+
+// renderQuoted prints the quoted tweet block.
+//
+// bird draws a box in emoji mode and a mail-style quote otherwise, truncates
+// the quoted text to 280 characters, and prints at most its first four lines.
+// Those limits are bird's, and reproducing them is the whole point.
+func renderQuoted(b *strings.Builder, quoted *xapi.Tweet, args nativeArgs) {
+	if quoted == nil {
+		return
+	}
+
+	top, mid, bot := "> ", "> ", "> "
+	if args.emoji && !args.plain {
+		top, mid, bot = "┌─", "│ ", "└─"
+	}
+
+	fmt.Fprintf(b, "%s QT @%s:\n", top, quoted.Author.Username)
+
+	// A quoted article shows its title, not the tweet's shortlink. The label
+	// counts against bird's 280-unit budget, so it is prepended before the cut.
+	qtText := quoted.Text
+	if quoted.Article != nil {
+		qtText = articleLabel(args) + " " + quoted.Article.Title
+	}
+
+	text := truncateJS(qtText, 280)
+	for i, line := range strings.Split(text, "\n") {
+		if i >= 4 {
+			break
+		}
+		fmt.Fprintf(b, "%s%s\n", mid, line)
+	}
+	for _, media := range quoted.Media {
+		fmt.Fprintf(b, "%s%s %s\n", mid, mediaLabel(media, args), media.URL)
+	}
+	fmt.Fprintf(b, "%s https://x.com/%s/status/%s\n", bot, quoted.Author.Username, quoted.ID)
 }
 
 // threadView matches bird's `thread`: the conversation narrowed to the root's

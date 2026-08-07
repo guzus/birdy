@@ -60,8 +60,17 @@ This is deliberately structured so it does not require a major bump:
 - **Command names survive the port.** A command that moves from bird-forwarded
   to native keeps its name and positional arguments. `birdy read <id>` works the
   same before and after.
-- **Native output is byte-identical to bird's** for `--json`, `--plain` and
-  `--no-emoji`, and is verified by diffing both engines against live X.
+- **Native output is byte-identical to bird's** for `--plain` and `--no-emoji`.
+  For `--json` it is byte-identical too — same keys, same key order, same
+  values — with the exceptions below, each of which either parses to an equal
+  value or is a documented gap. Verified by diffing both engines against live X.
+  - Go's `encoding/json` escapes U+2028 and U+2029 as ` ` / ` `;
+    `JSON.stringify` emits them raw. The parsed string is identical.
+  - birdy does not parse the deep `article` body shapes bird reaches only
+    through its recursive text sweep, and Go's map iteration forces a
+    deterministic key order there where JavaScript uses insertion order. Every
+    article shape observed live matches; this is a documented tail risk.
+  - `query-ids` describes birdy's resolver rather than bird's cache (below).
 - **Unimplemented flags fall back rather than lie.** A command carrying a flag
   the native path lacks (`--all`, `--max-pages`, `--cursor`, …) runs through
   bird instead of silently ignoring it.
@@ -73,7 +82,15 @@ native. Until then, a bird-forwarded command's behavior can change whenever
 upstream bird changes.
 
 If a command cannot be ported with identical behavior, it will be documented
-here rather than quietly diverging.
+here rather than quietly diverging. The current list:
+
+- **`query-ids`** reports birdy's persisted-query resolver, not bird's. The two
+  keep separate caches with separate override mechanisms, so bird's output
+  would describe a file birdy never reads. birdy's adds a `source` field naming
+  why each hash was chosen (`generated`, `discovered`, or the
+  `BIRDY_<OPERATION>_QUERY_ID` variable that overrode it).
+- **`--media`** is not implemented on `tweet`/`reply`. Those invocations fall
+  back to bird rather than silently dropping the attachment.
 
 ## Reporting a break
 

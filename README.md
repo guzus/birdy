@@ -444,17 +444,39 @@ birdy -s random home
 
 birdy serves these commands itself, in Go, with no Node.js and no `bird` binary:
 
-`read` `thread` `replies` `search` `home` `user-tweets` `bookmarks` `list-timeline`
+`read` `thread` `replies` `search` `home` `user-tweets` `bookmarks`
+`list-timeline` `whoami` `about` `likes` `followers` `following`
+`tweet` `reply` `follow` `unfollow` `unbookmark` `check` `mentions`
+`query-ids` `lists` `activity`
 
-Everything else still forwards to [bird](https://github.com/steipete/bird) and
-still needs Node — including `likes`, which bird exposes with no argument (the
-authenticated account's likes) and which birdy cannot serve until it can resolve
-the current user. That fallback is transitional and shrinks as commands are
-ported.
+Only `news` still forwards to [bird](https://github.com/steipete/bird) and
+needs Node. Once it is ported the bird dependency, and the bundled
+`node_modules` that ships with it, can be dropped from the release.
 
-Output is byte-identical to bird's, including `--json`, `--plain` and
-`--no-emoji`, because the birdy skill and TUI read the human-readable form.
-Verified by diffing both engines against live X.
+`query-ids` is the one command that deliberately does not match bird's output:
+bird's reports bird's cache, its path and its feature overrides, and birdy has
+a separate resolver with a different cache and a different override mechanism
+(`BIRDY_<OPERATION>_QUERY_ID`). Printing bird's shape would describe a file
+birdy never reads. See [`COMPATIBILITY.md`](COMPATIBILITY.md).
+
+Posting, replying, following and unbookmarking are served natively, and they
+inherit the same guards as the bird path: `BIRDY_READ_ONLY=1` and per-account
+`read_only` are enforced before the engine is chosen, so making a command
+native is never a way around them. None of the write commands retry — a
+timed-out post may have landed, and a duplicate is worse than a reported
+failure. Media upload is not implemented, so a post carrying `--media` still
+falls back to bird rather than silently dropping the attachment.
+
+`whoami` resolves the account behind the current credentials, which is also what
+lets `likes` match bird's signature — bird's `likes` takes no handle and reads
+the authenticated account's likes.
+
+Output is byte-identical to bird's for `--plain` and `--no-emoji`, because the
+birdy skill and TUI read the human-readable form. `--json` matches key-for-key
+and in key order, with the narrow exceptions listed in
+[COMPATIBILITY.md](COMPATIBILITY.md#the-bird-passthrough-and-removing-it)
+(U+2028/U+2029 escaping, rare `article` body shapes, `query-ids`). Verified by
+diffing both engines against live X.
 
 Force the bird path when you need it:
 
