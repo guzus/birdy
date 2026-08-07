@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/guzus/birdy/internal/xapi"
+	"strconv"
 )
 
 // checkSeparator is 40 dashes, not the 50 the tweet list uses. bird draws them
@@ -306,5 +307,67 @@ func renderActivityUsers(out io.Writer, heading string, users []xapi.ListedUser,
 			fmt.Fprintf(out, "  %s %s followers\n", status("info", "ℹ️", "Info:", args), groupThousands(*user.FollowersCount))
 		}
 		fmt.Fprintf(out, "  %s https://x.com/%s\n", label("url", "🔗", "URL:", args), user.Username)
+	}
+}
+
+// newsTabFlags map bird's per-tab switches to tab names.
+var newsTabFlags = map[string]string{
+	"--for-you": "forYou", "--news-only": "news", "--sports": "sports",
+	"--entertainment": "entertainment", "--trending-only": "trending",
+}
+
+// nativeNews fetches X's Explore tabs.
+func nativeNews(ctx context.Context, c *xapi.Client, args nativeArgs, out io.Writer) error {
+	items, err := c.News(ctx, args.count, args.aiOnly, args.newsTabs)
+	if err != nil {
+		return fmt.Errorf("Failed to fetch news: %w", err)
+	}
+
+	if args.json {
+		if items == nil {
+			items = []xapi.NewsItem{}
+		}
+		return writeNativeJSON(out, items)
+	}
+	if len(items) == 0 {
+		_, err := fmt.Fprintln(out, "No news items found.")
+		return err
+	}
+
+	for _, item := range items {
+		// bird opens each entry with a blank line, including the first.
+		fmt.Fprintf(out, "\n[%s] %s\n", item.Category, item.Headline)
+		if item.Description != "" {
+			fmt.Fprintf(out, "  %s\n", item.Description)
+		}
+
+		var meta []string
+		if item.TimeAgo != "" {
+			meta = append(meta, item.TimeAgo)
+		}
+		if item.PostCount != nil {
+			meta = append(meta, formatPostCount(*item.PostCount)+" posts")
+		}
+		if len(meta) > 0 {
+			fmt.Fprintf(out, "  %s\n", strings.Join(meta, " | "))
+		}
+		if item.URL != "" {
+			fmt.Fprintf(out, "  %s %s\n", label("url", "🔗", "URL:", args), item.URL)
+		}
+		fmt.Fprintln(out, listSeparator)
+	}
+	return nil
+}
+
+// formatPostCount abbreviates the way bird does: one decimal place at each
+// threshold, and the raw number below a thousand.
+func formatPostCount(count int64) string {
+	switch {
+	case count >= 1_000_000:
+		return strconv.FormatFloat(float64(count)/1_000_000, 'f', 1, 64) + "M"
+	case count >= 1_000:
+		return strconv.FormatFloat(float64(count)/1_000, 'f', 1, 64) + "K"
+	default:
+		return strconv.FormatInt(count, 10)
 	}
 }

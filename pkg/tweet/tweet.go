@@ -6,8 +6,7 @@
 // or standing up a hosted birdy instance.
 //
 // Reading is implemented natively in Go against X's GraphQL API, so this
-// package needs no Node.js runtime and no bird CLI. (birdy's other CLI commands
-// still forward to bird.)
+// package needs no Node.js runtime and no bird CLI.
 //
 // A Client is safe for concurrent use and keeps rotation state in memory, so it
 // works on a read-only filesystem (Cloud Run, scratch containers). Accounts are

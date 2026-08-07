@@ -455,11 +455,15 @@ birdy serves these commands itself, in Go, with no Node.js and no `bird` binary:
 `read` `thread` `replies` `search` `home` `user-tweets` `bookmarks`
 `list-timeline` `whoami` `about` `likes` `followers` `following`
 `tweet` `reply` `follow` `unfollow` `unbookmark` `check` `mentions`
-`query-ids` `lists` `activity`
+`query-ids` `lists` `activity` `news`
 
-Only `news` still forwards to [bird](https://github.com/steipete/bird) and
-needs Node. Once it is ported the bird dependency, and the bundled
-`node_modules` that ships with it, can be dropped from the release.
+That is every command birdy has. Nothing forwards to
+[bird](https://github.com/steipete/bird), and the release ships no bird and no
+`node_modules`.
+
+`--bird` still runs the original engine when you install bird separately
+(`npm install -g @steipete/bird`). It is how birdy's output is checked against
+the engine it replaced — see [`docs/MIGRATION.md`](docs/MIGRATION.md).
 
 `query-ids` is the one command that deliberately does not match bird's output:
 bird's reports bird's cache, its path and its feature overrides, and birdy has
@@ -543,10 +547,14 @@ Notes:
 
 ### Scope
 
-`pkg/tweet` covers reading: single tweets and conversations. birdy's other CLI
-commands (posting, search, timelines, follow, lists, bookmarks, media upload)
-still forward to the [bird](https://github.com/steipete/bird) CLI and continue
-to require Node. Porting more of them to `internal/xapi` is incremental work.
+`pkg/tweet` covers reading single tweets and conversations. That is narrower
+than the CLI on purpose: the CLI serves every command natively through
+`internal/xapi`, but only the read path is exposed as a supported Go API, since
+everything exported here is frozen by semver.
+
+Widening it is incremental work — the engine already exists, what is missing is
+the deliberate decision to commit to each signature. See
+[`COMPATIBILITY.md`](COMPATIBILITY.md).
 
 ### Benchmarks
 
