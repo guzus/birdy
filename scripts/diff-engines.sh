@@ -43,18 +43,33 @@ if [ ! -x "$BIRDY" ]; then
   exit 2
 fi
 
-# Without a pinned account each invocation takes the next slot in the rotation,
-# so the two engines get compared as two different users and every personalised
-# command fails for a reason unrelated to the port.
-if [ -z "$ACCOUNT" ]; then
-  first=$("$BIRDY" account list 2>/dev/null | awk 'NR==2{print $1}')
-  if [ -z "$first" ]; then
+# Account handling has two competing requirements, and the first version of this
+# script only satisfied one.
+#
+# Within a case, both engines must run as the SAME account, or a personalised
+# command compares two different users and fails for a reason unrelated to the
+# port. Across cases, the account must ROTATE, or the whole matrix — 48 cases,
+# two engines each — lands on one account and rate-limits it while the others
+# sit idle. That is exactly what happened on the first full run: one account
+# reached 1122 uses and 22 rate limits while another had 307 uses and none.
+#
+# So: pin per case, rotate between cases. --account still forces a single one.
+POOL=()
+if [ -n "$ACCOUNT" ]; then
+  POOL=("${ACCOUNT#--account }")
+else
+  # Column 3 is rotation state; a disabled account is excluded here for the
+  # same reason rotation excludes it.
+  while read -r name state; do
+    [ -n "$name" ] && [ "$state" != "disabled" ] && POOL+=("$name")
+  done < <("$BIRDY" account list 2>/dev/null | awk 'NR>1{print $1, $3}')
+  if [ ${#POOL[@]} -eq 0 ]; then
     echo "no accounts configured; add one or pass --account" >&2
     exit 2
   fi
-  ACCOUNT="--account $first"
-  echo "pinning both engines to account: $first"
+  echo "rotating across ${#POOL[@]} accounts: ${POOL[*]}"
 fi
+pool_index=0
 
 mkdir -p "$OUT"
 
@@ -103,6 +118,18 @@ else
   # than one of them.
   MODES=("--plain" "--json --plain" "")
 fi
+
+# counters blanks live engagement numbers so a deterministic command can still
+# be byte-compared. Everything else — labels, order, spacing — is preserved.
+counters() {
+  sed -E \
+    -e 's/"(likeCount|retweetCount|replyCount)": [0-9]+/"\1": N/g' \
+    -e 's/^likes: [0-9]+  retweets: [0-9]+  replies: [0-9]+$/likes: N  retweets: N  replies: N/' \
+    -e 's/^❤️ [0-9]+  🔁 [0-9]+  💬 [0-9]+$/❤️ N  🔁 N  💬 N/' \
+    -e 's/^Likes [0-9]+  Retweets [0-9]+  Replies [0-9]+$/Likes N  Retweets N  Replies N/' \
+    -e 's/^  (ℹ️|Info:|\[info\]) [0-9,]+ (followers|members)$/  \1 N \2/' \
+    "$1"
+}
 
 # shape reduces output to what should be stable regardless of which tweets came
 # back: an order-preserving fingerprint of the JSON structure, or the sequence
@@ -199,6 +226,12 @@ for cmd in "${COMMANDS[@]}"; do
     label="$cmd ${mode:-<emoji>}"
     slug=$(echo "$label" | tr -c 'a-zA-Z0-9' '-')
 
+    # One account for both engines in this case; the next case takes the next
+    # account.
+    acct="${POOL[$((pool_index % ${#POOL[@]}))]}"
+    pool_index=$((pool_index + 1))
+    ACCOUNT="--account $acct"
+
     # shellcheck disable=SC2086
     "$BIRDY" $ACCOUNT $cmd $mode >"$OUT/$slug.native" 2>"$OUT/$slug.native.err"
     native_rc=$?
@@ -214,11 +247,28 @@ for cmd in "${COMMANDS[@]}"; do
       continue
     fi
 
-    # A pass requires an actual answer. Two identical failures — a deleted
-    # fixture, a dead endpoint — diff clean and prove nothing.
-    if [ "$native_rc" -ne 0 ] || [ "$bird_rc" -ne 0 ]; then
-      echo "FAIL  $label  (native rc=$native_rc, bird rc=$bird_rc; neither may fail)"
+    # Both engines failing is only a pass when they failed the SAME way.
+    #
+    # Rejecting a flag neither supports (`check --json`) is correct parity and
+    # must not be reported as a divergence. A dead fixture is the case this
+    # guards against, and it looks different: both engines error, but with
+    # their own wording, because they each describe the miss in their own
+    # words. Comparing stderr separates the two.
+    if [ "$native_rc" -ne 0 ] && [ "$bird_rc" -ne 0 ]; then
+      if diff -q "$OUT/$slug.native.err" "$OUT/$slug.bird.err" >/dev/null 2>&1; then
+        echo "ok    $label  (both refused identically)"
+        pass=$((pass+1))
+        sleep "${BIRDY_DIFF_DELAY:-2}"
+        continue
+      fi
+      echo "FAIL  $label  (both failed, but differently)"
       head -2 "$OUT/$slug.native.err" "$OUT/$slug.bird.err" 2>/dev/null | sed 's/^/        /'
+      FAILED+=("$label")
+      fail=$((fail+1))
+      continue
+    fi
+    if [ "$native_rc" -ne "$bird_rc" ]; then
+      echo "FAIL  $label  (exit $native_rc vs $bird_rc)"
       FAILED+=("$label")
       fail=$((fail+1))
       continue
@@ -248,12 +298,18 @@ for cmd in "${COMMANDS[@]}"; do
 
     verb="${cmd%% *}"
     if [[ " $DETERMINISTIC " == *" $verb "* ]]; then
-      if diff -q "$OUT/$slug.native" "$OUT/$slug.bird" >/dev/null 2>&1; then
+      # Blank the counter VALUES before comparing. Their presence, position and
+      # formatting still have to match; only the numbers are allowed to move,
+      # because a live tweet gains likes between the two calls and a viral one
+      # gains them between adjacent seconds.
+      counters "$OUT/$slug.native" >"$OUT/$slug.native.cmp"
+      counters "$OUT/$slug.bird" >"$OUT/$slug.bird.cmp"
+      if diff -q "$OUT/$slug.native.cmp" "$OUT/$slug.bird.cmp" >/dev/null 2>&1; then
         echo "ok    $label"
         pass=$((pass+1))
       else
         echo "FAIL  $label"
-        diff "$OUT/$slug.native" "$OUT/$slug.bird" | head -15 | sed 's/^/        /'
+        diff "$OUT/$slug.native.cmp" "$OUT/$slug.bird.cmp" | head -15 | sed 's/^/        /'
         FAILED+=("$label")
         fail=$((fail+1))
       fi

@@ -42,6 +42,19 @@ func Pick(accounts []store.Account, strategy Strategy, lastUsedName string) (*st
 		return nil, fmt.Errorf("no accounts available")
 	}
 
+	// A disabled account is out of rotation but not gone. Filtering here rather
+	// than at every call site means no strategy can accidentally pick one.
+	enabled := make([]store.Account, 0, len(accounts))
+	for _, a := range accounts {
+		if !a.Disabled {
+			enabled = append(enabled, a)
+		}
+	}
+	if len(enabled) == 0 {
+		return nil, fmt.Errorf("every account is disabled; re-enable one with `birdy account enable <name>`")
+	}
+	accounts = enabled
+
 	switch strategy {
 	case RoundRobin:
 		return pickRoundRobin(accounts, lastUsedName)

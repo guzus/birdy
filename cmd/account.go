@@ -143,15 +143,16 @@ var accountListCmd = &cobra.Command{
 		}
 
 		w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "NAME\tACCESS\tUSES\tLAST USED\tADDED")
+		fmt.Fprintln(w, "NAME\tACCESS\tROTATION\tUSES\tLAST USED\tADDED")
 		for _, a := range accounts {
 			lastUsed := "-"
 			if !a.LastUsed.IsZero() {
 				lastUsed = a.LastUsed.Format("2006-01-02 15:04")
 			}
-			fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%s\n",
+			fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%s\n",
 				a.Name,
 				accountAccessLabel(a.ReadOnly),
+				accountStateLabel(a.Disabled),
 				a.UseCount,
 				lastUsed,
 				a.AddedAt.Format("2006-01-02 15:04"),
@@ -275,7 +276,85 @@ func init() {
 	accountCmd.AddCommand(accountAddCmd)
 	accountCmd.AddCommand(accountListCmd)
 	accountCmd.AddCommand(accountRemoveCmd)
+	accountCmd.AddCommand(accountDisableCmd)
+	accountCmd.AddCommand(accountEnableCmd)
 	accountCmd.AddCommand(accountUpdateCmd)
 
 	rootCmd.AddCommand(accountCmd)
+}
+
+// setAccountEnabled flips an account's Disabled flag.
+//
+// Disabling is deliberately not removal: rate limits, a suspension and a stale
+// login are all reasons to stop using an account, and none of them are reasons
+// to throw its credentials away.
+func setAccountEnabled(cmd *cobra.Command, name string, enabled bool) error {
+	name = strings.TrimSpace(name)
+	out := cmd.OutOrStdout()
+	st, err := store.Open()
+	if err != nil {
+		return err
+	}
+	printStoreWarning(cmd.ErrOrStderr(), st)
+	if err := ensureAccountMutationAllowed(st); err != nil {
+		return err
+	}
+
+	account, err := st.Get(name)
+	if err != nil {
+		return err
+	}
+	if account.Disabled == !enabled {
+		fmt.Fprintf(out, "%s is already %s\n", name, accountStateLabel(!enabled))
+		return nil
+	}
+
+	account.Disabled = !enabled
+	if err := st.Save(); err != nil {
+		return err
+	}
+
+	fmt.Fprintf(out, "%s is now %s\n", name, accountStateLabel(!enabled))
+	if !enabled {
+		remaining := 0
+		for _, a := range st.List() {
+			if !a.Disabled {
+				remaining++
+			}
+		}
+		// Rotation needs somebody left, and finding that out at the next
+		// command is worse than hearing it now.
+		if remaining == 0 {
+			fmt.Fprintf(out, "warning: no accounts remain in rotation\n")
+		} else {
+			fmt.Fprintf(out, "%d account(s) remain in rotation\n", remaining)
+		}
+		fmt.Fprintf(out, "`--account %s` still selects it explicitly\n", name)
+	}
+	return nil
+}
+
+func accountStateLabel(disabled bool) string {
+	if disabled {
+		return "disabled"
+	}
+	return "enabled"
+}
+
+var accountDisableCmd = &cobra.Command{
+	Use:   "disable <name>",
+	Short: "Take an account out of rotation without removing it",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return setAccountEnabled(cmd, args[0], false)
+	},
+}
+
+var accountEnableCmd = &cobra.Command{
+	Use:   "enable <name>",
+	Short: "Return a disabled account to rotation",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return setAccountEnabled(cmd, args[0], true)
+	},
 }

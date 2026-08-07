@@ -12,15 +12,21 @@ import (
 
 // Account holds credentials for a single bird CLI account.
 type Account struct {
-	Name               string    `json:"name"`
-	AuthToken          string    `json:"auth_token"`
-	CT0                string    `json:"ct0"`
-	ReadOnly           bool      `json:"read_only,omitempty"`
-	AddedAt            time.Time `json:"added_at"`
-	LastUsed           time.Time `json:"last_used,omitempty"`
-	UseCount           int64     `json:"use_count"`
-	LastRateLimitedAt  time.Time `json:"last_rate_limited_at,omitempty"`
-	RateLimitCount     int64     `json:"rate_limit_count,omitempty"`
+	Name      string `json:"name"`
+	AuthToken string `json:"auth_token"`
+	CT0       string `json:"ct0"`
+	ReadOnly  bool   `json:"read_only,omitempty"`
+	// Disabled takes the account out of rotation without discarding its
+	// credentials. Rate limits, a suspension, a login that needs refreshing —
+	// all reasons to stop using an account that are not reasons to lose it.
+	// An explicit --account still selects a disabled account, so it stays
+	// usable for a deliberate one-off.
+	Disabled          bool      `json:"disabled,omitempty"`
+	AddedAt           time.Time `json:"added_at"`
+	LastUsed          time.Time `json:"last_used,omitempty"`
+	UseCount          int64     `json:"use_count"`
+	LastRateLimitedAt time.Time `json:"last_rate_limited_at,omitempty"`
+	RateLimitCount    int64     `json:"rate_limit_count,omitempty"`
 }
 
 // Store manages multiple accounts persisted to disk.
