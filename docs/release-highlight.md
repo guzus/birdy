@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/guzus/birdy/main/assets/birdy-hero.png" alt="Birdy — Read X faster than light. brew install birdy" width="760">
+  <img src="https://raw.githubusercontent.com/guzus/birdy/main/assets/birdy-hero.png" alt="Birdy — Read X faster than light. brew install guzus/tap/birdy" width="760">
 </p>
 
 Lightweight multi-account X/Twitter CLI. Store several auth tokens and rotate
@@ -7,7 +7,7 @@ between them automatically to spread rate-limit pressure. One Go binary — no
 Node runtime, no `node_modules`.
 
 ```bash
-brew tap guzus/tap && brew trust guzus/tap && brew install birdy
+brew trust guzus/tap && brew install guzus/tap/birdy
 # or: curl -fsSL https://raw.githubusercontent.com/guzus/birdy/main/install.sh | bash
 ```
 

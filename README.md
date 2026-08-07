@@ -11,7 +11,7 @@ One Go binary. No Node runtime, no `node_modules`, nothing to install alongside
 it.
 
 ```bash
-brew tap guzus/tap && brew trust guzus/tap && brew install birdy
+brew trust guzus/tap && brew install guzus/tap/birdy
 ```
 
 birdy began as a proxy in front of the [bird](https://github.com/steipete/bird)
@@ -350,16 +350,20 @@ NordVPN service credentials are different from your account login — find them 
 ### Homebrew
 
 ```bash
-brew tap guzus/tap
-brew trust guzus/tap      # Homebrew requires trusting third-party taps
-brew install birdy
+brew trust guzus/tap                 # Homebrew refuses to load third-party taps until trusted
+brew install guzus/tap/birdy
 ```
 
-Or in one line, still after trusting: `brew install guzus/tap/birdy`.
+The tap-qualified name is the whole install: it taps `guzus/homebrew-tap` on the
+way in, so there is no separate `brew tap` step. Upgrades are plain
+`brew upgrade birdy` once the formula is installed.
 
-`brew install birdy` on its own — with no tap — needs birdy to be in
-homebrew-core, which requires a level of notability the project has not reached
-yet. Until then the tap is the route.
+Trusting is not optional. Homebrew 6 raises `Refusing to load formula
+guzus/tap/birdy from untrusted tap guzus/tap` on install, and `brew trust`
+resolves a tap you have not added yet, which is why it comes first.
+
+The short `brew install birdy` is not offered: with no tap prefix Homebrew
+resolves it against homebrew-core, where birdy is not published.
 
 ### Script
 
