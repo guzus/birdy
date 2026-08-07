@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -40,6 +41,26 @@ func NormalizeHandle(handle string) string {
 		h = h[:idx]
 	}
 	return strings.TrimPrefix(strings.TrimSpace(h), "@")
+}
+
+// handlePattern is what X actually issues: letters, digits and underscore, at
+// most 15 characters.
+var handlePattern = regexp.MustCompile(`^[A-Za-z0-9_]{1,15}$`)
+
+// ValidHandle normalizes a handle and reports whether the result is one X could
+// have issued.
+//
+// NormalizeHandle only strips wrappers, so it happily returns "not a handle!"
+// unchanged. That is fine for a lookup, where X answers "no such user", but not
+// for a command that builds a search query out of the value — a malformed
+// handle would become a query for arbitrary text and quietly return the wrong
+// results instead of an error.
+func ValidHandle(handle string) (string, bool) {
+	normalized := NormalizeHandle(handle)
+	if !handlePattern.MatchString(normalized) {
+		return "", false
+	}
+	return normalized, true
 }
 
 // UserByScreenName looks up an account by handle. Timeline operations key off

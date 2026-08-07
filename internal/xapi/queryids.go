@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 )
@@ -239,4 +241,53 @@ func writeQueryIDCache(snapshot queryIDSnapshot) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+// --- Introspection -----------------------------------------------------------
+
+// QueryIDEntry describes the hashes birdy would try for one operation.
+type QueryIDEntry struct {
+	Operation string   `json:"operation"`
+	IDs       []string `json:"ids"`
+	// Source names where the first hash came from: the env override, the
+	// generated snapshot, or discovery. It is the field that answers "why is
+	// birdy using this hash".
+	Source string `json:"source,omitempty"`
+}
+
+// QueryIDReport is what `birdy query-ids` prints.
+type QueryIDReport struct {
+	Operations []QueryIDEntry `json:"operations"`
+	CachePath  string         `json:"cachePath"`
+}
+
+// QueryIDSnapshot reports the hashes birdy would use right now, without
+// triggering discovery.
+func QueryIDSnapshot() QueryIDReport {
+	report := QueryIDReport{}
+	if path, err := queryIDCachePath(); err == nil {
+		report.CachePath = path
+	}
+
+	operations := make([]string, 0, len(queryIDs))
+	for operation := range queryIDs {
+		operations = append(operations, operation)
+	}
+	slices.Sort(operations)
+
+	for _, operation := range operations {
+		ids := operationQueryIDs(operation)
+		entry := QueryIDEntry{Operation: operation, IDs: ids}
+		envKey := "BIRDY_" + strings.ToUpper(camelToSnake(operation)) + "_QUERY_ID"
+		switch {
+		case strings.TrimSpace(os.Getenv(envKey)) != "":
+			entry.Source = envKey
+		case len(queryIDs[operation]) > 0:
+			entry.Source = "generated"
+		default:
+			entry.Source = "discovered"
+		}
+		report.Operations = append(report.Operations, entry)
+	}
+	return report
 }

@@ -446,11 +446,18 @@ birdy serves these commands itself, in Go, with no Node.js and no `bird` binary:
 
 `read` `thread` `replies` `search` `home` `user-tweets` `bookmarks`
 `list-timeline` `whoami` `about` `likes` `followers` `following`
-`tweet` `reply` `follow` `unfollow` `unbookmark`
+`tweet` `reply` `follow` `unfollow` `unbookmark` `check` `mentions`
+`query-ids` `lists` `activity`
 
-Everything else still forwards to [bird](https://github.com/steipete/bird) and
-still needs Node: `activity` `check` `lists` `mentions` `news` `query-ids`.
-That fallback is transitional and shrinks as commands are ported.
+Only `news` still forwards to [bird](https://github.com/steipete/bird) and
+needs Node. Once it is ported the bird dependency, and the bundled
+`node_modules` that ships with it, can be dropped from the release.
+
+`query-ids` is the one command that deliberately does not match bird's output:
+bird's reports bird's cache, its path and its feature overrides, and birdy has
+a separate resolver with a different cache and a different override mechanism
+(`BIRDY_<OPERATION>_QUERY_ID`). Printing bird's shape would describe a file
+birdy never reads. See [`COMPATIBILITY.md`](COMPATIBILITY.md).
 
 Posting, replying, following and unbookmarking are served natively, and they
 inherit the same guards as the bird path: `BIRDY_READ_ONLY=1` and per-account

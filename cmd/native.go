@@ -41,6 +41,17 @@ var nativeCommands = map[string]func(context.Context, *xapi.Client, nativeArgs, 
 	"follow":        nativeFollow,
 	"unfollow":      nativeUnfollow,
 	"unbookmark":    nativeUnbookmark,
+	"check":         nativeCheck,
+	"mentions":      nativeMentions,
+	"query-ids":     nativeQueryIDs,
+	"lists":         nativeLists,
+	"activity":      nativeActivity,
+}
+
+// defaultCounts overrides the common default of 20 where bird differs.
+var defaultCounts = map[string]int{
+	"mentions": 10,
+	"lists":    100,
 }
 
 // nativeSupports reports whether a command has a native implementation.
@@ -76,9 +87,20 @@ type nativeArgs struct {
 	emoji bool
 	// latest selects the chronological home timeline.
 	latest bool
-	// user is the numeric account id --user targets, for the listing commands
-	// that take an id rather than a handle.
+	// user is what --user carried. followers/following take a numeric account
+	// id here; mentions takes a handle. The commands interpret it themselves.
 	user string
+	// memberOf switches `lists` from owned lists to memberships.
+	memberOf bool
+	// types is `activity`'s --types selector.
+	types string
+	// authToken and ct0 are the selected account's credentials, needed by
+	// `check`, which reports on them rather than calling X.
+	authToken string
+	ct0       string
+	// countSet records whether the caller passed a count, so a command with a
+	// different default does not silently override an explicit -n.
+	countSet bool
 	// command is the birdy subcommand being served, used to pick the wording
 	// for an empty result.
 	command string
@@ -104,23 +126,36 @@ func parseNativeArgs(args []string) nativeArgs {
 			// Accepted for compatibility; native output is never colorized.
 		case arg == "--latest":
 			parsed.latest = true
-		case arg == "--user":
+		case arg == "--member-of":
+			parsed.memberOf = true
+		case arg == "--types":
+			if i+1 < len(args) {
+				parsed.types = args[i+1]
+				i++
+			}
+		case strings.HasPrefix(arg, "--types="):
+			parsed.types = arg[len("--types="):]
+		case arg == "--user" || arg == "-u":
 			if i+1 < len(args) {
 				parsed.user = args[i+1]
 				i++
 			}
 		case strings.HasPrefix(arg, "--user="):
 			parsed.user = arg[len("--user="):]
+		case strings.HasPrefix(arg, "-u="):
+			parsed.user = arg[len("-u="):]
 		case arg == "-n" || arg == "--count" || arg == "--limit":
 			if i+1 < len(args) {
 				if n, err := strconv.Atoi(args[i+1]); err == nil {
 					parsed.count = n
+					parsed.countSet = true
 				}
 				i++
 			}
 		case strings.HasPrefix(arg, "--count=") || strings.HasPrefix(arg, "--limit="):
 			if n, err := strconv.Atoi(arg[strings.IndexByte(arg, '=')+1:]); err == nil {
 				parsed.count = n
+				parsed.countSet = true
 			}
 		case strings.HasPrefix(arg, "-"):
 			// Ignored here; nativeAcceptsFlags rejects the command first.
@@ -148,12 +183,17 @@ var nativeSupportedFlags = map[string]bool{
 var commandExtraFlags = map[string]map[string]bool{
 	"followers": {"--user": true},
 	"following": {"--user": true},
+	// mentions also takes --user, but as a handle rather than a numeric id.
+	"mentions": {"--user": true, "-u": true},
+	"lists":    {"--member-of": true},
+	"activity": {"--types": true},
 }
 
 // flagsTakingValue consume the following argument, which must not then be
 // mistaken for a flag in its own right.
 var flagsTakingValue = map[string]bool{
-	"-n": true, "--count": true, "--limit": true, "--user": true,
+	"-n": true, "--count": true, "--limit": true, "--user": true, "-u": true,
+	"--types": true,
 }
 
 // commandUnsupportedFlags narrows nativeSupportedFlags for commands that accept
@@ -171,6 +211,12 @@ var commandUnsupportedFlags = map[string]map[string]bool{
 	// bird's `about` takes only --json; count and latest are meaningless here.
 	"about": {"-n": true, "--count": true, "--limit": true, "--latest": true},
 	"likes": {"--latest": true},
+	// `check` reads no timeline and bird gives it no options at all.
+	"check":     {"--json": true, "-n": true, "--count": true, "--limit": true, "--latest": true},
+	"mentions":  {"--latest": true},
+	"lists":     {"--latest": true},
+	"activity":  {"--latest": true},
+	"query-ids": {"-n": true, "--count": true, "--limit": true, "--latest": true},
 	// The write commands take no output or paging flags. --json in particular
 	// is not one bird offers here, and answering it would be a divergence.
 	"tweet":      writeCommandFlags,
@@ -232,6 +278,11 @@ func runNative(ctx context.Context, account *store.Account, command string, args
 	}
 	parsed := parseNativeArgs(args)
 	parsed.command = command
+	parsed.authToken = account.AuthToken
+	parsed.ct0 = account.CT0
+	if n, ok := defaultCounts[command]; ok && !parsed.countSet {
+		parsed.count = n
+	}
 	return handler(ctx, client, parsed, out)
 }
 
@@ -457,6 +508,7 @@ var emptyMessages = map[string]string{
 	"list-timeline": "No tweets found in this list.",
 	"bookmarks":     "No bookmarks found.",
 	"likes":         "No liked tweets found.",
+	"mentions":      "No mentions found.",
 }
 
 const defaultEmptyMessage = "No tweets found."

@@ -34,6 +34,7 @@ const SETS = {
   bookmarksFeatures: 'buildBookmarksFeatures',
   followingFeatures: 'buildFollowingFeatures',
   tweetCreateFeatures: 'buildTweetCreateFeatures',
+  listsFeatures: 'buildListsFeatures',
 };
 
 // UserByScreenName's flags are inline in bird's user-lookup module rather than
@@ -75,6 +76,7 @@ const OPERATIONS = [
   // Mutations. CreateFriendship/DestroyFriendship are the GraphQL fallback
   // for follow/unfollow; the REST path is tried first.
   'CreateTweet', 'CreateFriendship', 'DestroyFriendship', 'DeleteBookmark',
+  'ListOwnerships', 'ListMemberships', 'Favoriters', 'Retweeters',
   // Carries no feature set of its own; only its hash is needed.
   'AboutAccountQuery',
 ];

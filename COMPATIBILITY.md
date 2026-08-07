@@ -73,7 +73,19 @@ native. Until then, a bird-forwarded command's behavior can change whenever
 upstream bird changes.
 
 If a command cannot be ported with identical behavior, it will be documented
-here rather than quietly diverging.
+here rather than quietly diverging. The current list:
+
+- **`query-ids`** reports birdy's persisted-query resolver, not bird's. The two
+  keep separate caches with separate override mechanisms, so bird's output
+  would describe a file birdy never reads. birdy's adds a `source` field naming
+  why each hash was chosen (`generated`, `discovered`, or the
+  `BIRDY_<OPERATION>_QUERY_ID` variable that overrode it).
+- **`whoami`** resolves the account id from `verify_credentials.json`'s
+  top-level `id_str`. bird does not read that field and falls through to
+  scraping the HTML settings page; birdy reads what X sends and does not
+  implement the scrape. The printed output is the same.
+- **`--media`** is not implemented on `tweet`/`reply`. Those invocations fall
+  back to bird rather than silently dropping the attachment.
 
 ## Reporting a break
 
