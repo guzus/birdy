@@ -665,7 +665,7 @@ func parseTimelinePage(body []byte, roots [][]string) (timelinePage, error) {
 		if err := json.Unmarshal(raw, &instructions); err != nil {
 			continue
 		}
-		tweets, err := tweetsFromInstructions(instructions)
+		tweets, err := tweetsFromInstructions(instructions, false)
 		if err != nil {
 			return timelinePage{}, err
 		}
@@ -873,7 +873,7 @@ func parseStrictTimelineEntry(raw json.RawMessage) ([]Tweet, string, error) {
 	if err := validateStrictTimelineItemTypes(parsed); err != nil {
 		return nil, "", err
 	}
-	nodes, err := collectFromEntry(parsed)
+	nodes, err := collectFromEntry(parsed, false)
 	if err != nil {
 		return nil, "", err
 	}

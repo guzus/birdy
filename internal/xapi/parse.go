@@ -105,7 +105,9 @@ type entry struct {
 		// still have more.
 		CursorType string `json:"cursorType"`
 		Value      string `json:"value"`
-		Item       *struct {
+		// A standalone cursor must never carry a tweet payload directly.
+		TweetResults json.RawMessage `json:"tweet_results"`
+		Item         *struct {
 			ItemContent *itemContent `json:"itemContent"`
 		} `json:"item"`
 		Items *[]timelineModuleItem `json:"items"`
@@ -113,10 +115,13 @@ type entry struct {
 }
 
 type itemContent struct {
-	TypeName     string `json:"__typename"`
-	ItemType     string `json:"itemType"`
-	typeShapeErr string
-	TweetResults *struct {
+	TypeName        string `json:"__typename"`
+	ItemType        string `json:"itemType"`
+	CursorType      string `json:"cursorType"`
+	Value           string `json:"value"`
+	typeShapeErr    string
+	hasTweetResults bool
+	TweetResults    *struct {
 		Result *tweetResult `json:"result"`
 	} `json:"tweet_results"`
 }
@@ -142,6 +147,7 @@ func (item *itemContent) UnmarshalJSON(data []byte) error {
 			item.typeShapeErr = fmt.Sprintf("%s is present but not a nonempty string", key)
 		}
 	}
+	_, item.hasTweetResults = object["tweet_results"]
 	return nil
 }
 
@@ -587,9 +593,25 @@ func bestMP4Variant(item rawMedia) string {
 
 // collectFromEntry gathers every tweet node an entry can hold. A conversation
 // entry may carry a single tweet or a module of several (thread continuations).
-func collectFromEntry(e entry) ([]*tweetResult, error) {
+func collectFromEntry(e entry, allowTweetDetailCursors bool) ([]*tweetResult, error) {
 	var out []*tweetResult
 	module := e.Content.TypeName == "TimelineTimelineModule" || e.Content.EntryType == "TimelineTimelineModule"
+	exactTweetDetailModule := e.Content.TypeName == "TimelineTimelineModule" && e.Content.EntryType == "TimelineTimelineModule"
+	if allowTweetDetailCursors && (e.Content.EntryType == "TimelineTimelineCursor" || e.Content.TypeName == "TimelineTimelineCursor" || e.Content.CursorType != "") {
+		if e.Content.EntryType != "TimelineTimelineCursor" || e.Content.TypeName != "TimelineTimelineCursor" {
+			return nil, &APIError{Message: "malformed TweetDetail entry cursor: both matching discriminators are required"}
+		}
+		if e.Content.CursorType != "ShowMoreThreads" && e.Content.CursorType != "Bottom" {
+			return nil, &APIError{Message: fmt.Sprintf("unsupported TweetDetail entry cursor type %q", e.Content.CursorType)}
+		}
+		if strings.TrimSpace(e.Content.Value) == "" {
+			return nil, &APIError{Message: fmt.Sprintf("malformed TweetDetail %s entry cursor: empty value", e.Content.CursorType)}
+		}
+		if e.Content.ItemContent != nil || e.Content.Item != nil || e.Content.Items != nil || len(e.Content.TweetResults) != 0 {
+			return nil, &APIError{Message: "malformed TweetDetail entry cursor: mixed cursor and data payload"}
+		}
+		return nil, nil
+	}
 	if module && e.Content.Items == nil {
 		return nil, &APIError{Message: "malformed timeline module: missing items collection"}
 	}
@@ -635,6 +657,18 @@ func collectFromEntry(e entry) ([]*tweetResult, error) {
 	}
 	if e.Content.Items != nil {
 		for index, item := range *e.Content.Items {
+			if allowTweetDetailCursors && exactTweetDetailModule && item.Item != nil && item.Item.ItemContent != nil {
+				if cursor, err := validateTweetDetailModuleCursor(item.Item.ItemContent); cursor {
+					if err != nil {
+						return nil, err
+					}
+					if item.ItemContent != nil || (item.Content != nil && item.Content.ItemContent != nil) {
+						return nil, &APIError{Message: "malformed TweetDetail module cursor: mixed item wrappers"}
+					}
+					continue
+				}
+			}
+
 			var contents []*itemContent
 			if item.ItemContent != nil {
 				contents = append(contents, item.ItemContent)
@@ -735,6 +769,37 @@ func isKnownNonTweetType(kind string) bool {
 	}
 }
 
+// validateTweetDetailModuleCursor recognizes the decorative ShowMore and
+// ShowMoreThreads items X has nested beside tweets inside TweetDetail
+// conversation modules. Cursor items are non-data: accept only the fully
+// typed, non-empty observed shapes, and fail closed if one carries
+// tweet_results or conflicts with a tweet discriminator.
+func validateTweetDetailModuleCursor(item *itemContent) (bool, error) {
+	if item == nil || (item.ItemType != "TimelineTimelineCursor" && item.TypeName != "TimelineTimelineCursor") {
+		return false, nil
+	}
+	if item.typeShapeErr != "" {
+		return true, &APIError{Message: "malformed TweetDetail module cursor discriminator: " + item.typeShapeErr}
+	}
+	kind, err := consistentDiscriminator(item.ItemType, item.TypeName, "TweetDetail module cursor")
+	if err != nil {
+		return true, err
+	}
+	if kind != "TimelineTimelineCursor" || item.ItemType == "" || item.TypeName == "" {
+		return true, &APIError{Message: "malformed TweetDetail module cursor: both matching discriminators are required"}
+	}
+	if item.hasTweetResults {
+		return true, &APIError{Message: "TweetDetail module cursor unexpectedly carries tweet_results"}
+	}
+	if item.CursorType != "ShowMore" && item.CursorType != "ShowMoreThreads" {
+		return true, &APIError{Message: fmt.Sprintf("unsupported TweetDetail module cursor type %q", item.CursorType)}
+	}
+	if strings.TrimSpace(item.Value) == "" {
+		return true, &APIError{Message: fmt.Sprintf("malformed TweetDetail %s cursor: empty value", item.CursorType)}
+	}
+	return true, nil
+}
+
 func consistentDiscriminator(primary, typeName, context string) (string, error) {
 	if primary != "" && typeName != "" && primary != typeName {
 		return "", &APIError{Message: fmt.Sprintf("conflicting %s discriminators %q and %q", context, primary, typeName)}
@@ -757,12 +822,12 @@ func isKnownNonTweetEntryType(typeName string) bool {
 
 // tweetsFromInstructions maps every usable tweet out of a timeline's
 // instructions, de-duplicated, preserving X's ordering.
-func tweetsFromInstructions(instructions []instruction) ([]Tweet, error) {
+func tweetsFromInstructions(instructions []instruction, allowTweetDetailCursors bool) ([]Tweet, error) {
 	var tweets []Tweet
 	seen := make(map[string]bool)
 	for _, ins := range instructions {
 		for _, e := range ins.Entries {
-			nodes, err := collectFromEntry(e)
+			nodes, err := collectFromEntry(e, allowTweetDetailCursors)
 			if err != nil {
 				return nil, err
 			}
@@ -841,7 +906,14 @@ func parseConversation(body []byte) ([]Tweet, error) {
 		return nil, &APIError{Message: strings.Join(messages, ", ")}
 	}
 
-	return tweetsFromInstructions(instructions)
+	tweets, err := tweetsFromInstructions(instructions, true)
+	if err != nil {
+		return nil, err
+	}
+	if len(tweets) == 0 {
+		return nil, &APIError{Message: "TweetDetail response contained no usable tweets"}
+	}
+	return tweets, nil
 }
 
 // --- Type helpers ------------------------------------------------------------

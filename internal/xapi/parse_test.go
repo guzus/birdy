@@ -84,6 +84,50 @@ const conversationFixture = `{
   ] } }
 }`
 
+// Sanitized from the live TweetDetail response for the production canary on
+// 2026-08-09. X places a fully typed ShowMore cursor beside tweets inside a
+// conversation module and a Bottom cursor in its own entry. Only
+// structural keys, typenames, opaque placeholders, and a synthetic tweet are
+// retained.
+const liveTweetDetailCursorFixture = `{
+  "data":{"threaded_conversation_with_injections_v2":{"instructions":[
+    {"type":"TimelineClearCache"},
+    {"type":"TimelineAddEntries","entries":[
+      {"content":{"entryType":"TimelineTimelineModule","__typename":"TimelineTimelineModule","items":[
+        {"item":{"itemContent":{"itemType":"TimelineTweet","__typename":"TimelineTweet","tweet_results":{"result":{
+          "rest_id":"100","core":{"user_results":{"result":{"legacy":{"screen_name":"author","name":"Author"}}}},
+          "legacy":{"full_text":"synthetic canary tweet"}
+        }}}}},
+        {"item":{"itemContent":{"itemType":"TimelineTimelineCursor","__typename":"TimelineTimelineCursor",
+          "cursorType":"ShowMore","value":"OPAQUE_MODULE_CURSOR"}}}
+      ]}},
+      {"content":{"entryType":"TimelineTimelineCursor","__typename":"TimelineTimelineCursor",
+		"cursorType":"Bottom","value":"OPAQUE_ENTRY_CURSOR"}}
+    ]},
+    {"type":"TimelineTerminateTimeline","direction":"Top"}
+  ]}}
+}`
+
+func timelineModuleInstruction(items string) string {
+	return `{"type":"TimelineAddEntries","entries":[{"content":{
+			"entryType":"TimelineTimelineModule","__typename":"TimelineTimelineModule","items":[` + items + `]
+		}}]}`
+}
+
+func tweetDetailModuleFixture(items string) []byte {
+	return []byte(`{"data":{"threaded_conversation_with_injections_v2":{"instructions":[` + timelineModuleInstruction(items) + `]}}}`)
+}
+
+func tweetDetailEntryFixture(content string) []byte {
+	return tweetDetailEntriesFixture(`{"content":` + content + `}`)
+}
+
+func tweetDetailEntriesFixture(entries string) []byte {
+	return []byte(`{"data":{"threaded_conversation_with_injections_v2":{"instructions":[
+		{"type":"TimelineAddEntries","entries":[` + entries + `]}
+	]}}}`)
+}
+
 func TestParseConversation(t *testing.T) {
 	tweets, err := parseConversation([]byte(conversationFixture))
 	if err != nil {
@@ -164,6 +208,140 @@ func TestParseConversation(t *testing.T) {
 			t.Errorf("PreviewURL = %q, want empty when sizes are absent", third.Media[1].PreviewURL)
 		}
 	})
+}
+
+func TestParseConversationAcceptsLiveCursorsAndDecorationsBesideTweet(t *testing.T) {
+	tweets, err := parseConversation([]byte(liveTweetDetailCursorFixture))
+	if err != nil {
+		t.Fatalf("parseConversation returned error: %v", err)
+	}
+	if len(tweets) != 1 || tweets[0].ID != "100" || tweets[0].Text != "synthetic canary tweet" {
+		t.Fatalf("tweets = %+v, want only the synthetic tweet", tweets)
+	}
+}
+
+func TestParseConversationModuleCursorFailsClosed(t *testing.T) {
+	validTweet := `{"item":{"itemContent":{"itemType":"TimelineTweet","__typename":"TimelineTweet","tweet_results":{"result":{
+		"rest_id":"100","core":{"user_results":{"result":{"legacy":{"screen_name":"author","name":"Author"}}}},
+		"legacy":{"full_text":"synthetic canary tweet"}}}}}}`
+	validCursor := `{"item":{"itemContent":{"itemType":"TimelineTimelineCursor","__typename":"TimelineTimelineCursor","cursorType":"ShowMoreThreads","value":"OPAQUE_CURSOR"}}}`
+
+	t.Run("cursor-only TweetDetail is not empty success", func(t *testing.T) {
+		tweets, err := parseConversation(tweetDetailModuleFixture(validCursor))
+		if err == nil || len(tweets) != 0 {
+			t.Fatalf("tweets=%+v err=%v, want fail-closed empty result", tweets, err)
+		}
+	})
+
+	malformed := map[string]string{
+		"missing cursor type": `{"item":{"itemContent":{"itemType":"TimelineTimelineCursor","__typename":"TimelineTimelineCursor","value":"OPAQUE_CURSOR"}}}`,
+		"missing itemType":    `{"item":{"itemContent":{"__typename":"TimelineTimelineCursor","cursorType":"ShowMoreThreads","value":"OPAQUE_CURSOR"}}}`,
+		"missing typename":    `{"item":{"itemContent":{"itemType":"TimelineTimelineCursor","cursorType":"ShowMoreThreads","value":"OPAQUE_CURSOR"}}}`,
+		"missing value":       `{"item":{"itemContent":{"itemType":"TimelineTimelineCursor","__typename":"TimelineTimelineCursor","cursorType":"ShowMoreThreads"}}}`,
+		"empty value":         `{"item":{"itemContent":{"itemType":"TimelineTimelineCursor","__typename":"TimelineTimelineCursor","cursorType":"ShowMoreThreads","value":""}}}`,
+		"unsupported cursor":  `{"item":{"itemContent":{"itemType":"TimelineTimelineCursor","__typename":"TimelineTimelineCursor","cursorType":"Bottom","value":"OPAQUE_CURSOR"}}}`,
+		"mixed tweet results": `{"item":{"itemContent":{"itemType":"TimelineTimelineCursor","__typename":"TimelineTimelineCursor","cursorType":"ShowMoreThreads","value":"OPAQUE_CURSOR","tweet_results":{}}}}`,
+		"null tweet results":  `{"item":{"itemContent":{"itemType":"TimelineTimelineCursor","__typename":"TimelineTimelineCursor","cursorType":"ShowMoreThreads","value":"OPAQUE_CURSOR","tweet_results":null}}}`,
+		"conflicting type":    `{"item":{"itemContent":{"itemType":"TimelineTimelineCursor","__typename":"TimelineTweet","cursorType":"ShowMoreThreads","value":"OPAQUE_CURSOR"}}}`,
+		"untyped cursor":      `{"item":{"itemContent":{"cursorType":"ShowMoreThreads","value":"OPAQUE_CURSOR"}}}`,
+		"unexpected wrapper":  `{"itemContent":{"itemType":"TimelineTimelineCursor","__typename":"TimelineTimelineCursor","cursorType":"ShowMoreThreads","value":"OPAQUE_CURSOR"}}`,
+		"mixed item wrappers": `{"item":{"itemContent":{"itemType":"TimelineTimelineCursor","__typename":"TimelineTimelineCursor","cursorType":"ShowMoreThreads","value":"OPAQUE_CURSOR"}},"itemContent":{}}`,
+	}
+	for name, cursor := range malformed {
+		t.Run(name, func(t *testing.T) {
+			tweets, err := parseConversation(tweetDetailModuleFixture(validTweet + `,` + cursor))
+			if err == nil || len(tweets) != 0 {
+				t.Fatalf("tweets=%+v err=%v, want malformed cursor to reject the mixed response", tweets, err)
+			}
+		})
+	}
+}
+
+func TestParseConversationModuleCursorRequiresExactEnclosingModuleType(t *testing.T) {
+	items := `[
+		{"item":{"itemContent":{"itemType":"TimelineTweet","__typename":"TimelineTweet","tweet_results":{"result":{
+			"rest_id":"100","core":{"user_results":{"result":{"legacy":{"screen_name":"author","name":"Author"}}}},
+			"legacy":{"full_text":"synthetic canary tweet"}}}}}},
+		{"item":{"itemContent":{"itemType":"TimelineTimelineCursor","__typename":"TimelineTimelineCursor","cursorType":"ShowMore","value":"OPAQUE_CURSOR"}}}
+	]`
+	malformed := map[string]string{
+		"missing entryType": `{"__typename":"TimelineTimelineModule","items":` + items + `}`,
+		"missing typename":  `{"entryType":"TimelineTimelineModule","items":` + items + `}`,
+		"conflicting type":  `{"entryType":"TimelineTimelineModule","__typename":"TimelineTimelineItem","items":` + items + `}`,
+	}
+	for name, content := range malformed {
+		t.Run(name, func(t *testing.T) {
+			if tweets, err := parseConversation(tweetDetailEntryFixture(content)); err == nil || len(tweets) != 0 {
+				t.Fatalf("tweets=%+v err=%v, want malformed enclosing module rejected", tweets, err)
+			}
+		})
+	}
+}
+
+func TestParseConversationStandaloneCursorFailsClosed(t *testing.T) {
+	validTweetEntry := `{"content":{"itemContent":{"itemType":"TimelineTweet","__typename":"TimelineTweet","tweet_results":{"result":{
+		"rest_id":"100","core":{"user_results":{"result":{"legacy":{"screen_name":"author","name":"Author"}}}},
+		"legacy":{"full_text":"synthetic canary tweet"}}}}}}`
+	malformed := map[string]string{
+		"missing entryType": `{"content":{"__typename":"TimelineTimelineCursor","cursorType":"ShowMoreThreads","value":"OPAQUE_CURSOR"}}`,
+		"missing typename":  `{"content":{"entryType":"TimelineTimelineCursor","cursorType":"ShowMoreThreads","value":"OPAQUE_CURSOR"}}`,
+		"conflicting type":  `{"content":{"entryType":"TimelineTimelineCursor","__typename":"TimelineTimelineItem","cursorType":"ShowMoreThreads","value":"OPAQUE_CURSOR"}}`,
+		"missing value":     `{"content":{"entryType":"TimelineTimelineCursor","__typename":"TimelineTimelineCursor","cursorType":"ShowMoreThreads"}}`,
+		"unsupported type":  `{"content":{"entryType":"TimelineTimelineCursor","__typename":"TimelineTimelineCursor","cursorType":"Top","value":"OPAQUE_CURSOR"}}`,
+		"direct tweet data": `{"content":{"entryType":"TimelineTimelineCursor","__typename":"TimelineTimelineCursor","cursorType":"ShowMoreThreads","value":"OPAQUE_CURSOR","tweet_results":null}}`,
+		"mixed item data":   `{"content":{"entryType":"TimelineTimelineCursor","__typename":"TimelineTimelineCursor","cursorType":"Bottom","value":"OPAQUE_CURSOR","itemContent":{}}}`,
+	}
+	for name, cursorEntry := range malformed {
+		t.Run(name, func(t *testing.T) {
+			tweets, err := parseConversation(tweetDetailEntriesFixture(validTweetEntry + `,` + cursorEntry))
+			if err == nil || len(tweets) != 0 {
+				t.Fatalf("tweets=%+v err=%v, want malformed standalone cursor to reject the mixed response", tweets, err)
+			}
+		})
+	}
+}
+
+func TestParseConversationAcceptsObservedStandaloneCursorTypes(t *testing.T) {
+	validTweetEntry := `{"content":{"itemContent":{"itemType":"TimelineTweet","__typename":"TimelineTweet","tweet_results":{"result":{
+		"rest_id":"100","core":{"user_results":{"result":{"legacy":{"screen_name":"author","name":"Author"}}}},
+		"legacy":{"full_text":"synthetic canary tweet"}}}}}}`
+	for _, cursorType := range []string{"ShowMoreThreads", "Bottom"} {
+		t.Run(cursorType, func(t *testing.T) {
+			cursorEntry := `{"content":{"entryType":"TimelineTimelineCursor","__typename":"TimelineTimelineCursor","cursorType":"` + cursorType + `","value":"OPAQUE_CURSOR"}}`
+			tweets, err := parseConversation(tweetDetailEntriesFixture(validTweetEntry + `,` + cursorEntry))
+			if err != nil || len(tweets) != 1 || tweets[0].ID != "100" {
+				t.Fatalf("tweets=%+v err=%v, want the tweet beside an observed standalone %s cursor", tweets, err, cursorType)
+			}
+		})
+	}
+}
+
+func TestParseConversationAcceptsObservedModuleCursorTypes(t *testing.T) {
+	validTweet := `{"item":{"itemContent":{"itemType":"TimelineTweet","__typename":"TimelineTweet","tweet_results":{"result":{
+		"rest_id":"100","core":{"user_results":{"result":{"legacy":{"screen_name":"author","name":"Author"}}}},
+		"legacy":{"full_text":"synthetic canary tweet"}}}}}}`
+	for _, cursorType := range []string{"ShowMore", "ShowMoreThreads"} {
+		t.Run(cursorType, func(t *testing.T) {
+			cursor := `{"item":{"itemContent":{"itemType":"TimelineTimelineCursor","__typename":"TimelineTimelineCursor","cursorType":"` + cursorType + `","value":"OPAQUE_CURSOR"}}}`
+			tweets, err := parseConversation(tweetDetailModuleFixture(validTweet + `,` + cursor))
+			if err != nil || len(tweets) != 1 || tweets[0].ID != "100" {
+				t.Fatalf("tweets=%+v err=%v, want the tweet beside an observed %s cursor", tweets, err, cursorType)
+			}
+		})
+	}
+}
+
+func TestTweetDetailModuleCursorExceptionIsParserScoped(t *testing.T) {
+	validCursor := `{"item":{"itemContent":{"itemType":"TimelineTimelineCursor","__typename":"TimelineTimelineCursor","cursorType":"ShowMoreThreads","value":"OPAQUE_CURSOR"}}}`
+	instruction := timelineModuleInstruction(validCursor)
+
+	legacyBody := []byte(`{"data":{"search_by_raw_query":{"search_timeline":{"timeline":{"instructions":[` + instruction + `]}}}}}`)
+	if _, err := parseTimeline(legacyBody, opSearch.roots); err == nil {
+		t.Fatal("legacy timeline parser accepted the TweetDetail-only module cursor")
+	}
+	if _, err := parseStrictTimelineInstructions([]byte(`[` + instruction + `]`)); err == nil {
+		t.Fatal("strict monitoring parser accepted the TweetDetail-only module cursor")
+	}
 }
 
 func TestParseConversationDeduplicates(t *testing.T) {
