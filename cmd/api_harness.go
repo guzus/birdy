@@ -624,17 +624,27 @@ func classifyHarnessTransportFailure(err error) string {
 }
 
 func classifyHarnessTLSFailure(err error) string {
-	var verificationErr *tls.CertificateVerificationError
 	var unknownAuthorityErr x509.UnknownAuthorityError
+	if errors.As(err, &unknownAuthorityErr) {
+		return "transport_tls_certificate_unknown_authority"
+	}
 	var hostnameErr x509.HostnameError
+	if errors.As(err, &hostnameErr) {
+		return "transport_tls_certificate_hostname"
+	}
 	var certificateInvalidErr x509.CertificateInvalidError
+	if errors.As(err, &certificateInvalidErr) {
+		return "transport_tls_certificate_invalid"
+	}
 	var systemRootsErr x509.SystemRootsError
-	if errors.As(err, &verificationErr) ||
-		errors.As(err, &unknownAuthorityErr) ||
-		errors.As(err, &hostnameErr) ||
-		errors.As(err, &certificateInvalidErr) ||
-		errors.As(err, &systemRootsErr) {
-		return "transport_tls_certificate"
+	if errors.As(err, &systemRootsErr) {
+		return "transport_tls_certificate_system_roots"
+	}
+	// CertificateVerificationError unwraps its x509 cause. Keep this generic
+	// check after the specific x509 cases so the actionable inner type wins.
+	var verificationErr *tls.CertificateVerificationError
+	if errors.As(err, &verificationErr) {
+		return "transport_tls_certificate_verification"
 	}
 	var alertErr tls.AlertError
 	if errors.As(err, &alertErr) {

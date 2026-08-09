@@ -149,13 +149,19 @@ Its fields are limited to `failure_class`, `stage`, aggregate `tweet_count`,
 `elapsed_ms`, and numeric `upstream_status` when X supplied one. It never logs
 the underlying error string, credentials, account name, tweet IDs or text,
 page URL, selection, or prompt. Failure classes are `configuration`,
-`transport_dns`, `transport_connect`, `transport_tls_certificate`,
+`transport_dns`, `transport_connect`,
+`transport_tls_certificate_unknown_authority`,
+`transport_tls_certificate_hostname`, `transport_tls_certificate_invalid`,
+`transport_tls_certificate_system_roots`,
+`transport_tls_certificate_verification`,
 `transport_tls_alert`, `transport_tls_protocol`, `transport_tls_other`,
 `transport_proxy`, `transport_other`, `upstream_http`, `upstream_response`,
 `upstream_rate_limited`, `timeout`, `canceled`, or `unknown`. Concrete DNS and
 TLS causes take precedence over their enclosing connect operation. Within TLS,
-certificate verification and trust errors, peer alerts, and malformed record
-or protocol errors have distinct classes; alert codes and underlying details
+unknown certificate authority, hostname mismatch, invalid certificate,
+unavailable system roots, generic certificate verification, peer alerts, and
+malformed record or protocol errors have distinct classes. Certificate
+validity reason/code/time/certificate data, alert codes, and underlying details
 are never logged. Request timeout or cancellation, configuration, and upstream
 API classifications take precedence over every transport subtype.
 

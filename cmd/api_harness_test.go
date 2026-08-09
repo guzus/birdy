@@ -388,12 +388,44 @@ func TestHarnessTweetFetchFailureClassification(t *testing.T) {
 			wantClass: "transport_connect", wantStage: "tweet_read",
 		},
 		{
-			name: "TLS certificate cause wins over enclosing connect operation",
+			name: "TLS unknown authority wins over generic verification and connect",
 			err: &harnessTweetFetchError{stage: harnessTweetFetchStageRead, cause: &url.Error{
 				Op: "Get", URL: "https://secret-tls.example/status/12345",
 				Err: &net.OpError{Op: "dial", Net: "tcp", Err: &tls.CertificateVerificationError{Err: x509.UnknownAuthorityError{}}},
 			}},
-			wantClass: "transport_tls_certificate", wantStage: "tweet_read",
+			wantClass: "transport_tls_certificate_unknown_authority", wantStage: "tweet_read",
+		},
+		{
+			name: "TLS hostname wins over generic verification",
+			err: &harnessTweetFetchError{stage: harnessTweetFetchStageRead, cause: &url.Error{
+				Op: "Get", URL: "https://secret-hostname.example/status/12345",
+				Err: &net.OpError{Op: "connect", Net: "tcp", Err: &tls.CertificateVerificationError{Err: x509.HostnameError{Host: "secret-hostname.example"}}},
+			}},
+			wantClass: "transport_tls_certificate_hostname", wantStage: "tweet_read",
+		},
+		{
+			name: "TLS invalid certificate wins without exposing reason",
+			err: &harnessTweetFetchError{stage: harnessTweetFetchStageRead, cause: &url.Error{
+				Op: "Get", URL: "https://secret-invalid.example/status/12345",
+				Err: &net.OpError{Op: "connect", Net: "tcp", Err: &tls.CertificateVerificationError{Err: x509.CertificateInvalidError{Reason: x509.Expired, Detail: "secret validity detail"}}},
+			}},
+			wantClass: "transport_tls_certificate_invalid", wantStage: "tweet_read",
+		},
+		{
+			name: "TLS system roots wins over generic verification",
+			err: &harnessTweetFetchError{stage: harnessTweetFetchStageRead, cause: &url.Error{
+				Op: "Get", URL: "https://secret-roots.example/status/12345",
+				Err: &net.OpError{Op: "connect", Net: "tcp", Err: &tls.CertificateVerificationError{Err: x509.SystemRootsError{Err: errors.New("secret roots detail")}}},
+			}},
+			wantClass: "transport_tls_certificate_system_roots", wantStage: "tweet_read",
+		},
+		{
+			name: "TLS generic verification fallback",
+			err: &harnessTweetFetchError{stage: harnessTweetFetchStageRead, cause: &url.Error{
+				Op: "Get", URL: "https://secret-verification.example/status/12345",
+				Err: &net.OpError{Op: "connect", Net: "tcp", Err: &tls.CertificateVerificationError{Err: errors.New("secret verification detail")}},
+			}},
+			wantClass: "transport_tls_certificate_verification", wantStage: "tweet_read",
 		},
 		{
 			name: "TLS peer alert wins over enclosing proxy operation",
@@ -475,9 +507,33 @@ func TestHarnessTransportSubtypeLogsDoNotLeakWrappedDetails(t *testing.T) {
 			},
 		},
 		{
-			name: "TLS certificate", wantClass: "transport_tls_certificate",
+			name: "TLS certificate hostname", wantClass: "transport_tls_certificate_hostname",
 			err: &url.Error{Op: "Get", URL: "https://secret-tls.example/status/12345", Err: x509.HostnameError{
 				Host: "secret-tls.example",
+			}},
+		},
+		{
+			name: "TLS certificate unknown authority", wantClass: "transport_tls_certificate_unknown_authority",
+			err: &url.Error{Op: "Get", URL: "https://secret-authority.example/status/12345", Err: &tls.CertificateVerificationError{
+				Err: x509.UnknownAuthorityError{Cert: &x509.Certificate{DNSNames: []string{"secret-authority.example"}}},
+			}},
+		},
+		{
+			name: "TLS certificate invalid", wantClass: "transport_tls_certificate_invalid",
+			err: &url.Error{Op: "Get", URL: "https://secret-invalid.example/status/12345", Err: &tls.CertificateVerificationError{
+				Err: x509.CertificateInvalidError{Cert: &x509.Certificate{DNSNames: []string{"secret-invalid.example"}}, Reason: x509.Expired, Detail: "secret validity detail"},
+			}},
+		},
+		{
+			name: "TLS certificate system roots", wantClass: "transport_tls_certificate_system_roots",
+			err: &url.Error{Op: "Get", URL: "https://secret-roots.example/status/12345", Err: &tls.CertificateVerificationError{
+				Err: x509.SystemRootsError{Err: errors.New("secret system roots detail")},
+			}},
+		},
+		{
+			name: "TLS certificate generic verification", wantClass: "transport_tls_certificate_verification",
+			err: &url.Error{Op: "Get", URL: "https://secret-verification.example/status/12345", Err: &tls.CertificateVerificationError{
+				Err: errors.New("secret verification detail"),
 			}},
 		},
 		{
