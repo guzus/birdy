@@ -172,6 +172,36 @@ func TestNewClientValidation(t *testing.T) {
 			t.Errorf("pick() = %q, want the pinned account alt", account.Name)
 		}
 	})
+
+	t.Run("accepts a validated account pool", func(t *testing.T) {
+		c, err := NewMonitoringClient(MonitoringOptions{AccountsJSON: testAccounts, AccountPool: []string{" alt "}})
+		if err != nil {
+			t.Fatalf("NewClient returned error: %v", err)
+		}
+		if got := c.Accounts(); len(got) != 1 || got[0] != "alt" {
+			t.Fatalf("Accounts() = %v, want [alt]", got)
+		}
+		for range 3 {
+			account, err := c.pick()
+			if err != nil || account.Name != "alt" {
+				t.Fatalf("pick() = %v, %v; want alt", account, err)
+			}
+		}
+	})
+
+	t.Run("rejects invalid account pools", func(t *testing.T) {
+		cases := []MonitoringOptions{
+			{AccountsJSON: testAccounts, AccountPool: []string{"missing"}},
+			{AccountsJSON: testAccounts, AccountPool: []string{"main", "main"}},
+			{AccountsJSON: testAccounts, AccountPool: []string{" "}},
+			{AccountsJSON: testAccounts, Account: "main", AccountPool: []string{"alt"}},
+		}
+		for _, opts := range cases {
+			if _, err := NewMonitoringClient(opts); err == nil {
+				t.Errorf("NewMonitoringClient(%+v) = nil error, want validation error", opts)
+			}
+		}
+	})
 }
 
 func TestClientRejectsBadReference(t *testing.T) {

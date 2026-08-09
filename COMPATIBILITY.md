@@ -19,8 +19,29 @@ A breaking change to any of these requires a major version bump.
 | Account store | The `~/.config/birdy/accounts.json` schema and the `BIRDY_ACCOUNTS` JSON shape |
 | Exit codes | `0` success, non-zero failure |
 
-Adding a field, command, or flag is a minor bump. Removing or renaming one, or
-changing a JSON tag, is a major bump.
+Adding an identifier, command, or flag is a minor bump. Adding, removing, or
+renaming a field on an existing exported struct—or changing its JSON tag—is a
+major bump.
+
+Go struct fields are stricter than that shorthand suggests: adding a field to
+an existing exported struct breaks callers using unkeyed literals. New
+monitoring configuration and repost relations therefore live on new
+`MonitoringOptions` and `TimelineTweet` types; the original `Options` and
+`Tweet` layouts remain unchanged.
+
+Monitoring reads make partial data explicit. `pkg/tweet.Following` returns
+`Complete=true` only after a walk from the first page reaches X's end before a
+page cap stops it. Page caps return `Complete=false` and an opaque `NextCursor`;
+request or decode failures return an error rather than a partial snapshot.
+Timeline and following order is X's response order and cursors have no stable
+structure.
+
+Timeline limits are page-aligned: they are targets rather than hard slice
+limits. The terminal X response page is returned in full, so the result can
+exceed `Limit`, and `NextCursor` then resumes after every returned entry instead
+of skipping an over-delivered suffix. `UserTimeline` is the Posts stream;
+`UserReplies` is a separate Latest Search stream with an independent cursor.
+Missing collection roots fail closed and are not interpreted as empty data.
 
 `pkg/tweet`'s structs are declared in `pkg/tweet/types.go` as their own types
 rather than aliases into `internal/xapi`, precisely so that a parser change
@@ -125,6 +146,11 @@ here rather than quietly diverging. The current list:
   data X already returned. It is also the same mechanism `operationQueryIDs`
   warns about in reverse: pairing a newer hash with older variables is what
   silently zeroed follower counts once before.
+- **Native tweet JSON exposes structured reposts.** X includes the original
+  tweet at `legacy.retweeted_status_result.result`. birdy maps it to the
+  additive `repostedTweet` field; bird currently emits only the outer tweet
+  whose text begins with `RT @...`. This is intentional: consumers should not
+  classify a typed relationship using localized display text.
 
 ## Reporting a break
 

@@ -3,6 +3,7 @@ package xapi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/url"
 	"strconv"
 )
@@ -49,6 +50,9 @@ func (c *Client) Following(ctx context.Context, userID string, count int, cursor
 	if IsRateLimited(err) {
 		return nil, err
 	}
+	if !isStaleQueryID(err) {
+		return nil, err
+	}
 	return c.userListViaREST(ctx, c.restPaths(followingRESTPaths), userID, count, cursor)
 }
 
@@ -62,6 +66,9 @@ func (c *Client) Followers(ctx context.Context, userID string, count int, cursor
 		return page, nil
 	}
 	if IsRateLimited(err) {
+		return nil, err
+	}
+	if !isStaleQueryID(err) {
 		return nil, err
 	}
 	return c.userListViaREST(ctx, c.restPaths(followersRESTPaths), userID, count, cursor)
@@ -112,20 +119,44 @@ type userTimelineResponse struct {
 }
 
 type userInstructions struct {
-	Instructions []struct {
-		Entries []userEntry `json:"entries"`
-	} `json:"instructions"`
+	Instructions *[]userInstruction `json:"instructions"`
+}
+
+type userInstruction struct {
+	TypeName string       `json:"__typename"`
+	Type     string       `json:"type"`
+	Entries  *[]userEntry `json:"entries"`
+	Entry    *userEntry   `json:"entry"`
 }
 
 type userEntry struct {
-	Content struct {
-		CursorType  string `json:"cursorType"`
-		Value       string `json:"value"`
-		ItemContent struct {
-			UserResults struct {
-				Result *rawUser `json:"result"`
-			} `json:"user_results"`
-		} `json:"itemContent"`
+	Content *userEntryContent `json:"content"`
+}
+
+type userEntryContent struct {
+	TypeName    string            `json:"__typename"`
+	EntryType   string            `json:"entryType"`
+	CursorType  string            `json:"cursorType"`
+	Value       string            `json:"value"`
+	ItemContent *userItemContent  `json:"itemContent"`
+	Items       *[]userModuleItem `json:"items"`
+}
+
+type userItemContent struct {
+	TypeName    string `json:"__typename"`
+	ItemType    string `json:"itemType"`
+	UserResults *struct {
+		Result *rawUser `json:"result"`
+	} `json:"user_results"`
+}
+
+type userModuleItem struct {
+	ItemContent *userItemContent `json:"itemContent"`
+	Item        *struct {
+		ItemContent *userItemContent `json:"itemContent"`
+	} `json:"item"`
+	Content *struct {
+		ItemContent *userItemContent `json:"itemContent"`
 	} `json:"content"`
 }
 
@@ -135,7 +166,7 @@ type userEntry struct {
 type rawUser struct {
 	TypeName       string `json:"__typename"`
 	RestID         string `json:"rest_id"`
-	IsBlueVerified bool   `json:"is_blue_verified"`
+	IsBlueVerified *bool  `json:"is_blue_verified"`
 	// UserWithVisibilityResults wraps the real user one level deeper.
 	User   *rawUser `json:"user"`
 	Legacy *struct {
@@ -144,8 +175,8 @@ type rawUser struct {
 		// A pointer so a legacy block without the key stays absent rather than
 		// becoming "", which bird distinguishes.
 		Description          *string `json:"description"`
-		FollowersCount       int     `json:"followers_count"`
-		FriendsCount         int     `json:"friends_count"`
+		FollowersCount       *int    `json:"followers_count"`
+		FriendsCount         *int    `json:"friends_count"`
 		StatusesCount        int     `json:"statuses_count"`
 		Verified             bool    `json:"verified"`
 		CreatedAt            string  `json:"created_at"`
@@ -170,42 +201,196 @@ func (r *rawUser) unwrap() *rawUser {
 }
 
 func parseUserList(body []byte) (*UserListPage, error) {
-	var resp userTimelineResponse
+	var resp struct {
+		Data   json.RawMessage `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, &APIError{Message: "decoding user list response: " + err.Error()}
 	}
-
-	timeline := resp.Data.User.Result.Timeline.Timeline
-	if timeline == nil {
-		timeline = resp.Data.User.Result.TimelineDirect
-	}
-	if timeline == nil {
-		if len(resp.Errors) > 0 {
-			messages := make([]string, 0, len(resp.Errors))
-			for _, e := range resp.Errors {
-				messages = append(messages, e.Message)
-			}
-			return nil, &APIError{Message: joinMessages(messages)}
+	if len(resp.Errors) > 0 {
+		messages := make([]string, 0, len(resp.Errors))
+		for _, item := range resp.Errors {
+			messages = append(messages, item.Message)
 		}
-		// An empty list is a valid answer, not a failure.
-		return &UserListPage{}, nil
+		return nil, &APIError{Message: joinMessages(messages)}
+	}
+
+	var timeline userInstructions
+	found := false
+	for _, root := range [][]string{{"user", "result", "timeline", "timeline"}, {"user", "result", "timeline_v2"}} {
+		raw, present, err := navigateStrict(resp.Data, root)
+		if err != nil {
+			return nil, &APIError{Message: "malformed user-list root: " + err.Error()}
+		}
+		if !present {
+			continue
+		}
+		if string(raw) == "null" || json.Unmarshal(raw, &timeline) != nil {
+			return nil, &APIError{Message: "malformed user-list timeline root"}
+		}
+		found = true
+		break
+	}
+	if !found || timeline.Instructions == nil {
+		return nil, &APIError{Message: "unrecognized user-list response shape: missing instructions collection"}
 	}
 
 	page := &UserListPage{}
-	for _, instruction := range timeline.Instructions {
-		for _, entry := range instruction.Entries {
-			if entry.Content.CursorType == "Bottom" && entry.Content.Value != "" {
+	for _, instruction := range *timeline.Instructions {
+		if instruction.Entry != nil || instruction.Entries == nil {
+			return nil, &APIError{Message: "unsupported user-list instruction: expected entries collection"}
+		}
+		kind := firstNonEmpty(instruction.Type, instruction.TypeName)
+		if kind != "" && kind != "TimelineAddEntries" {
+			return nil, &APIError{Message: fmt.Sprintf("unsupported user-list instruction type %q", kind)}
+		}
+		for _, entry := range *instruction.Entries {
+			if entry.Content == nil {
+				return nil, &APIError{Message: "malformed user-list entry: missing content"}
+			}
+			hasData := entry.Content.ItemContent != nil || entry.Content.Items != nil
+			typedCursor := entry.Content.TypeName == "TimelineTimelineCursor" || entry.Content.EntryType == "TimelineTimelineCursor"
+			if typedCursor && entry.Content.CursorType == "" {
+				return nil, &APIError{Message: "malformed typed user-list cursor: missing cursorType"}
+			}
+			if entry.Content.CursorType != "" && hasData {
+				return nil, &APIError{Message: "malformed user-list entry: cursor also carries data"}
+			}
+			switch entry.Content.CursorType {
+			case "Bottom":
+				if entry.Content.Value == "" {
+					return nil, &APIError{Message: "malformed user-list Bottom cursor: empty value"}
+				}
+				if page.NextCursor != "" && page.NextCursor != entry.Content.Value {
+					return nil, &APIError{Message: "conflicting user-list Bottom cursors"}
+				}
 				page.NextCursor = entry.Content.Value
 				continue
-			}
-			user, ok := mapUser(entry.Content.ItemContent.UserResults.Result.unwrap())
-			if !ok {
+			case "Top":
+				if entry.Content.Value == "" {
+					return nil, &APIError{Message: "malformed user-list Top cursor: empty value"}
+				}
 				continue
+			case "":
+			default:
+				return nil, &APIError{Message: fmt.Sprintf("unsupported user-list cursor type %q", entry.Content.CursorType)}
 			}
-			page.Users = append(page.Users, user)
+			users, err := usersFromEntry(entry)
+			if err != nil {
+				return nil, err
+			}
+			page.Users = append(page.Users, users...)
 		}
 	}
 	return page, nil
+}
+
+func usersFromEntry(entry userEntry) ([]ListedUser, error) {
+	if entry.Content == nil {
+		return nil, &APIError{Message: "malformed user-list entry: missing content"}
+	}
+	if !isUserModule(entry) {
+		user, ok, err := mapUserEntry(entry)
+		if err != nil || !ok {
+			return nil, err
+		}
+		return []ListedUser{user}, nil
+	}
+	if entry.Content.ItemContent != nil {
+		return nil, &APIError{Message: "malformed user-list module: mixed direct itemContent and items"}
+	}
+
+	if entry.Content.Items == nil {
+		return nil, &APIError{Message: "malformed user-list module: missing nested items"}
+	}
+	if len(*entry.Content.Items) == 0 {
+		return nil, nil // explicitly present-empty is a provably empty decoration
+	}
+	var users []ListedUser
+	for index, moduleItem := range *entry.Content.Items {
+		var contents []*userItemContent
+		if moduleItem.ItemContent != nil {
+			contents = append(contents, moduleItem.ItemContent)
+		}
+		if moduleItem.Item != nil && moduleItem.Item.ItemContent != nil {
+			contents = append(contents, moduleItem.Item.ItemContent)
+		}
+		if moduleItem.Content != nil && moduleItem.Content.ItemContent != nil {
+			contents = append(contents, moduleItem.Content.ItemContent)
+		}
+		if len(contents) == 0 {
+			return nil, &APIError{Message: fmt.Sprintf("malformed user-list module item %d: no item content", index)}
+		}
+		for _, content := range contents {
+			nested := userEntry{Content: &userEntryContent{ItemContent: content}}
+			user, ok, err := mapUserEntry(nested)
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				users = append(users, user)
+			}
+		}
+	}
+	return users, nil
+}
+
+func isUserModule(entry userEntry) bool {
+	return entry.Content != nil && (entry.Content.TypeName == "TimelineTimelineModule" || entry.Content.EntryType == "TimelineTimelineModule")
+}
+
+func mapUserEntry(entry userEntry) (ListedUser, bool, error) {
+	if entry.Content == nil {
+		return ListedUser{}, false, &APIError{Message: "malformed user-list entry: missing content"}
+	}
+	item := entry.Content.ItemContent
+	if item == nil {
+		if isNonUserTimelineType(entry.Content.TypeName) || isNonUserTimelineType(entry.Content.EntryType) {
+			return ListedUser{}, false, nil
+		}
+		return ListedUser{}, false, &APIError{Message: "unrecognized user-list entry: no item content"}
+	}
+	if item.UserResults == nil {
+		if isNonUserTimelineType(item.TypeName) || isNonUserTimelineType(item.ItemType) {
+			return ListedUser{}, false, nil
+		}
+		return ListedUser{}, false, &APIError{Message: fmt.Sprintf("unrecognized user-list item type %q", firstNonEmpty(item.ItemType, item.TypeName))}
+	}
+	raw := item.UserResults.Result
+	if raw == nil {
+		return ListedUser{}, false, &APIError{Message: "malformed user-list entry: user_results has no result"}
+	}
+	switch raw.TypeName {
+	case "TimelineMessagePrompt":
+		return ListedUser{}, false, nil
+	case "UserUnavailable", "UserTombstone":
+		return ListedUser{}, false, &APIError{Message: fmt.Sprintf("user-list entry %q has no safe identity", raw.TypeName)}
+	case "UserWithVisibilityResults":
+		if raw.User == nil || raw.User.TypeName != "User" {
+			return ListedUser{}, false, &APIError{Message: "malformed user-list visibility wrapper"}
+		}
+		raw = raw.User
+	case "User":
+	default:
+		return ListedUser{}, false, &APIError{Message: fmt.Sprintf("unrecognized user-list result type %q", raw.TypeName)}
+	}
+	user, ok := mapUser(raw)
+	if !ok {
+		return ListedUser{}, false, &APIError{Message: fmt.Sprintf("malformed user-list entry for id %q", raw.RestID)}
+	}
+	return user, true, nil
+}
+
+func isNonUserTimelineType(typeName string) bool {
+	switch typeName {
+	case "TimelineMessagePrompt":
+		return true
+	default:
+		return false
+	}
 }
 
 func mapUser(raw *rawUser) (ListedUser, bool) {
@@ -213,18 +398,16 @@ func mapUser(raw *rawUser) (ListedUser, bool) {
 		return ListedUser{}, false
 	}
 
-	verified := raw.IsBlueVerified
-	user := ListedUser{ID: raw.RestID, IsBlueVerified: &verified}
+	user := ListedUser{ID: raw.RestID, IsBlueVerified: raw.IsBlueVerified}
 
 	// The counts come from legacy only. When X sends a core-only payload they
 	// are genuinely absent, and the pointers stay nil so the caller can tell.
 	if raw.Legacy != nil {
-		followers, following := raw.Legacy.FollowersCount, raw.Legacy.FriendsCount
 		user.Username = raw.Legacy.ScreenName
 		user.Name = raw.Legacy.Name
 		user.Description = raw.Legacy.Description
-		user.FollowersCount = &followers
-		user.FollowingCount = &following
+		user.FollowersCount = raw.Legacy.FollowersCount
+		user.FollowingCount = raw.Legacy.FriendsCount
 		user.ProfileImageURL = raw.Legacy.ProfileImageURLHTTPS
 		user.CreatedAt = raw.Legacy.CreatedAt
 	}
@@ -301,8 +484,7 @@ func (c *Client) userListViaREST(ctx context.Context, endpoints []string, userID
 
 		page, err := parseRESTUserList(body)
 		if err != nil {
-			lastErr = err
-			continue
+			return nil, err
 		}
 		return page, nil
 	}
@@ -317,7 +499,6 @@ type restUser struct {
 	Description          *string `json:"description"`
 	FollowersCount       *int    `json:"followers_count"`
 	FriendsCount         *int    `json:"friends_count"`
-	Verified             *bool   `json:"verified"`
 	ProfileImageURLHTTPS string  `json:"profile_image_url_https"`
 	CreatedAt            string  `json:"created_at"`
 }
@@ -325,7 +506,7 @@ type restUser struct {
 func parseRESTUserList(body []byte) (*UserListPage, error) {
 	var resp struct {
 		Users         []restUser `json:"users"`
-		NextCursorStr string     `json:"next_cursor_str"`
+		NextCursorStr *string    `json:"next_cursor_str"`
 		Errors        []struct {
 			Message string `json:"message"`
 		} `json:"errors"`
@@ -340,11 +521,20 @@ func parseRESTUserList(body []byte) (*UserListPage, error) {
 		}
 		return nil, &APIError{Message: joinMessages(messages)}
 	}
+	if resp.Users == nil {
+		return nil, &APIError{Message: "unrecognized REST user-list response shape: missing users collection"}
+	}
+	if resp.NextCursorStr == nil {
+		return nil, &APIError{Message: "unrecognized REST user-list response shape: missing next_cursor_str"}
+	}
 
 	page := &UserListPage{}
 	// "0" is X's terminator, not a cursor.
-	if resp.NextCursorStr != "" && resp.NextCursorStr != "0" {
-		page.NextCursor = resp.NextCursorStr
+	if *resp.NextCursorStr == "" {
+		return nil, &APIError{Message: "malformed REST user-list response: empty next_cursor_str"}
+	}
+	if *resp.NextCursorStr != "0" {
+		page.NextCursor = *resp.NextCursorStr
 	}
 
 	for _, u := range resp.Users {
@@ -353,7 +543,7 @@ func parseRESTUserList(body []byte) (*UserListPage, error) {
 			id = strconv.FormatInt(u.ID, 10)
 		}
 		if id == "" || u.ScreenName == "" {
-			continue
+			return nil, &APIError{Message: fmt.Sprintf("malformed REST user-list entry: id=%q username=%q", id, u.ScreenName)}
 		}
 		name := u.Name
 		if name == "" {
@@ -366,7 +556,6 @@ func parseRESTUserList(body []byte) (*UserListPage, error) {
 			Description:     u.Description,
 			FollowersCount:  u.FollowersCount,
 			FollowingCount:  u.FriendsCount,
-			IsBlueVerified:  u.Verified,
 			ProfileImageURL: u.ProfileImageURLHTTPS,
 			CreatedAt:       u.CreatedAt,
 		})

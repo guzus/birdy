@@ -8,6 +8,14 @@ import (
 	"github.com/guzus/birdy/internal/xapi"
 )
 
+// These are the unkeyed literals external v1 callers can already have in
+// source. Keeping them in the compile graph prevents an additive-looking field
+// from becoming an accidental source break.
+var (
+	_ = Options{"", "", ""}
+	_ = Tweet{"", "", "", 0, 0, 0, "", "", Author{}, "", nil, nil, nil}
+)
+
 // pkgQualifier matches a leading package selector on a type name, so that
 // "xapi.Author" and "tweet.Author" compare equal as "Author".
 var pkgQualifier = regexp.MustCompile(`\b[a-z][a-z0-9_]*\.`)
@@ -59,6 +67,9 @@ func TestPublicTypesCoverParserFields(t *testing.T) {
 			pub, inner := specOf(tc.public), specOf(tc.internal)
 
 			for name, want := range inner {
+				if tc.name == "Tweet" && name == "RepostedTweet" {
+					continue // exposed by monitoring-only TimelineTweet, not frozen Tweet
+				}
 				got, ok := pub[name]
 				if !ok {
 					t.Errorf("xapi.%s has field %s that pkg/tweet.%s is missing; "+
@@ -111,15 +122,39 @@ func TestPublicFieldOrderIsFrozen(t *testing.T) {
 			"ConversationID", "InReplyToStatusID", "Author", "AuthorID",
 			"QuotedTweet", "Media", "Article",
 		},
-		"Author":  {"Username", "Name"},
-		"Media":   {"Type", "URL", "Width", "Height", "PreviewURL", "VideoURL", "DurationMs"},
-		"Article": {"Title", "PreviewText"},
+		"Author":              {"Username", "Name"},
+		"Media":               {"Type", "URL", "Width", "Height", "PreviewURL", "VideoURL", "DurationMs"},
+		"Article":             {"Title", "PreviewText"},
+		"Options":             {"Strategy", "Account", "AccountsJSON"},
+		"MonitoringOptions":   {"Strategy", "Account", "AccountsJSON", "AccountPool"},
+		"UserTimelineOptions": {"Limit", "Cursor", "MaxPages"},
+		"TimelinePage":        {"Tweets", "NextCursor"},
+		"TimelineTweet":       {"Tweet", "RepostedTweet"},
+		"FollowingOptions":    {"PageSize", "MaxPages", "Cursor"},
+		"FollowingUser": {
+			"ID", "Username", "Name", "Description", "FollowersCount",
+			"FollowingCount", "IsBlueVerified", "ProfileImageURL", "CreatedAt",
+		},
+		"FollowingSnapshot": {"Users", "NextCursor", "Complete", "Pages"},
+		"UserProfile": {
+			"ID", "Username", "Name", "Description", "Followers", "Following",
+			"Tweets", "Verified", "CreatedAt",
+		},
 	}
 	types := map[string]reflect.Type{
-		"Tweet":   reflect.TypeOf(Tweet{}),
-		"Author":  reflect.TypeOf(Author{}),
-		"Media":   reflect.TypeOf(Media{}),
-		"Article": reflect.TypeOf(Article{}),
+		"Tweet":               reflect.TypeOf(Tweet{}),
+		"Author":              reflect.TypeOf(Author{}),
+		"Media":               reflect.TypeOf(Media{}),
+		"Article":             reflect.TypeOf(Article{}),
+		"Options":             reflect.TypeOf(Options{}),
+		"MonitoringOptions":   reflect.TypeOf(MonitoringOptions{}),
+		"UserTimelineOptions": reflect.TypeOf(UserTimelineOptions{}),
+		"TimelinePage":        reflect.TypeOf(TimelinePage{}),
+		"TimelineTweet":       reflect.TypeOf(TimelineTweet{}),
+		"FollowingOptions":    reflect.TypeOf(FollowingOptions{}),
+		"FollowingUser":       reflect.TypeOf(FollowingUser{}),
+		"FollowingSnapshot":   reflect.TypeOf(FollowingSnapshot{}),
+		"UserProfile":         reflect.TypeOf(UserProfile{}),
 	}
 
 	for name, want := range frozen {
@@ -133,7 +168,7 @@ func TestPublicFieldOrderIsFrozen(t *testing.T) {
 			}
 			if len(got) != len(want) {
 				t.Fatalf("field count changed: got %v, frozen %v\n"+
-					"Adding a field is fine — append it here and to the frozen list.\n"+
+					"Changing an existing exported struct field set requires a major version; prefer a new type.\n"+
 					"Removing one is a breaking change.", got, want)
 			}
 			for i := range want {
@@ -142,6 +177,65 @@ func TestPublicFieldOrderIsFrozen(t *testing.T) {
 						"Reordering exported fields breaks unkeyed composite literals in "+
 						"callers' code, silently. If this is intentional it is a major "+
 						"version bump; otherwise put the field back.", i, got[i], want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestMonitoringStructContractsAreFrozen pins name, Go type, JSON tag, and
+// order for every new semver-covered monitoring struct. The older order-only
+// guard is intentionally retained because its failure message explains the
+// unkeyed-literal hazard; this one covers the rest of the wire/API contract.
+func TestMonitoringStructContractsAreFrozen(t *testing.T) {
+	type frozenField struct{ name, typ, json string }
+	cases := map[string]struct {
+		typ    reflect.Type
+		fields []frozenField
+	}{
+		"MonitoringOptions": {reflect.TypeOf(MonitoringOptions{}), []frozenField{
+			{"Strategy", "string", ""}, {"Account", "string", ""},
+			{"AccountsJSON", "string", ""}, {"AccountPool", "[]string", ""},
+		}},
+		"UserTimelineOptions": {reflect.TypeOf(UserTimelineOptions{}), []frozenField{
+			{"Limit", "int", ""}, {"Cursor", "string", ""}, {"MaxPages", "int", ""},
+		}},
+		"TimelinePage": {reflect.TypeOf(TimelinePage{}), []frozenField{
+			{"Tweets", "[]TimelineTweet", "tweets"}, {"NextCursor", "string", "nextCursor,omitempty"},
+		}},
+		"TimelineTweet": {reflect.TypeOf(TimelineTweet{}), []frozenField{
+			{"Tweet", "Tweet", ""}, {"RepostedTweet", "*Tweet", "repostedTweet,omitempty"},
+		}},
+		"FollowingOptions": {reflect.TypeOf(FollowingOptions{}), []frozenField{
+			{"PageSize", "int", ""}, {"MaxPages", "int", ""}, {"Cursor", "string", ""},
+		}},
+		"FollowingUser": {reflect.TypeOf(FollowingUser{}), []frozenField{
+			{"ID", "string", "id"}, {"Username", "string", "username"}, {"Name", "string", "name"},
+			{"Description", "*string", "description,omitempty"}, {"FollowersCount", "*int", "followersCount,omitempty"},
+			{"FollowingCount", "*int", "followingCount,omitempty"}, {"IsBlueVerified", "*bool", "isBlueVerified,omitempty"},
+			{"ProfileImageURL", "string", "profileImageUrl,omitempty"}, {"CreatedAt", "string", "createdAt,omitempty"},
+		}},
+		"FollowingSnapshot": {reflect.TypeOf(FollowingSnapshot{}), []frozenField{
+			{"Users", "[]FollowingUser", "users"}, {"NextCursor", "string", "nextCursor,omitempty"},
+			{"Complete", "bool", "complete"}, {"Pages", "int", "pages"},
+		}},
+		"UserProfile": {reflect.TypeOf(UserProfile{}), []frozenField{
+			{"ID", "string", "id"}, {"Username", "string", "username"}, {"Name", "string", "name"},
+			{"Description", "string", "description,omitempty"}, {"Followers", "*int", "followers,omitempty"},
+			{"Following", "*int", "following,omitempty"}, {"Tweets", "*int", "tweets,omitempty"},
+			{"Verified", "bool", "verified"}, {"CreatedAt", "string", "createdAt,omitempty"},
+		}},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if tc.typ.NumField() != len(tc.fields) {
+				t.Fatalf("field count = %d, want %d", tc.typ.NumField(), len(tc.fields))
+			}
+			for i, want := range tc.fields {
+				got := tc.typ.Field(i)
+				gotType := pkgQualifier.ReplaceAllString(got.Type.String(), "")
+				if got.Name != want.name || gotType != want.typ || got.Tag.Get("json") != want.json {
+					t.Fatalf("field %d = {%s %s %q}, want {%s %s %q}", i, got.Name, gotType, got.Tag.Get("json"), want.name, want.typ, want.json)
 				}
 			}
 		})

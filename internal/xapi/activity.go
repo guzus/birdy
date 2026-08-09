@@ -85,16 +85,31 @@ func parseActorTimeline(body []byte, root string) (*ActorPage, error) {
 	page := &ActorPage{}
 	for _, instruction := range timeline.Timeline.Instructions {
 		for _, entry := range instruction.Entries {
+			if entry.Content == nil {
+				return nil, &APIError{Message: "malformed activity entry: missing content"}
+			}
 			// A cursor lives in its own entry, exactly as in parseUserList.
-			if entry.Content.CursorType == "Bottom" && entry.Content.Value != "" {
-				page.NextCursor = entry.Content.Value
+			if entry.Content.CursorType != "" {
+				if entry.Content.ItemContent != nil || entry.Content.Items != nil {
+					return nil, &APIError{Message: "malformed activity cursor carrying data"}
+				}
+				switch entry.Content.CursorType {
+				case "Bottom":
+					if entry.Content.Value == "" {
+						return nil, &APIError{Message: "malformed activity Bottom cursor"}
+					}
+					page.NextCursor = entry.Content.Value
+				case "Top":
+				default:
+					return nil, &APIError{Message: fmt.Sprintf("unsupported activity cursor %q", entry.Content.CursorType)}
+				}
 				continue
 			}
-			user, ok := mapUser(entry.Content.ItemContent.UserResults.Result.unwrap())
-			if !ok {
-				continue
+			users, err := usersFromEntry(entry)
+			if err != nil {
+				return nil, err
 			}
-			page.Users = append(page.Users, user)
+			page.Users = append(page.Users, users...)
 		}
 	}
 	return page, nil
@@ -116,7 +131,7 @@ func (c *Client) QuoteTweets(ctx context.Context, tweetID string, count int) (*Q
 		"product":                                "Top",
 		"withGrokTranslatedBio":                  true,
 		"withQuickPromoteEligibilityTweetFields": false,
-	})
+	}, false)
 	if err != nil {
 		return nil, err
 	}

@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/guzus/birdy/internal/rotation"
 	"github.com/guzus/birdy/internal/store"
@@ -53,14 +54,26 @@ type Options struct {
 	AccountsJSON string
 }
 
+// MonitoringOptions configures a Client used for timeline and graph polling.
+// It is separate from Options so adding the read-pool capability does not break
+// callers that use an unkeyed Options literal.
+type MonitoringOptions struct {
+	Strategy     string
+	Account      string
+	AccountsJSON string
+	AccountPool  []string
+}
+
 // Client reads tweets through a rotating pool of X accounts.
 type Client struct {
 	store    *store.Store
 	strategy rotation.Strategy
 	pinned   string
+	allowed  map[string]struct{}
 
 	mu           sync.Mutex
 	lastUsedName string
+	reserved     map[string]int64
 	// apiClients is one X client per account, built lazily and reused so each
 	// keeps a stable client identity across requests.
 	apiClients map[string]*xapi.Client
@@ -70,6 +83,18 @@ type Client struct {
 //
 // It fails when no accounts are configured, since every call needs credentials.
 func NewClient(opts Options) (*Client, error) {
+	return newClient(opts, nil)
+}
+
+// NewMonitoringClient builds a Client whose automatic selection is restricted
+// to AccountPool. Unknown, empty, and duplicate names fail construction.
+func NewMonitoringClient(opts MonitoringOptions) (*Client, error) {
+	return newClient(Options{
+		Strategy: opts.Strategy, Account: opts.Account, AccountsJSON: opts.AccountsJSON,
+	}, opts.AccountPool)
+}
+
+func newClient(opts Options, accountPool []string) (*Client, error) {
 	strategyName := strings.TrimSpace(opts.Strategy)
 	if strategyName == "" {
 		strategyName = string(rotation.QuotaAware)
@@ -93,13 +118,45 @@ func NewClient(opts Options) (*Client, error) {
 			return nil, err
 		}
 	}
+	allowed, err := validateAccountPool(st, accountPool)
+	if err != nil {
+		return nil, err
+	}
+	if pinned != "" && allowed != nil {
+		if _, ok := allowed[pinned]; !ok {
+			return nil, fmt.Errorf("account %q is not in AccountPool", pinned)
+		}
+	}
 
 	return &Client{
 		store:      st,
 		strategy:   strategy,
 		pinned:     pinned,
+		allowed:    allowed,
 		apiClients: make(map[string]*xapi.Client),
+		reserved:   make(map[string]int64),
 	}, nil
+}
+
+func validateAccountPool(st *store.Store, names []string) (map[string]struct{}, error) {
+	if len(names) == 0 {
+		return nil, nil
+	}
+	allowed := make(map[string]struct{}, len(names))
+	for _, raw := range names {
+		name := strings.TrimSpace(raw)
+		if name == "" {
+			return nil, fmt.Errorf("AccountPool contains an empty account name")
+		}
+		if _, exists := allowed[name]; exists {
+			return nil, fmt.Errorf("AccountPool contains duplicate account %q", name)
+		}
+		if _, err := st.Get(name); err != nil {
+			return nil, fmt.Errorf("AccountPool: %w", err)
+		}
+		allowed[name] = struct{}{}
+	}
+	return allowed, nil
 }
 
 // openStore loads accounts, preferring an explicit JSON blob when supplied.
@@ -131,6 +188,11 @@ func (c *Client) Accounts() []string {
 	list := c.store.List()
 	names := make([]string, 0, len(list))
 	for _, a := range list {
+		if c.allowed != nil {
+			if _, ok := c.allowed[a.Name]; !ok {
+				continue
+			}
+		}
 		names = append(names, a.Name)
 	}
 	return names
@@ -180,12 +242,19 @@ func (c *Client) Thread(ctx context.Context, ref string) ([]Tweet, error) {
 	return result, err
 }
 
+// IsRateLimited reports whether err represents an X rate limit, including a
+// GraphQL error delivered inside an HTTP-200 response. Wrapped errors work.
+func IsRateLimited(err error) bool {
+	return xapi.IsRateLimited(err)
+}
+
 // withAccount picks an account, runs fn against it, and records the outcome.
 func (c *Client) withAccount(ctx context.Context, fn func(context.Context, *xapi.Client) error) error {
-	account, err := c.pick()
+	account, err := c.reserve()
 	if err != nil {
 		return err
 	}
+	defer c.release(account.Name)
 
 	api, err := c.apiClientFor(account)
 	if err != nil {
@@ -201,12 +270,57 @@ func (c *Client) withAccount(ctx context.Context, fn func(context.Context, *xapi
 	}
 	_ = c.store.RecordUsage(account.Name)
 	_ = c.store.Save() // no-op for env-backed stores
-	c.setLastUsed(account.Name)
 
 	if runErr != nil {
 		return fmt.Errorf("account %q: %w", account.Name, runErr)
 	}
 	return nil
+}
+
+// reserve selects and accounts for an in-flight call atomically. Without the
+// reservation, synchronized callers all observe the same stale usage counters
+// and overload one session even when a pool is configured.
+func (c *Client) reserve() (*store.Account, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.pinned != "" {
+		account, err := c.store.Get(c.pinned)
+		if err != nil {
+			return nil, err
+		}
+		c.reserved[account.Name]++
+		c.lastUsedName = account.Name
+		return account, nil
+	}
+
+	accounts := c.eligibleAccounts()
+	// Model reservations as temporary uses. This preserves each strategy's
+	// meaning while letting quota-aware/LRU/least-used see concurrent work.
+	now := time.Now()
+	for i := range accounts {
+		if n := c.reserved[accounts[i].Name]; n > 0 {
+			accounts[i].UseCount += n
+			accounts[i].LastUsed = now
+		}
+	}
+	account, err := rotation.Pick(accounts, c.strategy, c.lastUsedName)
+	if err != nil {
+		return nil, fmt.Errorf("selecting account: %w", err)
+	}
+	c.reserved[account.Name]++
+	c.lastUsedName = account.Name
+	return account, nil
+}
+
+func (c *Client) release(name string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.reserved[name] <= 1 {
+		delete(c.reserved, name)
+		return
+	}
+	c.reserved[name]--
 }
 
 // apiClientFor returns the cached X client for an account, building it on first use.
@@ -239,11 +353,26 @@ func (c *Client) pick() (*store.Account, error) {
 	lastUsed := c.lastUsedName
 	c.mu.Unlock()
 
-	account, err := rotation.Pick(c.store.List(), c.strategy, lastUsed)
+	accounts := c.eligibleAccounts()
+	account, err := rotation.Pick(accounts, c.strategy, lastUsed)
 	if err != nil {
 		return nil, fmt.Errorf("selecting account: %w", err)
 	}
 	return account, nil
+}
+
+func (c *Client) eligibleAccounts() []store.Account {
+	accounts := c.store.List()
+	if c.allowed != nil {
+		filtered := make([]store.Account, 0, len(c.allowed))
+		for _, account := range accounts {
+			if _, ok := c.allowed[account.Name]; ok {
+				filtered = append(filtered, account)
+			}
+		}
+		accounts = filtered
+	}
+	return accounts
 }
 
 func (c *Client) setLastUsed(name string) {

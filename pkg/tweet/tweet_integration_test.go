@@ -29,6 +29,8 @@ const liveVideoTweetID = "2084912076502282341"
 // A reply to the tweet above, used to prove ancestor reconstruction works.
 const liveReplyTweetID = "2084912420611649788"
 
+const liveRepliesHandle = "thsottiaux"
+
 func TestIntegrationReadResolvesVideo(t *testing.T) {
 	requireIntegration(t)
 
@@ -127,4 +129,26 @@ func TestIntegrationContextCancellation(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > 10*time.Second {
 		t.Errorf("Read took %s after cancellation; the request was not aborted", elapsed)
 	}
+}
+
+func TestIntegrationUserReplies(t *testing.T) {
+	requireIntegration(t)
+	c, err := NewClient(Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
+	defer cancel()
+
+	page, err := c.UserReplies(ctx, liveRepliesHandle, UserTimelineOptions{Limit: 100})
+	if err != nil {
+		t.Fatalf("UserReplies: %v", err)
+	}
+	for _, post := range page.Tweets {
+		if post.IsReply() {
+			t.Logf("live reply proof: %s -> %s", post.ID, post.InReplyToStatusID)
+			return
+		}
+	}
+	t.Fatalf("Tweets & Replies returned %d entries but none was a reply", len(page.Tweets))
 }

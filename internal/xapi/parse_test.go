@@ -79,7 +79,7 @@ const conversationFixture = `{
           }
         } } } } } ] } },
 
-      { "content": { "itemContent": {} } }
+      { "content": { "itemContent": {"__typename":"TimelineTweet", "tweet_results":{}} } }
     ] }
   ] } }
 }`
@@ -217,9 +217,9 @@ func TestParseConversationRejectsGarbage(t *testing.T) {
 	}
 }
 
-// A tweet with no author or no text is not usable and must be dropped rather
-// than surfacing as a blank entry.
-func TestMapTweetSkipsUnusableNodes(t *testing.T) {
+// A non-nil tweet-shaped result with no author, text, or identity signals
+// schema drift or corruption. Treating it as absent makes monitoring lie.
+func TestMapTweetRejectsUnusableNodes(t *testing.T) {
 	cases := map[string]string{
 		"no author": `{"data":{"threaded_conversation_with_injections_v2":{"instructions":[
 			{"entries":[{"content":{"itemContent":{"tweet_results":{"result":{
@@ -237,11 +237,8 @@ func TestMapTweetSkipsUnusableNodes(t *testing.T) {
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
 			tweets, err := parseConversation([]byte(body))
-			if err != nil {
-				t.Fatalf("parseConversation returned error: %v", err)
-			}
-			if len(tweets) != 0 {
-				t.Errorf("len(tweets) = %d, want 0", len(tweets))
+			if err == nil || len(tweets) != 0 {
+				t.Fatalf("tweets=%+v err=%v, want fail-closed empty result", tweets, err)
 			}
 		})
 	}

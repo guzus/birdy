@@ -101,7 +101,7 @@ func TestRepliesDropsOrphanedGrandchildren(t *testing.T) {
 	    "rest_id":"100",
 	    "core":{"user_results":{"result":{"rest_id":"9","legacy":{"screen_name":"root","name":"Root"}}}},
 	    "legacy":{"full_text":"root","conversation_id_str":"100"}}}}}},
-	  {"content":{"itemContent":{}}},
+	  {"content":{"itemContent":{"__typename":"TimelineTweet","tweet_results":{}}}},
 	  {"content":{"items":[{"item":{"itemContent":{"tweet_results":{"result":{
 	    "rest_id":"102",
 	    "core":{"user_results":{"result":{"rest_id":"9","legacy":{"screen_name":"c","name":"C"}}}},

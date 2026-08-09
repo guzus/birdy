@@ -2,6 +2,7 @@ package xapi
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"sort"
 	"strconv"
@@ -68,6 +69,10 @@ type Tweet struct {
 	// rendered article body, not legacy.full_text — which for an article is
 	// only a t.co shortlink.
 	Article *Article `json:"article,omitempty"`
+	// RepostedTweet is the original post when this timeline entry is a repost.
+	// X carries it as legacy.retweeted_status_result; keeping the relation
+	// explicit avoids inferring reposts from localized display text.
+	RepostedTweet *Tweet `json:"repostedTweet,omitempty"`
 }
 
 // --- Raw response shapes -----------------------------------------------------
@@ -92,6 +97,8 @@ type instruction struct {
 
 type entry struct {
 	Content struct {
+		TypeName    string       `json:"__typename"`
+		EntryType   string       `json:"entryType"`
 		ItemContent *itemContent `json:"itemContent"`
 		// A pagination cursor lives in its own entry, alongside the tweets. A
 		// page can therefore be full and still be the last one, or empty and
@@ -101,30 +108,35 @@ type entry struct {
 		Item       *struct {
 			ItemContent *itemContent `json:"itemContent"`
 		} `json:"item"`
-		Items []struct {
-			ItemContent *itemContent `json:"itemContent"`
-			Item        *struct {
-				ItemContent *itemContent `json:"itemContent"`
-			} `json:"item"`
-			Content *struct {
-				ItemContent *itemContent `json:"itemContent"`
-			} `json:"content"`
-		} `json:"items"`
+		Items *[]timelineModuleItem `json:"items"`
 	} `json:"content"`
 }
 
 type itemContent struct {
+	TypeName     string `json:"__typename"`
+	ItemType     string `json:"itemType"`
 	TweetResults *struct {
 		Result *tweetResult `json:"result"`
 	} `json:"tweet_results"`
+}
+
+type timelineModuleItem struct {
+	ItemContent *itemContent `json:"itemContent"`
+	Item        *struct {
+		ItemContent *itemContent `json:"itemContent"`
+	} `json:"item"`
+	Content *struct {
+		ItemContent *itemContent `json:"itemContent"`
+	} `json:"content"`
 }
 
 // tweetResult is one tweet node. X sometimes wraps the real tweet in a
 // TweetWithVisibilityResults envelope, in which case the payload lives under
 // "tweet" — see unwrap.
 type tweetResult struct {
-	RestID string       `json:"rest_id"`
-	Tweet  *tweetResult `json:"tweet"`
+	TypeName string       `json:"__typename"`
+	RestID   string       `json:"rest_id"`
+	Tweet    *tweetResult `json:"tweet"`
 
 	QuotedStatusResult *struct {
 		Result *tweetResult `json:"result"`
@@ -160,6 +172,9 @@ type tweetResult struct {
 		Entities *struct {
 			Media []rawMedia `json:"media"`
 		} `json:"entities"`
+		RetweetedStatusResult *struct {
+			Result *tweetResult `json:"result"`
+		} `json:"retweeted_status_result"`
 	} `json:"legacy"`
 
 	// NoteTweet carries long-form post text, which is truncated in
@@ -258,7 +273,98 @@ func mapTweet(raw *tweetResult) (Tweet, bool) {
 	if depth := quoteDepth(); depth > 0 {
 		t.QuotedTweet = mapQuoted(raw, depth)
 	}
+	t.RepostedTweet = mapReposted(raw)
 	return t, true
+}
+
+// mapReposted resolves the one original post carried by a repost entry. X does
+// not nest reposts, so one level represents the relation without inventing a
+// recursive contract. The original can itself quote another post.
+func mapReposted(raw *tweetResult) *Tweet {
+	if raw == nil || raw.Legacy == nil || raw.Legacy.RetweetedStatusResult == nil {
+		return nil
+	}
+	inner := raw.Legacy.RetweetedStatusResult.Result.unwrap()
+	if inner == nil {
+		return nil
+	}
+	reposted, ok := mapTweetWithoutRepost(inner)
+	if !ok {
+		return nil
+	}
+	return &reposted
+}
+
+func mapTweetWithoutRepost(raw *tweetResult) (Tweet, bool) {
+	if raw == nil || raw.RestID == "" {
+		return Tweet{}, false
+	}
+	username, name, authorID := mapAuthor(raw)
+	text := extractText(raw)
+	if username == "" || text == "" {
+		return Tweet{}, false
+	}
+	t := Tweet{
+		ID: raw.RestID, Text: text, AuthorID: authorID,
+		Author: Author{Username: username, Name: name},
+		Media:  extractMedia(raw), Article: extractArticleMetadata(raw),
+	}
+	if raw.Legacy != nil {
+		t.CreatedAt = raw.Legacy.CreatedAt
+		t.ReplyCount = raw.Legacy.ReplyCount
+		t.RetweetCount = raw.Legacy.RetweetCount
+		t.LikeCount = raw.Legacy.FavoriteCount
+		t.ConversationID = raw.Legacy.ConversationIDStr
+		t.InReplyToStatusID = raw.Legacy.InReplyToStatusIDSt
+	}
+	if depth := quoteDepth(); depth > 0 {
+		t.QuotedTweet = mapQuoted(raw, depth)
+	}
+	return t, true
+}
+
+const monitoringRelationDepth = 8
+
+// mapMonitoringTweet preserves relation presence independently of the legacy
+// BIRDY_QUOTE_DEPTH display preference. Present-but-malformed relations fail;
+// they never degrade into an ordinary post.
+func mapMonitoringTweet(raw *tweetResult) (Tweet, error) {
+	return mapMonitoringTweetDepth(raw, monitoringRelationDepth)
+}
+
+func mapMonitoringTweetDepth(raw *tweetResult, depth int) (Tweet, error) {
+	raw = raw.unwrap()
+	if raw == nil {
+		return Tweet{}, &APIError{Message: "malformed monitoring tweet"}
+	}
+	post, ok := mapTweetWithoutRepost(raw)
+	if !ok {
+		return Tweet{}, &APIError{Message: fmt.Sprintf("malformed tweet timeline entry for id %q", raw.RestID)}
+	}
+	// mapTweetWithoutRepost follows the legacy quote-depth environment. Clear
+	// that result and rebuild the monitoring relation deterministically.
+	post.QuotedTweet = nil
+	if raw.QuotedStatusResult != nil {
+		if depth <= 0 || raw.QuotedStatusResult.Result == nil {
+			return Tweet{}, &APIError{Message: fmt.Sprintf("tweet %q has malformed quoted_status_result", raw.RestID)}
+		}
+		quoted, err := mapMonitoringTweetDepth(raw.QuotedStatusResult.Result, depth-1)
+		if err != nil {
+			return Tweet{}, err
+		}
+		post.QuotedTweet = &quoted
+	}
+	if raw.Legacy != nil && raw.Legacy.RetweetedStatusResult != nil {
+		if depth <= 0 || raw.Legacy.RetweetedStatusResult.Result == nil {
+			return Tweet{}, &APIError{Message: fmt.Sprintf("tweet %q has malformed retweeted_status_result", raw.RestID)}
+		}
+		reposted, err := mapMonitoringTweetDepth(raw.Legacy.RetweetedStatusResult.Result, depth-1)
+		if err != nil {
+			return Tweet{}, err
+		}
+		post.RepostedTweet = &reposted
+	}
+	return post, nil
 }
 
 // mapQuoted resolves the quoted tweet, descending at most depth levels.
@@ -456,42 +562,120 @@ func bestMP4Variant(item rawMedia) string {
 
 // collectFromEntry gathers every tweet node an entry can hold. A conversation
 // entry may carry a single tweet or a module of several (thread continuations).
-func collectFromEntry(e entry) []*tweetResult {
+func collectFromEntry(e entry) ([]*tweetResult, error) {
 	var out []*tweetResult
+	module := e.Content.TypeName == "TimelineTimelineModule" || e.Content.EntryType == "TimelineTimelineModule"
+	if module && e.Content.Items == nil {
+		return nil, &APIError{Message: "malformed timeline module: missing items collection"}
+	}
+	if module && e.Content.ItemContent != nil {
+		return nil, &APIError{Message: "malformed timeline module: mixed direct itemContent and items"}
+	}
+	if e.Content.Items != nil && len(*e.Content.Items) == 0 && !module {
+		return nil, &APIError{Message: "unrecognized timeline entry: untyped empty items collection"}
+	}
 
-	push := func(ic *itemContent) {
-		if ic == nil || ic.TweetResults == nil || ic.TweetResults.Result == nil {
-			return
+	push := func(ic *itemContent) error {
+		if ic.TweetResults == nil {
+			if isKnownNonTweetItemContent(ic) {
+				return nil
+			}
+			return &APIError{Message: fmt.Sprintf("unrecognized timeline item content type %q: missing tweet_results", firstNonEmpty(ic.ItemType, ic.TypeName))}
+		}
+		if ic.TweetResults.Result == nil {
+			// This is X's explicit deleted/withheld tombstone shape. An
+			// untyped tweet_results:{} is not safe: it is indistinguishable
+			// from a renamed or moved result field.
+			if ic.TypeName == "TimelineTweet" || ic.ItemType == "TimelineTweet" {
+				return nil
+			}
+			return &APIError{Message: fmt.Sprintf("unrecognized timeline item content type %q: missing tweet result", firstNonEmpty(ic.ItemType, ic.TypeName))}
 		}
 		out = append(out, ic.TweetResults.Result)
+		return nil
 	}
 
-	push(e.Content.ItemContent)
+	if e.Content.ItemContent != nil {
+		if err := push(e.Content.ItemContent); err != nil {
+			return nil, err
+		}
+	}
 	if e.Content.Item != nil {
-		push(e.Content.Item.ItemContent)
-	}
-	for _, item := range e.Content.Items {
-		push(item.ItemContent)
-		if item.Item != nil {
-			push(item.Item.ItemContent)
+		if e.Content.Item.ItemContent == nil {
+			return nil, &APIError{Message: "malformed timeline item wrapper: missing itemContent"}
 		}
-		if item.Content != nil {
-			push(item.Content.ItemContent)
+		if err := push(e.Content.Item.ItemContent); err != nil {
+			return nil, err
 		}
 	}
-	return out
+	if e.Content.Items != nil {
+		for index, item := range *e.Content.Items {
+			var contents []*itemContent
+			if item.ItemContent != nil {
+				contents = append(contents, item.ItemContent)
+			}
+			if item.Item != nil && item.Item.ItemContent != nil {
+				contents = append(contents, item.Item.ItemContent)
+			}
+			if item.Content != nil && item.Content.ItemContent != nil {
+				contents = append(contents, item.Content.ItemContent)
+			}
+			if len(contents) == 0 {
+				return nil, &APIError{Message: fmt.Sprintf("malformed timeline module item %d: missing itemContent", index)}
+			}
+			for _, content := range contents {
+				if err := push(content); err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
+	if e.Content.ItemContent == nil && e.Content.Item == nil && e.Content.Items == nil && e.Content.CursorType == "" {
+		if !isKnownNonTweetEntryType(e.Content.TypeName) && !isKnownNonTweetEntryType(e.Content.EntryType) {
+			return nil, &APIError{Message: "unrecognized timeline entry: no item content"}
+		}
+	}
+	return out, nil
+}
+
+func isKnownNonTweetItemContent(item *itemContent) bool {
+	switch firstNonEmpty(item.ItemType, item.TypeName) {
+	case "TimelineMessagePrompt", "TimelineLabel", "TimelineSpelling", "TimelineShowAlert":
+		return true
+	default:
+		return false
+	}
+}
+
+func isKnownNonTweetEntryType(typeName string) bool {
+	switch typeName {
+	case "TimelineTimelineCursor", "TimelineMessagePrompt", "TimelineShowAlert":
+		return true
+	default:
+		return false
+	}
 }
 
 // tweetsFromInstructions maps every usable tweet out of a timeline's
 // instructions, de-duplicated, preserving X's ordering.
-func tweetsFromInstructions(instructions []instruction) []Tweet {
+func tweetsFromInstructions(instructions []instruction) ([]Tweet, error) {
 	var tweets []Tweet
 	seen := make(map[string]bool)
 	for _, ins := range instructions {
 		for _, e := range ins.Entries {
-			for _, node := range collectFromEntry(e) {
+			nodes, err := collectFromEntry(e)
+			if err != nil {
+				return nil, err
+			}
+			for _, node := range nodes {
 				t, ok := mapTweet(node)
-				if !ok || seen[t.ID] {
+				if !ok {
+					if isKnownNonTweetResult(node) {
+						continue
+					}
+					return nil, &APIError{Message: fmt.Sprintf("malformed tweet timeline entry for id %q", node.unwrap().RestID)}
+				}
+				if seen[t.ID] {
 					continue
 				}
 				seen[t.ID] = true
@@ -499,7 +683,20 @@ func tweetsFromInstructions(instructions []instruction) []Tweet {
 			}
 		}
 	}
-	return tweets
+	return tweets, nil
+}
+
+func isKnownNonTweetResult(raw *tweetResult) bool {
+	raw = raw.unwrap()
+	if raw == nil {
+		return true
+	}
+	switch raw.TypeName {
+	case "TweetTombstone", "TweetUnavailable", "TimelineTweetTombstone", "TimelineTweetUnavailable":
+		return true
+	default:
+		return false
+	}
 }
 
 // bottomCursorFromInstructions mirrors bird's extractCursorFromInstructions:
@@ -545,7 +742,7 @@ func parseConversation(body []byte) ([]Tweet, error) {
 		return nil, &APIError{Message: strings.Join(messages, ", ")}
 	}
 
-	return tweetsFromInstructions(instructions), nil
+	return tweetsFromInstructions(instructions)
 }
 
 // --- Type helpers ------------------------------------------------------------

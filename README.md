@@ -569,10 +569,13 @@ GraphQL API, so this path needs no Node.js and no bird CLI.
 ```go
 import "github.com/guzus/birdy/pkg/tweet"
 
-client, err := tweet.NewClient(tweet.Options{
+client, err := tweet.NewMonitoringClient(tweet.MonitoringOptions{
     // Accounts come from BIRDY_ACCOUNTS + ~/.config/birdy/accounts.json by
     // default, or pass AccountsJSON to supply them from your own config.
     Strategy: "quota-aware", // the default
+    // Restrict reads to this pool when other stored accounts are reserved for
+    // posting. Unknown names fail at construction.
+    AccountPool: []string{"reader-1", "reader-2"},
 })
 
 t, err := client.Read(ctx, "https://x.com/SpaceX/status/2084912076502282341")
@@ -583,6 +586,34 @@ for _, m := range t.Media {
 // Conversations come back flat; ancestry lives in InReplyToStatusID.
 thread, err := client.Thread(ctx, t.ConversationID)
 parents := tweet.AncestorChain(thread, t.ID) // root-first, target excluded
+
+// Poll posts, quotes, and reposts without invoking bird/Node. Reposts carry an
+// explicit relation rather than requiring an "RT @" text heuristic.
+timeline, err := client.UserTimeline(ctx, "@thsottiaux", tweet.UserTimelineOptions{
+    Limit: 100,
+})
+for _, post := range timeline.Tweets {
+    fmt.Println(post.ID, post.RepostedTweet != nil)
+}
+
+// Replies are a separate Latest Search stream with an independent cursor.
+replies, err := client.UserReplies(ctx, "@thsottiaux", tweet.UserTimelineOptions{
+    Limit: 100,
+})
+
+profile, err := client.UserProfile(ctx, "@thsottiaux")
+if profile.Followers != nil {
+    fmt.Println(*profile.Followers)
+}
+
+// A following-graph reconciliation is safe only when Complete is true.
+following, err := client.Following(ctx, "1953337039510003712", tweet.FollowingOptions{
+    PageSize: 100,
+    MaxPages: 20,
+})
+if !following.Complete {
+    log.Printf("skip reconciliation; resume cursor: %s", following.NextCursor)
+}
 ```
 
 Notes:
@@ -591,21 +622,51 @@ Notes:
   the same auth a browser session does: X's public web bearer token plus your
   `auth_token` cookie and `ct0` CSRF token.
 - A `Client` is safe for concurrent use and holds rotation state in memory, so
-  it works on a read-only filesystem (Cloud Run, scratch containers).
+  it works on a read-only filesystem (Cloud Run, scratch containers). Account
+  selection reserves in-flight calls atomically, so synchronized readers spread
+  across the pool instead of all choosing the same stale usage snapshot.
 - Passing `Options.AccountsJSON` builds an ephemeral store that never writes to
   disk. Useful when credentials come from your own secret manager.
+- `MonitoringOptions.AccountPool` is an allowlist over the configured store.
+  Selection and rotation never leave that pool; this keeps read automation away
+  from accounts reserved for posting. It lives on the new monitoring
+  constructor so the frozen `Options` layout remains source-compatible.
 - The default strategy is `quota-aware`, which avoids accounts that recently
-  returned a 429 — a better fit for a server than the CLI's `round-robin`.
+  returned a 429 or a rate-limit error inside an HTTP-200 GraphQL envelope.
+  `tweet.IsRateLimited(err)` exposes that classification to callers.
 - Cancelling the context aborts the in-flight request.
 - `tweet.ExtractTweetID` parses status URLs and bare IDs, rejecting anything
   that is not a tweet reference.
+- Timeline and following cursors are opaque X values. Forward them unchanged;
+  do not parse them or infer chronology from them.
+- `Following` keeps one selected account for the entire page walk, preserves
+  X's order, and de-duplicates overlapping user IDs. `Complete` is true only
+  after a walk starting without a cursor reaches X's terminator. A `MaxPages`
+  cap returns the collected users with `Complete=false` and `NextCursor`; an X
+  or transport failure returns an error instead of a partial snapshot.
+- Following-user descriptions and counts are pointers: `nil` means X omitted
+  the value, while a pointer to zero or an empty string means it was reported.
+- `UserTimeline` reads X's Posts tab; it does not promise replies. `UserReplies`
+  reads `from:<handle> filter:replies` from reverse-chronological Latest Search.
+  The two streams have independent cursors and should be merged by tweet ID and
+  `CreatedAt`.
+- Timeline results use `TimelineTweet`, which embeds the frozen `Tweet` type and
+  adds `RepostedTweet` only on this new monitoring surface. Existing unkeyed
+  `Tweet` literals therefore continue to compile unchanged.
+- A timeline `Limit` is a target capped at 200, not a truncation boundary. The
+  full terminal response page is returned, so the slice may exceed `Limit` but
+  `NextCursor` never skips entries X over-delivered on that page.
+- Missing or moved collection roots are errors. Only a recognized, present
+  collection with zero entries is treated as an empty timeline/following list.
+- `UserProfile` exposes the native handle lookup's identity and counts. Nil
+  count pointers mean X omitted a value; a pointer to zero is a reported zero.
 
 ### Scope
 
-`pkg/tweet` covers reading single tweets and conversations. That is narrower
-than the CLI on purpose: the CLI serves every command natively through
-`internal/xapi`, but only the read path is exposed as a supported Go API, since
-everything exported here is frozen by semver.
+`pkg/tweet` covers single tweets, conversations, bounded post and reply streams,
+profiles, and complete-or-explicitly-incomplete following snapshots. This is
+narrower than the CLI on purpose: only contracts needed by embedded readers are
+exported, since every exported identifier is frozen by semver.
 
 Widening it is incremental work — the engine already exists, what is missing is
 the deliberate decision to commit to each signature. See

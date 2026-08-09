@@ -350,7 +350,37 @@ func (c *Client) do(req *http.Request) ([]byte, error) {
 			RateLimited: resp.StatusCode == http.StatusTooManyRequests,
 		}
 	}
+	if rateErr := rateLimitErrorFromEnvelope(body); rateErr != nil {
+		return nil, rateErr
+	}
 	return body, nil
+}
+
+// rateLimitErrorFromEnvelope catches X's GraphQL failure mode where HTTP is
+// 200 but the body contains errors:[{code:88,message:"Rate limit exceeded"}].
+// Without this normalization rotation records ordinary usage and immediately
+// sends the next call back to the exhausted session.
+func rateLimitErrorFromEnvelope(body []byte) *APIError {
+	var envelope struct {
+		Errors []struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return nil
+	}
+	for _, item := range envelope.Errors {
+		message := strings.TrimSpace(item.Message)
+		lower := strings.ToLower(message)
+		if item.Code == 88 || item.Code == http.StatusTooManyRequests || strings.Contains(lower, "rate limit") || strings.Contains(lower, "too many requests") {
+			if message == "" {
+				message = "rate limit exceeded"
+			}
+			return &APIError{StatusCode: http.StatusTooManyRequests, Message: message, RateLimited: true, Code: item.Code}
+		}
+	}
+	return nil
 }
 
 // post performs an authenticated GraphQL POST and returns the raw body.

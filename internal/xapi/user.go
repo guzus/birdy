@@ -14,9 +14,9 @@ type User struct {
 	Username    string `json:"username"`
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
-	Followers   int    `json:"followers,omitempty"`
-	Following   int    `json:"following,omitempty"`
-	Tweets      int    `json:"tweets,omitempty"`
+	Followers   *int   `json:"followers,omitempty"`
+	Following   *int   `json:"following,omitempty"`
+	Tweets      *int   `json:"tweets,omitempty"`
 	Verified    bool   `json:"verified,omitempty"`
 	CreatedAt   string `json:"createdAt,omitempty"`
 }
@@ -94,9 +94,9 @@ type userResponse struct {
 					ScreenName     string `json:"screen_name"`
 					Name           string `json:"name"`
 					Description    string `json:"description"`
-					FollowersCount int    `json:"followers_count"`
-					FriendsCount   int    `json:"friends_count"`
-					StatusesCount  int    `json:"statuses_count"`
+					FollowersCount *int   `json:"followers_count"`
+					FriendsCount   *int   `json:"friends_count"`
+					StatusesCount  *int   `json:"statuses_count"`
 					Verified       bool   `json:"verified"`
 					CreatedAt      string `json:"created_at"`
 				} `json:"legacy"`

@@ -70,12 +70,26 @@ var (
 
 // Search returns tweets matching a query, most recent first.
 func (c *Client) Search(ctx context.Context, query string, count int) ([]Tweet, error) {
+	tweets, _, err := c.searchFrom(ctx, query, count, "", 0, false)
+	return tweets, err
+}
+
+// SearchPageAlignedFrom walks Latest search without truncating the terminal
+// response page, so the cursor resumes after every returned entry.
+func (c *Client) SearchPageAlignedFrom(ctx context.Context, query string, count int, cursor string, maxPages int) ([]Tweet, string, error) {
+	if maxPages <= 0 {
+		maxPages = timelinePageBudget(count)
+	}
+	return c.searchFrom(ctx, query, count, cursor, maxPages, true)
+}
+
+func (c *Client) searchFrom(ctx context.Context, query string, count int, cursor string, maxPages int, fullPages bool) ([]Tweet, string, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
-		return nil, fmt.Errorf("x api: empty search query")
+		return nil, "", fmt.Errorf("x api: empty search query")
 	}
-	tweets, _, err := c.pagedTimeline(ctx, opSearch, pagedOptions{
-		limit: count,
+	return c.pagedTimeline(ctx, opSearch, pagedOptions{
+		limit: count, cursor: strings.TrimSpace(cursor), maxPages: maxPages, fullPages: fullPages,
 		variables: func(pageCount int, cursor string) map[string]any {
 			return withCursor(map[string]any{
 				"rawQuery":    query,
@@ -85,7 +99,6 @@ func (c *Client) Search(ctx context.Context, query string, count int) ([]Tweet, 
 			}, cursor)
 		},
 	})
-	return tweets, err
 }
 
 // Home returns the authenticated account's home timeline. When latest is true it
@@ -115,34 +128,60 @@ func (c *Client) Home(ctx context.Context, count int, latest bool) ([]Tweet, err
 // in a single run. Beyond that bird refuses rather than truncating.
 const userTweetsHardMaxPages = 10
 
+func timelinePageBudget(count int) int {
+	pages := (max(count, 1) + timelinePageSize - 1) / timelinePageSize
+	return min(max(pages, 1), userTweetsHardMaxPages)
+}
+
 // UserTweets returns a user's recent tweets. handle may include a leading @.
 //
 // It returns the cursor to resume from alongside the tweets, because it is the
 // one command whose JSON shape depends on it: bird's user-tweets switches from
 // a bare array to {tweets, nextCursor} whenever -n exceeds one page.
 func (c *Client) UserTweets(ctx context.Context, handle string, count int) ([]Tweet, string, error) {
+	return c.UserTweetsFrom(ctx, handle, count, "", 0)
+}
+
+// UserTweetsFrom returns recent tweets starting at cursor. maxPages bounds the
+// requests made; zero retains UserTweets' ten-page safety cap.
+func (c *Client) UserTweetsFrom(ctx context.Context, handle string, count int, cursor string, maxPages int) ([]Tweet, string, error) {
+	return c.userTimelineFrom(ctx, opUserTweets, handle, count, cursor, maxPages, false)
+}
+
+// UserTweetsPageAlignedFrom walks the posts timeline without truncating the
+// terminal response page, so its returned cursor cannot skip entries.
+func (c *Client) UserTweetsPageAlignedFrom(ctx context.Context, handle string, count int, cursor string, maxPages int) ([]Tweet, string, error) {
+	return c.userTimelineFrom(ctx, opUserTweets, handle, count, cursor, maxPages, true)
+}
+
+func (c *Client) userTimelineFrom(ctx context.Context, op timelineOp, handle string, count int, cursor string, maxPages int, fullPages bool) ([]Tweet, string, error) {
 	user, err := c.UserByScreenName(ctx, handle)
 	if err != nil {
 		return nil, "", err
 	}
 
-	// bird: effectiveMaxPages = min(10, ceil(limit / 20)).
-	maxPages := (max(count, 1) + timelinePageSize - 1) / timelinePageSize
-	maxPages = min(max(maxPages, 1), userTweetsHardMaxPages)
+	// bird: effectiveMaxPages = min(10, ceil(limit / 20)). Preserve that
+	// behavior for the legacy, truncating surface. Page-aligned monitoring may
+	// need extra explicitly-budgeted pages when X returns only duplicates or
+	// tombstones, so an explicit maxPages is authoritative there.
+	requestedPages := timelinePageBudget(count)
+	if maxPages <= 0 || (!fullPages && maxPages > requestedPages) {
+		maxPages = requestedPages
+	}
 
-	return c.pagedTimeline(ctx, opUserTweets, pagedOptions{
+	return c.pagedTimeline(ctx, op, pagedOptions{
 		limit:     count,
 		maxPages:  maxPages,
+		cursor:    strings.TrimSpace(cursor),
+		fullPages: fullPages,
 		pageDelay: c.userTweetsPageDelay,
 		variables: func(pageCount int, cursor string) map[string]any {
 			return withCursor(map[string]any{
 				"userId": user.ID,
 				"count":  pageCount,
-				// NOTE: bird sends includePromotedContent:false here and a
-				// {withArticlePlainText:false} fieldToggles blob. That is a
-				// separate result-set divergence, deliberately left alone by
-				// the paging change.
-				"includePromotedContent":                 true,
+				// Profile monitoring must not admit promoted/foreign authors.
+				// bird likewise sends includePromotedContent:false here.
+				"includePromotedContent":                 false,
 				"withQuickPromoteEligibilityTweetFields": true,
 				"withVoice":                              true,
 			}, cursor)
@@ -282,7 +321,7 @@ func clampCount(count int) int {
 }
 
 // timelinePageFor runs one timeline request and maps its tweets and cursor.
-func (c *Client) timelinePageFor(ctx context.Context, op timelineOp, variables map[string]any) (timelinePage, error) {
+func (c *Client) timelinePageFor(ctx context.Context, op timelineOp, variables map[string]any, strict bool) (timelinePage, error) {
 	var (
 		body []byte
 		err  error
@@ -294,6 +333,9 @@ func (c *Client) timelinePageFor(ctx context.Context, op timelineOp, variables m
 	}
 	if err != nil {
 		return timelinePage{}, err
+	}
+	if strict {
+		return parseTimelinePageStrict(body, op.roots)
 	}
 	return parseTimelinePage(body, op.roots)
 }
@@ -313,6 +355,11 @@ type pagedOptions struct {
 	limit int
 	// maxPages caps the walk; 0 is bird's unlimited.
 	maxPages int
+	// cursor resumes a walk after a previously returned Bottom cursor.
+	cursor string
+	// fullPages preserves every parsed entry from the terminal response page.
+	// It may return more than limit, but its cursor then resumes losslessly.
+	fullPages bool
 	// pageDelay waits before every page after the first; 0 is no wait. Only
 	// user-tweets has one.
 	pageDelay time.Duration
@@ -341,11 +388,15 @@ func (c *Client) pagedTimeline(ctx context.Context, op timelineOp, o pagedOption
 
 	var (
 		tweets     []Tweet
-		cursor     string
+		cursor     = o.cursor
 		nextCursor string
 		pages      int
 	)
 	seen := make(map[string]bool)
+	seenCursors := make(map[string]struct{})
+	if cursor != "" {
+		seenCursors[cursor] = struct{}{}
+	}
 
 	for len(tweets) < o.limit {
 		if pages > 0 && o.pageDelay > 0 {
@@ -363,7 +414,7 @@ func (c *Client) pagedTimeline(ctx context.Context, op timelineOp, o pagedOption
 			pageCount = remaining
 		}
 
-		page, err := c.timelinePageFor(ctx, op, o.variables(pageCount, cursor))
+		page, err := c.timelinePageFor(ctx, op, o.variables(pageCount, cursor), o.fullPages)
 		if err != nil {
 			// bird fails the whole call and discards what it accumulated.
 			return nil, "", err
@@ -378,12 +429,39 @@ func (c *Client) pagedTimeline(ctx context.Context, op timelineOp, o pagedOption
 			seen[t.ID] = true
 			tweets = append(tweets, t)
 			added++
-			if len(tweets) >= o.limit {
+			if !o.fullPages && len(tweets) >= o.limit {
 				break
 			}
 		}
 
-		if page.cursor == "" || page.cursor == cursor || len(page.tweets) == 0 || added == 0 {
+		if page.cursor == "" {
+			nextCursor = ""
+			break
+		}
+		if page.cursor == cursor {
+			if o.fullPages {
+				return nil, "", fmt.Errorf("x api: timeline cursor did not advance after page %d", pages)
+			}
+			nextCursor = ""
+			break
+		}
+		if _, repeated := seenCursors[page.cursor]; repeated {
+			if o.fullPages {
+				return nil, "", fmt.Errorf("x api: timeline cursor repeated after page %d", pages)
+			}
+			nextCursor = ""
+			break
+		}
+		seenCursors[page.cursor] = struct{}{}
+		if o.fullPages {
+			nextCursor = page.cursor
+			if o.maxPages > 0 && pages >= o.maxPages {
+				break
+			}
+			cursor = page.cursor
+			continue
+		}
+		if len(page.tweets) == 0 || added == 0 {
 			nextCursor = ""
 			break
 		}
@@ -580,17 +658,18 @@ func parseTimelinePage(body []byte, roots [][]string) (timelinePage, error) {
 
 	for _, root := range roots {
 		raw, ok := navigate(envelope.Data, root)
-		if !ok {
+		if !ok || string(raw) == "null" {
 			continue
 		}
 		var instructions []instruction
 		if err := json.Unmarshal(raw, &instructions); err != nil {
 			continue
 		}
-		return timelinePage{
-			tweets: tweetsFromInstructions(instructions),
-			cursor: bottomCursorFromInstructions(instructions),
-		}, nil
+		tweets, err := tweetsFromInstructions(instructions)
+		if err != nil {
+			return timelinePage{}, err
+		}
+		return timelinePage{tweets: tweets, cursor: bottomCursorFromInstructions(instructions)}, nil
 	}
 
 	// Nothing usable at any known path: surface X's error if it gave one, since
@@ -602,8 +681,220 @@ func parseTimelinePage(body []byte, roots [][]string) (timelinePage, error) {
 		}
 		return timelinePage{}, &APIError{Message: strings.Join(messages, ", ")}
 	}
-	// An empty timeline is a legitimate result, not an error.
-	return timelinePage{}, nil
+	// A present instructions:[] above is a legitimate empty timeline. Reaching
+	// here means the response no longer matches any known collection root;
+	// treating schema drift as empty would make monitors consume real events.
+	return timelinePage{}, &APIError{Message: "unrecognized timeline response shape: no known instructions root"}
+}
+
+// parseTimelinePageStrict is the monitoring parser. Unlike the legacy parser,
+// it treats ambiguity as failure: monitors persist cursors and classify
+// relations, so silently accepting a partially understood page loses events.
+func parseTimelinePageStrict(body []byte, roots [][]string) (timelinePage, error) {
+	var envelope struct {
+		Data   json.RawMessage `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return timelinePage{}, &APIError{Message: "decoding response: " + err.Error()}
+	}
+	if len(envelope.Errors) > 0 {
+		messages := make([]string, 0, len(envelope.Errors))
+		for _, item := range envelope.Errors {
+			messages = append(messages, item.Message)
+		}
+		return timelinePage{}, &APIError{Message: joinMessages(messages)}
+	}
+
+	for _, root := range roots {
+		raw, found, err := navigateStrict(envelope.Data, root)
+		if err != nil {
+			return timelinePage{}, &APIError{Message: "malformed timeline root: " + err.Error()}
+		}
+		if !found {
+			continue
+		}
+		if string(raw) == "null" {
+			return timelinePage{}, &APIError{Message: "malformed timeline root: instructions is null"}
+		}
+		return parseStrictTimelineInstructions(raw)
+	}
+	return timelinePage{}, &APIError{Message: "unrecognized timeline response shape: no known instructions root"}
+}
+
+func navigateStrict(raw json.RawMessage, path []string) (json.RawMessage, bool, error) {
+	current := raw
+	for index, key := range path {
+		if len(current) == 0 || string(current) == "null" {
+			return nil, false, fmt.Errorf("%s is null before %s", strings.Join(path[:index], "."), key)
+		}
+		var object map[string]json.RawMessage
+		if err := json.Unmarshal(current, &object); err != nil {
+			return nil, false, fmt.Errorf("%s is not an object", strings.Join(path[:index], "."))
+		}
+		next, ok := object[key]
+		if !ok {
+			if index > 2 {
+				return nil, false, fmt.Errorf("selected root is missing %s", key)
+			}
+			return nil, false, nil
+		}
+		current = next
+	}
+	return current, true, nil
+}
+
+func parseStrictTimelineInstructions(raw json.RawMessage) (timelinePage, error) {
+	var instructions []json.RawMessage
+	if err := json.Unmarshal(raw, &instructions); err != nil {
+		return timelinePage{}, &APIError{Message: "malformed timeline instructions: " + err.Error()}
+	}
+	var (
+		tweets []Tweet
+		cursor string
+	)
+	seen := make(map[string]struct{})
+	for index, rawInstruction := range instructions {
+		var object map[string]json.RawMessage
+		if err := json.Unmarshal(rawInstruction, &object); err != nil || object == nil {
+			return timelinePage{}, &APIError{Message: fmt.Sprintf("malformed timeline instruction %d", index)}
+		}
+		typeName := rawStringField(object, "type", "__typename")
+		entriesRaw, hasEntries := object["entries"]
+		entryRaw, hasEntry := object["entry"]
+		if hasEntries && hasEntry {
+			return timelinePage{}, &APIError{Message: fmt.Sprintf("malformed timeline instruction %d: both entries and entry", index)}
+		}
+		if hasEntries {
+			if typeName != "" && typeName != "TimelineAddEntries" {
+				return timelinePage{}, &APIError{Message: fmt.Sprintf("unsupported timeline entries instruction %q", typeName)}
+			}
+			if string(entriesRaw) == "null" {
+				return timelinePage{}, &APIError{Message: fmt.Sprintf("malformed timeline instruction %d: entries is null", index)}
+			}
+			var entries []json.RawMessage
+			if err := json.Unmarshal(entriesRaw, &entries); err != nil {
+				return timelinePage{}, &APIError{Message: fmt.Sprintf("malformed timeline instruction %d entries", index)}
+			}
+			for _, rawEntry := range entries {
+				entryTweets, entryCursor, err := parseStrictTimelineEntry(rawEntry)
+				if err != nil {
+					return timelinePage{}, err
+				}
+				for _, post := range entryTweets {
+					if _, duplicate := seen[post.ID]; !duplicate {
+						seen[post.ID] = struct{}{}
+						tweets = append(tweets, post)
+					}
+				}
+				if entryCursor != "" {
+					if cursor != "" && cursor != entryCursor {
+						return timelinePage{}, &APIError{Message: "multiple conflicting Bottom cursors"}
+					}
+					cursor = entryCursor
+				}
+			}
+			continue
+		}
+		if hasEntry {
+			if (typeName != "TimelineReplaceEntry" && typeName != "TimelinePinEntry") || string(entryRaw) == "null" {
+				return timelinePage{}, &APIError{Message: fmt.Sprintf("unsupported singular timeline instruction %q", typeName)}
+			}
+			entryTweets, entryCursor, err := parseStrictTimelineEntry(entryRaw)
+			if err != nil {
+				return timelinePage{}, err
+			}
+			for _, post := range entryTweets {
+				if _, duplicate := seen[post.ID]; !duplicate {
+					seen[post.ID] = struct{}{}
+					tweets = append(tweets, post)
+				}
+			}
+			if entryCursor != "" {
+				if cursor != "" && cursor != entryCursor {
+					return timelinePage{}, &APIError{Message: "multiple conflicting Bottom cursors"}
+				}
+				cursor = entryCursor
+			}
+			continue
+		}
+		if !isKnownDecorativeInstruction(typeName) {
+			return timelinePage{}, &APIError{Message: fmt.Sprintf("unrecognized timeline instruction %d type %q", index, typeName)}
+		}
+	}
+	return timelinePage{tweets: tweets, cursor: cursor}, nil
+}
+
+func parseStrictTimelineEntry(raw json.RawMessage) ([]Tweet, string, error) {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil || object == nil {
+		return nil, "", &APIError{Message: "malformed timeline entry"}
+	}
+	contentRaw, ok := object["content"]
+	if !ok || string(contentRaw) == "null" {
+		return nil, "", &APIError{Message: "malformed timeline entry: missing content"}
+	}
+	var parsed entry
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return nil, "", &APIError{Message: "malformed timeline entry content"}
+	}
+	typedCursor := parsed.Content.TypeName == "TimelineTimelineCursor" || parsed.Content.EntryType == "TimelineTimelineCursor"
+	if typedCursor && parsed.Content.CursorType == "" {
+		return nil, "", &APIError{Message: "malformed typed timeline cursor: missing cursorType"}
+	}
+	hasData := parsed.Content.ItemContent != nil || parsed.Content.Item != nil || parsed.Content.Items != nil
+	if parsed.Content.CursorType != "" && hasData {
+		return nil, "", &APIError{Message: "malformed timeline entry: cursor content also carries data"}
+	}
+	if parsed.Content.CursorType == "Bottom" {
+		if parsed.Content.Value == "" {
+			return nil, "", &APIError{Message: "malformed Bottom cursor: empty value"}
+		}
+		return nil, parsed.Content.Value, nil
+	}
+	if parsed.Content.CursorType == "Top" && parsed.Content.Value == "" {
+		return nil, "", &APIError{Message: "malformed Top cursor: empty value"}
+	}
+	if parsed.Content.CursorType != "" && parsed.Content.CursorType != "Top" {
+		return nil, "", &APIError{Message: fmt.Sprintf("unsupported timeline cursor type %q", parsed.Content.CursorType)}
+	}
+	nodes, err := collectFromEntry(parsed)
+	if err != nil {
+		return nil, "", err
+	}
+	tweets := make([]Tweet, 0, len(nodes))
+	for _, node := range nodes {
+		if isKnownNonTweetResult(node) {
+			continue
+		}
+		post, err := mapMonitoringTweet(node)
+		if err != nil {
+			return nil, "", err
+		}
+		tweets = append(tweets, post)
+	}
+	return tweets, "", nil
+}
+
+func rawStringField(object map[string]json.RawMessage, keys ...string) string {
+	for _, key := range keys {
+		var value string
+		if raw, ok := object[key]; ok && json.Unmarshal(raw, &value) == nil && value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func isKnownDecorativeInstruction(typeName string) bool {
+	switch typeName {
+	case "TimelineClearCache", "TimelineTerminateTimeline", "TimelineShowAlert":
+		return true
+	default:
+		return false
+	}
 }
 
 // navigate walks a JSON object along a path of keys.

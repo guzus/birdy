@@ -261,6 +261,114 @@ func TestSearchPageSizeCapsAt20(t *testing.T) {
 	wantCounts(t, ps.timelineRequests(), 20, 20, 5)
 }
 
+func TestPageAlignedSearchDoesNotLoseOverdeliveredEntries(t *testing.T) {
+	ps := newPagingServer(t, []string{"search_by_raw_query", "search_timeline", "timeline", "instructions"}, []pageSpec{
+		{tweetIDs: []string{"1", "2", "3"}, cursor: "C1"},
+		{tweetIDs: []string{"4"}},
+	})
+	c := ps.client(t)
+
+	first, cursor, err := c.SearchPageAlignedFrom(context.Background(), "from:a filter:replies", 2, "", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantIDs(t, first, "1", "2", "3")
+	if cursor != "C1" {
+		t.Fatalf("cursor = %q, want C1", cursor)
+	}
+
+	second, cursor, err := c.SearchPageAlignedFrom(context.Background(), "from:a filter:replies", 2, cursor, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantIDs(t, second, "4")
+	if cursor != "" {
+		t.Fatalf("terminal cursor = %q, want empty", cursor)
+	}
+	reqs := ps.timelineRequests()
+	if got := reqs[1].variables["cursor"]; got != "C1" {
+		t.Fatalf("resume cursor = %v, want C1", got)
+	}
+}
+
+func TestPageAlignedSearchAdvancesPastDuplicateAndTombstonePages(t *testing.T) {
+	root := []string{"search_by_raw_query", "search_timeline", "timeline", "instructions"}
+	t.Run("all duplicate page", func(t *testing.T) {
+		ps := newPagingServer(t, root, []pageSpec{
+			{tweetIDs: []string{"1"}, cursor: "C1"},
+			{tweetIDs: []string{"1"}, cursor: "C2"},
+			{tweetIDs: []string{"2"}},
+		})
+		tweets, cursor, err := ps.client(t).SearchPageAlignedFrom(context.Background(), "q", 2, "", 3)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantIDs(t, tweets, "1", "2")
+		if cursor != "" {
+			t.Fatalf("cursor = %q, want exhausted", cursor)
+		}
+	})
+
+	t.Run("zero parseable tombstone page", func(t *testing.T) {
+		ps := newPagingServer(t, root, []pageSpec{
+			{tombstones: 1, cursor: "C1"},
+			{tweetIDs: []string{"2"}},
+		})
+		tweets, cursor, err := ps.client(t).SearchPageAlignedFrom(context.Background(), "q", 1, "", 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantIDs(t, tweets, "2")
+		if cursor != "" {
+			t.Fatalf("cursor = %q, want exhausted", cursor)
+		}
+	})
+
+	t.Run("cap preserves advancing cursor", func(t *testing.T) {
+		ps := newPagingServer(t, root, []pageSpec{
+			{tweetIDs: []string{"1"}, cursor: "C1"},
+			{tweetIDs: []string{"1"}, cursor: "C2"},
+		})
+		tweets, cursor, err := ps.client(t).SearchPageAlignedFrom(context.Background(), "q", 2, "", 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantIDs(t, tweets, "1")
+		if cursor != "C2" {
+			t.Fatalf("cursor = %q, want resumable C2", cursor)
+		}
+	})
+}
+
+func TestPageAlignedSearchDefaultPageBudgetIsFinite(t *testing.T) {
+	ps := newPagingServer(t, []string{"search_by_raw_query", "search_timeline", "timeline", "instructions"}, []pageSpec{
+		{tombstones: 1, cursor: "C1"},
+		{tombstones: 1, cursor: "C2"},
+	})
+	tweets, cursor, err := ps.client(t).SearchPageAlignedFrom(context.Background(), "q", 21, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tweets) != 0 || cursor != "C2" {
+		t.Fatalf("tweets=%v cursor=%q, want capped empty result at C2", ids(tweets), cursor)
+	}
+	if got := len(ps.timelineRequests()); got != 2 {
+		t.Fatalf("requests = %d, want ceil(21/20)=2", got)
+	}
+}
+
+func TestPageAlignedSearchRejectsMultiStepCursorCycle(t *testing.T) {
+	ps := newPagingServer(t, []string{"search_by_raw_query", "search_timeline", "timeline", "instructions"}, []pageSpec{
+		{tweetIDs: []string{"1"}, cursor: "A"},
+		{tweetIDs: []string{"2"}, cursor: "B"},
+		{tweetIDs: []string{"3"}, cursor: "A"},
+	})
+	tweets, cursor, err := ps.client(t).SearchPageAlignedFrom(context.Background(), "q", 10, "", 3)
+	if err == nil || len(tweets) != 0 || cursor != "" {
+		t.Fatalf("cycle tweets=%v cursor=%q err=%v, want discarded error", ids(tweets), cursor, err)
+	}
+}
+
 func seqIDs(start, n int) []string {
 	out := make([]string, 0, n)
 	for i := 0; i < n; i++ {
