@@ -62,6 +62,7 @@ func TestStreamEmitsCommandSnapshotAndDone(t *testing.T) {
 	script := filepath.Join(binDir, "codex")
 	content := strings.Join([]string{
 		"#!/bin/sh",
+		`[ -z "${OPENCODE_API_KEY:-}" ] || exit 91`,
 		"cat <<'EOF'",
 		"{\"type\":\"thread.started\",\"thread_id\":\"t1\"}",
 		"{\"type\":\"turn.started\"}",
@@ -76,6 +77,7 @@ func TestStreamEmitsCommandSnapshotAndDone(t *testing.T) {
 	}
 
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("OPENCODE_API_KEY", "must-not-reach-danger-full-access-codex")
 
 	var events []claude.Event
 	Stream(context.Background(), "prompt", "codex", "birdy", func(ev claude.Event) {

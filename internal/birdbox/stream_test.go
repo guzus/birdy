@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/guzus/birdy/internal/claude"
+	"github.com/guzus/birdy/internal/processenv"
 )
 
 func TestEnvironmentForContextUsesAuthoritativeDeadlineAndGrace(t *testing.T) {
@@ -71,6 +72,18 @@ func TestEnabledUsesTemplateAsOptIn(t *testing.T) {
 	}
 }
 
+func TestToolCapableBirdBoxEnvironmentCannotReceiveOpenCodeKey(t *testing.T) {
+	env := processenv.Without([]string{
+		"E2B_API_KEY=required-e2b-key",
+		"BIRDY_ACCOUNTS=required-x-pool",
+		"OPENCODE_API_KEY=unrelated-provider-key",
+	}, "OPENCODE_API_KEY")
+	joined := strings.Join(env, "\n")
+	if strings.Contains(joined, "OPENCODE_API_KEY=") || !strings.Contains(joined, "E2B_API_KEY=required-e2b-key") || !strings.Contains(joined, "BIRDY_ACCOUNTS=required-x-pool") {
+		t.Fatalf("provider isolation failed: %q", joined)
+	}
+}
+
 func TestStreamRequiresAPIKey(t *testing.T) {
 	t.Setenv(templateEnv, "bird-box-test")
 	t.Setenv(apiKeyEnv, "")
@@ -116,6 +129,7 @@ func TestStreamNoToolsOmitsXCredentialsAndBirdyPermissions(t *testing.T) {
 	t.Setenv("CT0", "x-csrf")
 	t.Setenv("TWITTER_AUTH_TOKEN", "legacy-x-auth")
 	t.Setenv("TWITTER_CT0", "legacy-x-csrf")
+	t.Setenv("OPENCODE_API_KEY", "other-provider-secret")
 
 	StreamNoTools(context.Background(), "untrusted", "sonnet", "system", func(claude.Event) {})
 	argsBytes, err := os.ReadFile(argsPath)
@@ -137,7 +151,7 @@ func TestStreamNoToolsOmitsXCredentialsAndBirdyPermissions(t *testing.T) {
 		t.Fatalf("read env: %v", err)
 	}
 	env := string(envBytes)
-	for _, secret := range []string{"BIRDY_ACCOUNTS=", "BIRDY_HARNESS_ACCOUNTS=", "BIRDY_HOST_INVITE_CODE=", "BIRDY_HOST_TOKEN=", "BIRDY_HARNESS_TOKEN_HASHES=", "AUTH_TOKEN=", "CT0=", "TWITTER_AUTH_TOKEN=", "TWITTER_CT0="} {
+	for _, secret := range []string{"BIRDY_ACCOUNTS=", "BIRDY_HARNESS_ACCOUNTS=", "BIRDY_HOST_INVITE_CODE=", "BIRDY_HOST_TOKEN=", "BIRDY_HARNESS_TOKEN_HASHES=", "AUTH_TOKEN=", "CT0=", "TWITTER_AUTH_TOKEN=", "TWITTER_CT0=", "OPENCODE_API_KEY="} {
 		if strings.Contains(env, secret) {
 			t.Fatalf("no-tools bird-box retained %q in %q", secret, env)
 		}

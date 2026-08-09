@@ -35,11 +35,39 @@ host invite code fail host startup.
 Optional settings:
 
 ```text
+BIRDY_HARNESS_BACKEND=claude-code
 BIRDY_HARNESS_MODEL=sonnet
 BIRDY_HARNESS_TRUST_PROXY=1
 ```
 
-The model is fixed by the server and defaults to `sonnet`.
+The backend and model are fixed by the server; request fields cannot select
+or override either. The default remains Claude Code with `sonnet`, preserving
+the original deployment contract. Claude model identifiers retain the existing
+bounded server-side format.
+
+The only alternative provider/model pair is the locally verified OpenCode Go
+route for DeepSeek V4 Flash:
+
+```text
+BIRDY_HARNESS_BACKEND=opencode
+BIRDY_HARNESS_MODEL=opencode-go/deepseek-v4-flash
+OPENCODE_API_KEY=<OpenCode Go subscription key>
+```
+
+`OpenCode Go` is the provider/subscription route, not a model name. The exact
+supported model identifier is `opencode-go/deepseek-v4-flash`; the similarly
+worded “DeepSeek V2 Flash” premise is not a supported identifier. Birdy's
+runtime pins `opencode-ai` 1.18.3, matching the JSON event contract tested by
+the server. An absent model value defaults to that exact model when the
+backend is `opencode`; any other OpenCode model, missing key, or unknown
+backend fails host startup.
+
+There is deliberately no automatic cross-provider fallback. A provider error
+becomes the existing sanitized SSE error and terminal `done`; Birdy never
+mixes two model answers or silently changes model provenance. To switch back,
+restore `BIRDY_HARNESS_BACKEND=claude-code` (or remove it) and use the desired
+Claude model.
+
 `BIRDY_HARNESS_TRUST_PROXY=1` is safe only when a trusted reverse proxy
 overwrites `X-Forwarded-For`; otherwise forwarding headers are ignored.
 
@@ -168,9 +196,25 @@ shared edge or datastore.
 
 ## Model and network boundaries
 
-Claude runs with tools disabled and a single-turn limit. The model subprocess
-or Bird Box receives no Birdy account pool, X auth/CSRF values, host invite
-code, or harness token hashes. Codex's host-local tool path is never used.
+Claude runs with tools disabled and a single-turn limit. Bird Box is used only
+for Claude; selecting OpenCode never falls through to Bird Box or Claude.
+
+OpenCode runs one turn with the exact provider/model above, `--pure`, a
+mode-0600 config, and wildcard tool denial at both global and named-agent
+levels. Its prompt travels over stdin, not process arguments. HOME and every
+XDG directory point at one disposable request directory that is removed when
+the process exits. Persistent OpenCode auth, plugins, MCP servers, project
+instructions, sharing, and all other providers are unavailable. The child
+environment is an allowlist containing the OpenCode key, basic runtime/CA
+settings, and no Claude credential, Birdy account pool, X auth/CSRF values,
+host invite code, or harness token hashes. Provider error payloads and stderr
+are never returned to the client.
+
+As with Claude, normalized visible post content is sent to the selected model
+provider to answer the request. The isolation above prevents that content from
+being copied into argv, persistent OpenCode state, tools, or unrelated model
+providers; it does not make the configured model provider local. Codex's
+host-local tool path is never used.
 
 Declare the exact Birdy host under MV3 `host_permissions`, then message the
 service worker from the content script and let the worker perform `fetch`.

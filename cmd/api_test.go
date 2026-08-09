@@ -66,6 +66,7 @@ func TestAPIChatRoutesCodexModelToCodexCLI(t *testing.T) {
 	codexScript := filepath.Join(binDir, "codex")
 	codexContent := strings.Join([]string{
 		"#!/bin/sh",
+		`[ -z "${OPENCODE_API_KEY:-}" ] || exit 91`,
 		"cat <<'EOF'",
 		"{\"type\":\"item.completed\",\"item\":{\"id\":\"msg1\",\"type\":\"agent_message\",\"text\":\"from codex\"}}",
 		"{\"type\":\"turn.completed\"}",
@@ -88,6 +89,7 @@ func TestAPIChatRoutesCodexModelToCodexCLI(t *testing.T) {
 	t.Setenv("BIRDY_E2B_TEMPLATE", "bird-box-test")
 	t.Setenv("E2B_API_KEY", "e2b-test-key")
 	t.Setenv("BIRDY_E2B_NODE_PATH", filepath.Join(binDir, "must-not-run-e2b"))
+	t.Setenv("OPENCODE_API_KEY", "must-not-reach-client-selected-codex")
 
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/api/chat", bytes.NewBufferString(`{"prompt":"hello","model":"codex"}`))
 	req.Header.Set("Content-Type", "application/json")

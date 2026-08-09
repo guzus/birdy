@@ -12,6 +12,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/guzus/birdy/internal/processenv"
 )
 
 // birdyCmd returns the command to invoke birdy. If the current executable
@@ -264,6 +265,7 @@ func runClaudeProcess(ctx context.Context, prompt, model string, ch chan<- tea.M
 	args := buildClaudeArgs(prompt, model, birdyCmd())
 
 	cmd := exec.CommandContext(ctx, "claude", args...)
+	cmd.Env = processenv.Without(os.Environ(), "OPENCODE_API_KEY")
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

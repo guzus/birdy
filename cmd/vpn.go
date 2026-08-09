@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/guzus/birdy/internal/processenv"
 	"github.com/guzus/birdy/internal/vpn"
 	"github.com/spf13/cobra"
 )
@@ -253,6 +254,7 @@ var vpnInstallDepsCmd = &cobra.Command{
 
 		fmt.Fprintf(cmd.OutOrStdout(), "→ installing %s into %s ...\n", undiciVersion, cacheDir)
 		npm := exec.Command("npm", "install", "--silent", "--no-fund", undiciVersion)
+		npm.Env = processenv.Without(os.Environ(), "OPENCODE_API_KEY")
 		npm.Dir = cacheDir
 		npm.Stdout = cmd.OutOrStdout()
 		npm.Stderr = cmd.ErrOrStderr()

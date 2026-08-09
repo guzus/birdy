@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/guzus/birdy/internal/processenv"
 )
 
 // RunOnce invokes the claude CLI synchronously with birdy tool access and
@@ -25,6 +28,7 @@ func RunOnce(ctx context.Context, prompt, systemPrompt, model, birdyCmd string) 
 	}
 
 	cmd := exec.CommandContext(ctx, "claude", args...)
+	cmd.Env = processenv.Without(os.Environ(), "OPENCODE_API_KEY")
 	var out, errBuf bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errBuf

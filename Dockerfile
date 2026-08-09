@@ -37,6 +37,16 @@ ARG CLAUDE_CODE_VERSION=2.1.207
 RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
     && npm cache clean --force
 
+# OpenCode is an opt-in harness provider. Match the version whose JSONL run
+# contract and OpenCode Go model catalog are covered by the Go parser tests.
+# Install dependencies without lifecycle scripts, then run only the package's
+# required platform-binary installer explicitly.
+ARG OPENCODE_VERSION=1.18.3
+RUN npm install -g --ignore-scripts "opencode-ai@${OPENCODE_VERSION}" \
+    && (cd "$(npm root -g)/opencode-ai" && node postinstall.mjs) \
+    && opencode --version \
+    && npm cache clean --force
+
 WORKDIR /app
 
 COPY e2b-runner/package.json e2b-runner/package-lock.json /app/e2b-runner/

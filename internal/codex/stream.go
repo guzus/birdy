@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/guzus/birdy/internal/claude"
+	"github.com/guzus/birdy/internal/processenv"
 )
 
 type execEvent struct {
@@ -107,6 +108,7 @@ func BuildArgs(prompt, model, birdyCmd string) []string {
 func Stream(ctx context.Context, prompt, model, birdyCmd string, emit func(claude.Event)) {
 	args := BuildArgs(prompt, model, birdyCmd)
 	cmd := exec.CommandContext(ctx, "codex", args...)
+	cmd.Env = processenv.Without(os.Environ(), "OPENCODE_API_KEY")
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

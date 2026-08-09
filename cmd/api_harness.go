@@ -25,11 +25,13 @@ import (
 
 	"github.com/guzus/birdy/internal/birdbox"
 	"github.com/guzus/birdy/internal/claude"
+	"github.com/guzus/birdy/internal/opencode"
 )
 
 const (
 	harnessAPIVersion           = "2"
 	harnessTokenHashesEnv       = "BIRDY_HARNESS_TOKEN_HASHES"
+	harnessBackendEnv           = "BIRDY_HARNESS_BACKEND"
 	harnessModelEnv             = "BIRDY_HARNESS_MODEL"
 	harnessTrustProxyEnv        = "BIRDY_HARNESS_TRUST_PROXY"
 	harnessMaxBodyBytes         = 64 * 1024
@@ -93,9 +95,14 @@ type harnessErrorResponse struct {
 
 type harnessConfig struct {
 	tokenHashes map[string][sha256.Size]byte
-	model       string
+	model       harnessModelConfig
 	trustProxy  bool
 	enabled     bool
+}
+
+type harnessModelConfig struct {
+	backend string
+	model   string
 }
 
 type harnessModelInput struct {
@@ -106,7 +113,7 @@ type harnessModelInput struct {
 }
 
 type harnessDependencies struct {
-	stream       func(context.Context, string, string, string, func(claude.Event))
+	stream       func(context.Context, string, harnessModelConfig, string, func(claude.Event))
 	tokenLimiter *harnessRateLimiter
 	ipLimiter    *harnessRateLimiter
 	sem          chan struct{}
@@ -188,12 +195,9 @@ func loadHarnessConfig(inviteCode string) (harnessConfig, error) {
 	if raw == "" {
 		return harnessConfig{}, nil
 	}
-	model := strings.TrimSpace(os.Getenv(harnessModelEnv))
-	if model == "" {
-		model = "sonnet"
-	}
-	if !harnessModelPattern.MatchString(model) {
-		return harnessConfig{}, fmt.Errorf("%s must be a model identifier of at most 80 characters", harnessModelEnv)
+	model, err := loadHarnessModelConfig()
+	if err != nil {
+		return harnessConfig{}, err
 	}
 
 	var encoded map[string]string
@@ -248,6 +252,37 @@ func envTruthy(value string) bool {
 	}
 }
 
+func loadHarnessModelConfig() (harnessModelConfig, error) {
+	backend := strings.TrimSpace(os.Getenv(harnessBackendEnv))
+	if backend == "" {
+		backend = "claude-code"
+	}
+	model := strings.TrimSpace(os.Getenv(harnessModelEnv))
+
+	switch backend {
+	case "claude-code":
+		if model == "" {
+			model = "sonnet"
+		}
+		if !harnessModelPattern.MatchString(model) {
+			return harnessModelConfig{}, fmt.Errorf("%s must be a Claude model identifier of at most 80 characters", harnessModelEnv)
+		}
+	case "opencode":
+		if model == "" {
+			model = opencode.ModelDeepSeekV4Flash
+		}
+		if model != opencode.ModelDeepSeekV4Flash {
+			return harnessModelConfig{}, fmt.Errorf("%s=%s supports only %s=%s", harnessBackendEnv, backend, harnessModelEnv, opencode.ModelDeepSeekV4Flash)
+		}
+		if strings.TrimSpace(os.Getenv("OPENCODE_API_KEY")) == "" {
+			return harnessModelConfig{}, fmt.Errorf("OPENCODE_API_KEY is required when %s=%s", harnessBackendEnv, backend)
+		}
+	default:
+		return harnessModelConfig{}, fmt.Errorf("%s must be one of claude-code or opencode", harnessBackendEnv)
+	}
+	return harnessModelConfig{backend: backend, model: model}, nil
+}
+
 func newHarnessChatHandlerFromEnv(inviteCode string) http.Handler {
 	config, _ := loadHarnessConfig(inviteCode)
 	deps := harnessDependencies{
@@ -260,12 +295,20 @@ func newHarnessChatHandlerFromEnv(inviteCode string) http.Handler {
 	return newHarnessChatHandler(config, deps)
 }
 
-func streamHarnessModel(ctx context.Context, prompt, model, systemPrompt string, emit func(claude.Event)) {
-	if birdbox.Enabled() {
-		birdbox.StreamNoTools(ctx, prompt, model, systemPrompt, emit)
-		return
+func streamHarnessModel(ctx context.Context, prompt string, model harnessModelConfig, systemPrompt string, emit func(claude.Event)) {
+	switch model.backend {
+	case "claude-code":
+		if birdbox.Enabled() {
+			birdbox.StreamNoTools(ctx, prompt, model.model, systemPrompt, emit)
+			return
+		}
+		claude.StreamNoTools(ctx, prompt, model.model, systemPrompt, emit)
+	case "opencode":
+		opencode.StreamNoTools(ctx, prompt, systemPrompt, emit)
+	default:
+		emit(claude.Event{Type: claude.EventError, Error: "unsupported harness model provider"})
+		emit(claude.Event{Type: claude.EventDone})
 	}
-	claude.StreamNoTools(ctx, prompt, model, systemPrompt, emit)
 }
 
 func newHarnessChatHandler(config harnessConfig, deps harnessDependencies) http.Handler {

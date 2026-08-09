@@ -18,6 +18,7 @@ import (
 
 	"github.com/creack/pty"
 	"github.com/gorilla/websocket"
+	"github.com/guzus/birdy/internal/processenv"
 	"github.com/spf13/cobra"
 )
 
@@ -359,12 +360,16 @@ func hostedTTYCommand() *exec.Cmd {
 	}
 
 	child := exec.Command(exePath, args...)
-	childEnv := os.Environ()
+	childEnv := hostedTUIEnvironment(os.Environ())
 	if strings.TrimSpace(os.Getenv("BIRDY_TUI_HIDE_HISTORY")) == "" {
 		childEnv = append(childEnv, "BIRDY_TUI_HIDE_HISTORY=1")
 	}
 	child.Env = append(childEnv, "BIRDY_TUI_MOUSE=1")
 	return child
+}
+
+func hostedTUIEnvironment(env []string) []string {
+	return processenv.Without(env, "OPENCODE_API_KEY")
 }
 
 func authenticateHostedWS(conn *websocket.Conn, inviteCode string) bool {

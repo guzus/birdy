@@ -239,7 +239,12 @@ BIRDY_HOST_INVITE_CODE=replace-with-long-random-secret
 # BIRDY_HARNESS_TOKEN_HASHES={"install-id":"64-lowercase-hex-characters"}
 # Harness v2 receives bounded normalized visible-post text from the extension;
 # it needs no X account pool and never fetches X content server-side.
+# BIRDY_HARNESS_BACKEND=claude-code
 # BIRDY_HARNESS_MODEL=sonnet
+# Alternative exact route (no automatic fallback):
+# BIRDY_HARNESS_BACKEND=opencode
+# BIRDY_HARNESS_MODEL=opencode-go/deepseek-v4-flash
+# OPENCODE_API_KEY=replace-with-opencode-go-key
 # Set only when a trusted edge overwrites X-Forwarded-For.
 # BIRDY_HARNESS_TRUST_PROXY=1
 

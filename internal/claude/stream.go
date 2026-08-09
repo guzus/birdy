@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/guzus/birdy/internal/processenv"
 )
 
 type EventType string
@@ -177,6 +179,9 @@ func BuildArgs(prompt, model, birdyCmd string, permissions ToolPermissions) []st
 func Stream(ctx context.Context, prompt, model, birdyCmd string, emit func(Event)) {
 	args := BuildArgs(prompt, model, birdyCmd, ToolPermissions{})
 	cmd := exec.CommandContext(ctx, "claude", args...)
+	// A tool-capable Claude session needs Birdy's X environment, but never the
+	// credential for an unrelated model provider.
+	cmd.Env = processenv.Without(os.Environ(), "OPENCODE_API_KEY")
 	StreamCommand(ctx, cmd, emit)
 }
 
@@ -207,31 +212,10 @@ func StreamNoTools(ctx context.Context, prompt, model, systemPrompt string, emit
 }
 
 func withoutSensitiveRuntimeEnv(env []string) []string {
-	blocked := []string{
-		"AUTH_TOKEN=",
-		"CT0=",
-		"TWITTER_AUTH_TOKEN=",
-		"TWITTER_CT0=",
-		"BIRDY_ACCOUNTS=",
-		"BIRDY_HARNESS_ACCOUNTS=",
-		"BIRDY_HOST_INVITE_CODE=",
-		"BIRDY_HOST_TOKEN=",
-		"BIRDY_HARNESS_TOKEN_HASHES=",
-	}
-	out := make([]string, 0, len(env))
-	for _, entry := range env {
-		sensitive := false
-		for _, prefix := range blocked {
-			if strings.HasPrefix(entry, prefix) {
-				sensitive = true
-				break
-			}
-		}
-		if !sensitive {
-			out = append(out, entry)
-		}
-	}
-	return out
+	return processenv.Without(env,
+		"AUTH_TOKEN", "CT0", "TWITTER_AUTH_TOKEN", "TWITTER_CT0",
+		"BIRDY_ACCOUNTS", "BIRDY_HARNESS_ACCOUNTS", "BIRDY_HOST_INVITE_CODE",
+		"BIRDY_HOST_TOKEN", "BIRDY_HARNESS_TOKEN_HASHES", "OPENCODE_API_KEY")
 }
 
 // StreamCommand parses Claude Code stream-json output from cmd. Callers can

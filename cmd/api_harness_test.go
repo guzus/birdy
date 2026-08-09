@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/guzus/birdy/internal/claude"
+	"github.com/guzus/birdy/internal/opencode"
 )
 
 const harnessTestToken = "test-harness-token-not-a-real-secret-000"
@@ -22,14 +23,14 @@ func harnessTestConfig() harnessConfig {
 	digest := sha256.Sum256([]byte(harnessTestToken))
 	return harnessConfig{
 		tokenHashes: map[string][sha256.Size]byte{"install-one": digest},
-		model:       "claude-test-fixed",
+		model:       harnessModelConfig{backend: "claude-code", model: "claude-test-fixed"},
 		enabled:     true,
 	}
 }
 
 func harnessTestDependencies() harnessDependencies {
 	return harnessDependencies{
-		stream: func(_ context.Context, _, _, _ string, emit func(claude.Event)) {
+		stream: func(_ context.Context, _ string, _ harnessModelConfig, _ string, emit func(claude.Event)) {
 			emit(claude.Event{Type: claude.EventToken, Text: "answer"})
 			emit(claude.Event{Type: claude.EventDone})
 		},
@@ -180,8 +181,9 @@ func TestHarnessPageAndTweetURLValidationIsExact(t *testing.T) {
 
 func TestHarnessChatNormalizesTweetsInOrderAndUsesFixedModel(t *testing.T) {
 	deps := harnessTestDependencies()
-	var gotPrompt, gotModel, gotSystem string
-	deps.stream = func(_ context.Context, prompt, model, system string, emit func(claude.Event)) {
+	var gotPrompt, gotSystem string
+	var gotModel harnessModelConfig
+	deps.stream = func(_ context.Context, prompt string, model harnessModelConfig, system string, emit func(claude.Event)) {
 		gotPrompt, gotModel, gotSystem = prompt, model, system
 		emit(claude.Event{Type: claude.EventDone})
 	}
@@ -196,8 +198,8 @@ func TestHarnessChatNormalizesTweetsInOrderAndUsesFixedModel(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d body=%q", rr.Code, rr.Body.String())
 	}
-	if gotModel != "claude-test-fixed" || !strings.Contains(gotSystem, "No tools are available") || !strings.Contains(gotSystem, "untrusted client-quoted data") {
-		t.Fatalf("unexpected model boundary: model=%q system=%q", gotModel, gotSystem)
+	if gotModel != (harnessModelConfig{backend: "claude-code", model: "claude-test-fixed"}) || !strings.Contains(gotSystem, "No tools are available") || !strings.Contains(gotSystem, "untrusted client-quoted data") {
+		t.Fatalf("unexpected model boundary: model=%#v system=%q", gotModel, gotSystem)
 	}
 	var input harnessModelInput
 	if err := json.Unmarshal([]byte(gotPrompt), &input); err != nil {
@@ -315,7 +317,7 @@ func TestValidateHarnessRequestBoundsAndContext(t *testing.T) {
 
 func TestHarnessChatSSEIncludesRequestIDAndTerminalDone(t *testing.T) {
 	deps := harnessTestDependencies()
-	deps.stream = func(_ context.Context, _, _, _ string, emit func(claude.Event)) {
+	deps.stream = func(_ context.Context, _ string, _ harnessModelConfig, _ string, emit func(claude.Event)) {
 		emit(claude.Event{Type: claude.EventToken, Text: "answer"})
 	}
 	rr := httptest.NewRecorder()
@@ -380,7 +382,7 @@ func TestHarnessChatFailsFastWhenCapacityIsFull(t *testing.T) {
 
 func TestHarnessChatBlocksToolEvents(t *testing.T) {
 	deps := harnessTestDependencies()
-	deps.stream = func(_ context.Context, _, _, _ string, emit func(claude.Event)) {
+	deps.stream = func(_ context.Context, _ string, _ harnessModelConfig, _ string, emit func(claude.Event)) {
 		emit(claude.Event{Type: claude.EventToolUse, Command: "birdy home"})
 		emit(claude.Event{Type: claude.EventDone})
 	}
@@ -393,7 +395,7 @@ func TestHarnessChatBlocksToolEvents(t *testing.T) {
 
 func TestHarnessChatDeadlineEmitsErrorThenExactlyOneDone(t *testing.T) {
 	deps := harnessTestDependencies()
-	deps.stream = func(ctx context.Context, _, _, _ string, emit func(claude.Event)) {
+	deps.stream = func(ctx context.Context, _ string, _ harnessModelConfig, _ string, emit func(claude.Event)) {
 		<-ctx.Done()
 		emit(claude.Event{Type: claude.EventDone})
 	}
@@ -447,7 +449,7 @@ func TestLoadHarnessConfigRequiresOnlyValidHashedTokens(t *testing.T) {
 	t.Setenv(harnessModelEnv, "claude-fixed")
 	t.Setenv(harnessTrustProxyEnv, "true")
 	config, err := loadHarnessConfig("distinct-shared-invite")
-	if err != nil || !config.enabled || config.model != "claude-fixed" || !config.trustProxy {
+	if err != nil || !config.enabled || config.model != (harnessModelConfig{backend: "claude-code", model: "claude-fixed"}) || !config.trustProxy {
 		t.Fatalf("valid token-only harness config failed: config=%#v err=%v", config, err)
 	}
 
@@ -469,5 +471,61 @@ func TestLoadHarnessConfigRejectsInviteCodeReuse(t *testing.T) {
 	t.Setenv(harnessTokenHashesEnv, `{"install-one":"`+hex.EncodeToString(digest[:])+`"}`)
 	if _, err := loadHarnessConfig(inviteCode); err == nil || !strings.Contains(err.Error(), "must not reuse") {
 		t.Fatalf("expected invite collision failure, got %v", err)
+	}
+}
+
+func TestLoadHarnessModelConfigIsServerFixedAndBounded(t *testing.T) {
+	t.Run("Claude default preserves compatibility", func(t *testing.T) {
+		t.Setenv(harnessBackendEnv, "")
+		t.Setenv(harnessModelEnv, "")
+		got, err := loadHarnessModelConfig()
+		if err != nil || got != (harnessModelConfig{backend: "claude-code", model: "sonnet"}) {
+			t.Fatalf("default config = %#v, %v", got, err)
+		}
+	})
+
+	t.Run("exact OpenCode Go route", func(t *testing.T) {
+		t.Setenv(harnessBackendEnv, "opencode")
+		t.Setenv(harnessModelEnv, opencode.ModelDeepSeekV4Flash)
+		t.Setenv("OPENCODE_API_KEY", "test-model-provider-key")
+		got, err := loadHarnessModelConfig()
+		if err != nil || got != (harnessModelConfig{backend: "opencode", model: opencode.ModelDeepSeekV4Flash}) {
+			t.Fatalf("OpenCode config = %#v, %v", got, err)
+		}
+	})
+
+	for _, tt := range []struct {
+		name, backend, model, key string
+	}{
+		{"wrong claimed V2 model", "opencode", "opencode-go/deepseek-v2-flash", "key"},
+		{"other OpenCode model", "opencode", "opencode-go/kimi-k3", "key"},
+		{"missing OpenCode key", "opencode", opencode.ModelDeepSeekV4Flash, ""},
+		{"unknown provider", "openrouter", "deepseek-v4-flash", "key"},
+		{"provider in Claude model", "claude-code", opencode.ModelDeepSeekV4Flash, "key"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(harnessBackendEnv, tt.backend)
+			t.Setenv(harnessModelEnv, tt.model)
+			t.Setenv("OPENCODE_API_KEY", tt.key)
+			if _, err := loadHarnessModelConfig(); err == nil {
+				t.Fatalf("accepted backend=%q model=%q", tt.backend, tt.model)
+			}
+		})
+	}
+}
+
+func TestHarnessRequestCannotSelectProviderOrModel(t *testing.T) {
+	for _, field := range []string{
+		`"backend":"opencode"`,
+		`"provider":"opencode-go"`,
+		`"model":"opencode-go/deepseek-v4-flash"`,
+		`"fallback_model":"sonnet"`,
+	} {
+		body := strings.TrimSuffix(harnessValidBody(), "}") + "," + field + "}"
+		rr := httptest.NewRecorder()
+		newHarnessChatHandler(harnessTestConfig(), harnessTestDependencies()).ServeHTTP(rr, harnessRequest(body))
+		if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), `"error":"invalid_json"`) {
+			t.Fatalf("request-controlled model field %s accepted: %d %q", field, rr.Code, rr.Body.String())
+		}
 	}
 }

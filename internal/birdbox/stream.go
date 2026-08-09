@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/guzus/birdy/internal/claude"
+	"github.com/guzus/birdy/internal/processenv"
 )
 
 const (
@@ -61,7 +62,7 @@ func Stream(ctx context.Context, prompt, model string, emit func(claude.Event)) 
 		emit(claude.Event{Type: claude.EventDone})
 		return
 	}
-	cmd.Env = runnerEnv
+	cmd.Env = processenv.Without(runnerEnv, "OPENCODE_API_KEY")
 	cmd.Cancel = func() error {
 		if cmd.Process == nil {
 			return nil
@@ -103,7 +104,7 @@ func StreamNoTools(ctx context.Context, prompt, model, systemPrompt string, emit
 	}
 	cmd.Env = withoutEnvironment(runnerEnv,
 		"BIRDY_ACCOUNTS", "BIRDY_HARNESS_ACCOUNTS", "AUTH_TOKEN", "CT0", "TWITTER_AUTH_TOKEN", "TWITTER_CT0",
-		"BIRDY_HOST_INVITE_CODE", "BIRDY_HOST_TOKEN", "BIRDY_HARNESS_TOKEN_HASHES")
+		"BIRDY_HOST_INVITE_CODE", "BIRDY_HOST_TOKEN", "BIRDY_HARNESS_TOKEN_HASHES", "OPENCODE_API_KEY")
 	cmd.Cancel = func() error {
 		if cmd.Process == nil {
 			return nil
