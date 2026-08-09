@@ -114,11 +114,13 @@ timeout; the sandbox TTL is the cleanup backstop if deletion cannot reach E2B.
 
 ### HTTP API
 
-The static app at `/` and `/healthz` are public. API operations authenticate
-with `X-Invite-Code: <code>` or `Authorization: Bearer <code>`. `/ws` upgrades
-first, then requires the invite code in its initial auth message. JSON bodies
-are decoded strictly and unknown fields are rejected. JSON API failures use
-`{"ok":false,"error":"..."}`; method-not-allowed responses have an empty body.
+The static app at `/` and `/healthz` are public. General API operations
+authenticate with `X-Invite-Code: <code>` or `Authorization: Bearer <code>`;
+the harness endpoint instead requires its own per-install bearer token. `/ws`
+upgrades first, then requires the invite code in its initial auth message. JSON
+bodies are decoded strictly and unknown fields are rejected. General JSON API
+failures use `{"ok":false,"error":"..."}`; the harness error contract also
+includes a stable error code, message, and request ID.
 
 | Endpoint | Request | Response |
 | --- | --- | --- |
@@ -126,6 +128,7 @@ are decoded strictly and unknown fields are rejected. JSON API failures use
 | `POST /api/command` | `{"command":"search","args":["agents"]}` | JSON with `ok`, `account`, `exit_code`, `stdout`, `stderr`, and `duration_ms` |
 | `POST /api/multi-command` | `{"operations":[{"id":"one","command":"news"}]}` | Ordered per-operation results; maximum 16 operations |
 | `POST /api/chat` | `{"prompt":"Scan for AI agent news","model":"sonnet"}` | Zero or more `snapshot`, `token`, `tool_use`, or `error` SSE events; terminal `done` |
+| `POST /api/harness/chat` | Versioned, bounded X-page context (see [Harness API](docs/HARNESS_API.md)) | Scoped-token SSE with `snapshot`, `token`, or sanitized `error`; terminal `done` |
 | `GET /ws` | WebSocket auth message, then terminal input/resize messages | PTY-backed TUI stream |
 
 Example read-only calls:
@@ -150,6 +153,12 @@ success. For chat, HTTP `200` can still contain an SSE `error` before `done`.
 Write commands are **not idempotent**: never automatically retry `tweet`,
 `reply`, `follow`, `unfollow`, or `unbookmark`. Set `BIRDY_READ_ONLY=1` for a
 public research deployment.
+
+The Chrome harness endpoint is a separate security boundary. It never accepts
+the web invite code, cookies, raw HTML/DOM, client-selected models, commands,
+account names, or arbitrary-origin page URLs. It is disabled unless
+`BIRDY_HARNESS_TOKEN_HASHES` contains per-install SHA-256 token hashes. See the
+[complete request, authentication, rate-limit, and MV3 contract](docs/HARNESS_API.md).
 
 ### Host command
 
@@ -224,6 +233,16 @@ Set these in Railway Variables:
 ```bash
 # Required: invite code users enter in the browser
 BIRDY_HOST_INVITE_CODE=replace-with-long-random-secret
+
+# Optional: enable only the scoped Chrome harness endpoint. Values are
+# SHA-256 hashes of independently generated per-install bearer tokens.
+# BIRDY_HARNESS_TOKEN_HASHES={"install-id":"64-lowercase-hex-characters"}
+# Required with harness tokens: a dedicated read-only, no-follows X account
+# pool. The harness never falls back to BIRDY_ACCOUNTS.
+# BIRDY_HARNESS_ACCOUNTS=[{"name":"harness-public","auth_token":"...","ct0":"...","read_only":true}]
+# BIRDY_HARNESS_MODEL=sonnet
+# Set only when a trusted edge overwrites X-Forwarded-For.
+# BIRDY_HARNESS_TRUST_PROXY=1
 
 # Recommended for public deployments: disable write actions
 BIRDY_READ_ONLY=1

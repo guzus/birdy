@@ -80,6 +80,23 @@ func TestHostReturnsConfiguredWebDirError(t *testing.T) {
 	}
 }
 
+func TestHostFailsStartupForMalformedHarnessConfiguration(t *testing.T) {
+	t.Setenv("BIRDY_HOST_INVITE_CODE", "distinct-invite")
+	t.Setenv(harnessTokenHashesEnv, `{not-json`)
+	t.Setenv(harnessAccountsEnv, harnessTestAccounts)
+
+	prevAddr, prevInvite := hostAddrFlag, hostInviteCodeFlag
+	hostAddrFlag, hostInviteCodeFlag = "127.0.0.1:8787", ""
+	defer func() {
+		hostAddrFlag, hostInviteCodeFlag = prevAddr, prevInvite
+	}()
+
+	err := hostCmd.RunE(hostCmd, nil)
+	if err == nil || !strings.Contains(err.Error(), harnessTokenHashesEnv) {
+		t.Fatalf("expected explicit harness configuration failure, got %v", err)
+	}
+}
+
 func TestNormalizeOrigin(t *testing.T) {
 	if got := normalizeOrigin(" https://Example.COM/ "); got != "https://example.com" {
 		t.Fatalf("expected normalized https origin, got %q", got)

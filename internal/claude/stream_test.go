@@ -27,6 +27,48 @@ func TestBuildArgsAddsOnlyWebSearchWhenPermitted(t *testing.T) {
 	}
 }
 
+func TestBuildNoToolsArgsHasNoBirdyOrGeneralToolCapability(t *testing.T) {
+	args := BuildNoToolsArgs("untrusted context", "sonnet", "read-only system prompt")
+
+	if got := argumentValue(t, args, "--tools"); got != "" {
+		t.Fatalf("expected tools disabled, got %q", got)
+	}
+	if got := argumentValue(t, args, "--max-turns"); got != "1" {
+		t.Fatalf("expected one model turn, got %q", got)
+	}
+	joined := strings.Join(args, " ")
+	for _, forbidden := range []string{"--allowedTools", "Bash(", "Skill(birdy)", "danger-full-access", "tweet <", "whoami"} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("no-tools invocation contains %q: %#v", forbidden, args)
+		}
+	}
+}
+
+func TestNoToolsEnvironmentRemovesXAndHarnessSecrets(t *testing.T) {
+	env := []string{
+		"PATH=/usr/bin",
+		"ANTHROPIC_API_KEY=model-provider-secret",
+		"BIRDY_ACCOUNTS=x-cookie-pool",
+		"BIRDY_HARNESS_ACCOUNTS=harness-x-cookie-pool",
+		"BIRDY_HOST_INVITE_CODE=shared-invite",
+		"BIRDY_HOST_TOKEN=legacy-invite",
+		"BIRDY_HARNESS_TOKEN_HASHES=install-hashes",
+		"AUTH_TOKEN=x-auth",
+		"CT0=x-csrf",
+		"TWITTER_AUTH_TOKEN=legacy-x-auth",
+		"TWITTER_CT0=legacy-x-csrf",
+	}
+	got := strings.Join(withoutSensitiveRuntimeEnv(env), "\n")
+	if !strings.Contains(got, "ANTHROPIC_API_KEY=model-provider-secret") || !strings.Contains(got, "PATH=/usr/bin") {
+		t.Fatalf("required model environment removed: %q", got)
+	}
+	for _, secret := range []string{"BIRDY_ACCOUNTS=", "BIRDY_HARNESS_ACCOUNTS=", "BIRDY_HOST_INVITE_CODE=", "BIRDY_HOST_TOKEN=", "BIRDY_HARNESS_TOKEN_HASHES=", "AUTH_TOKEN=", "CT0=", "TWITTER_AUTH_TOKEN=", "TWITTER_CT0="} {
+		if strings.Contains(got, secret) {
+			t.Fatalf("sensitive runtime environment retained %q in %q", secret, got)
+		}
+	}
+}
+
 func argumentValue(t *testing.T, args []string, name string) string {
 	t.Helper()
 	for i, arg := range args {

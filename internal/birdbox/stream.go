@@ -13,13 +13,13 @@ import (
 )
 
 const (
-	templateEnv        = "BIRDY_E2B_TEMPLATE"
-	apiKeyEnv          = "E2B_API_KEY"
-	runnerPathEnv      = "BIRDY_E2B_RUNNER_PATH"
-	nodePathEnv        = "BIRDY_E2B_NODE_PATH"
-	internalBudgetEnv  = "BIRDY_INTERNAL_BIRD_BOX_BUDGET_MS"
-	internalGraceEnv   = "BIRDY_INTERNAL_BIRD_BOX_CANCEL_GRACE_MS"
-	sandboxBirdyCmd    = "birdy --strategy random"
+	templateEnv       = "BIRDY_E2B_TEMPLATE"
+	apiKeyEnv         = "E2B_API_KEY"
+	runnerPathEnv     = "BIRDY_E2B_RUNNER_PATH"
+	nodePathEnv       = "BIRDY_E2B_NODE_PATH"
+	internalBudgetEnv = "BIRDY_INTERNAL_BIRD_BOX_BUDGET_MS"
+	internalGraceEnv  = "BIRDY_INTERNAL_BIRD_BOX_CANCEL_GRACE_MS"
+	sandboxBirdyCmd   = "birdy --strategy random"
 	// Covers the default 30s E2B create request, 8s sandbox deletion request,
 	// and the runner's 5s scheduling margin before Go hard-kills the helper.
 	runnerCleanupGrace = 45 * time.Second
@@ -70,6 +70,46 @@ func Stream(ctx context.Context, prompt, model string, emit func(claude.Event)) 
 	}
 	// Give the runner's signal handler time to kill the remote sandbox before
 	// Go escalates to terminating the local helper process.
+	cmd.WaitDelay = runnerCleanupGrace
+	claude.StreamCommand(ctx, cmd, emit)
+}
+
+// StreamNoTools runs Claude in a fresh bird-box without exposing birdy, Bash,
+// WebSearch, or the X account pool. It is the model boundary for public inputs
+// whose X context was already fetched and sanitized by the host.
+func StreamNoTools(ctx context.Context, prompt, model, systemPrompt string, emit func(claude.Event)) {
+	if strings.TrimSpace(os.Getenv(apiKeyEnv)) == "" {
+		emit(claude.Event{Type: claude.EventError, Error: fmt.Sprintf("%s is required when %s is set", apiKeyEnv, templateEnv)})
+		emit(claude.Event{Type: claude.EventDone})
+		return
+	}
+
+	runnerPath := strings.TrimSpace(os.Getenv(runnerPathEnv))
+	if runnerPath == "" {
+		runnerPath = "e2b-runner/claude.mjs"
+	}
+	nodePath := strings.TrimSpace(os.Getenv(nodePathEnv))
+	if nodePath == "" {
+		nodePath = "node"
+	}
+
+	args := claude.BuildNoToolsArgs(prompt, model, systemPrompt)
+	cmd := exec.CommandContext(ctx, nodePath, append([]string{runnerPath}, args...)...)
+	runnerEnv, err := environmentForContext(ctx)
+	if err != nil {
+		emit(claude.Event{Type: claude.EventError, Error: err.Error()})
+		emit(claude.Event{Type: claude.EventDone})
+		return
+	}
+	cmd.Env = withoutEnvironment(runnerEnv,
+		"BIRDY_ACCOUNTS", "BIRDY_HARNESS_ACCOUNTS", "AUTH_TOKEN", "CT0", "TWITTER_AUTH_TOKEN", "TWITTER_CT0",
+		"BIRDY_HOST_INVITE_CODE", "BIRDY_HOST_TOKEN", "BIRDY_HARNESS_TOKEN_HASHES")
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		return cmd.Process.Signal(syscall.SIGTERM)
+	}
 	cmd.WaitDelay = runnerCleanupGrace
 	claude.StreamCommand(ctx, cmd, emit)
 }

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -22,10 +23,11 @@ const (
 )
 
 type Event struct {
-	Type    EventType `json:"type"`
-	Text    string    `json:"text,omitempty"`
-	Command string    `json:"command,omitempty"`
-	Error   string    `json:"error,omitempty"`
+	Type      EventType `json:"type"`
+	Text      string    `json:"text,omitempty"`
+	Command   string    `json:"command,omitempty"`
+	Error     string    `json:"error,omitempty"`
+	RequestID string    `json:"request_id,omitempty"`
 }
 
 type cliEvent struct {
@@ -176,6 +178,60 @@ func Stream(ctx context.Context, prompt, model, birdyCmd string, emit func(Event
 	args := BuildArgs(prompt, model, birdyCmd, ToolPermissions{})
 	cmd := exec.CommandContext(ctx, "claude", args...)
 	StreamCommand(ctx, cmd, emit)
+}
+
+// BuildNoToolsArgs builds a Claude invocation with the entire tool surface
+// disabled. It is intentionally separate from BuildArgs: callers handling
+// untrusted public input must not inherit birdy's Bash/Skill permissions or
+// the system prompt that advertises mutating commands.
+func BuildNoToolsArgs(prompt, model, systemPrompt string) []string {
+	return []string{
+		"-p", prompt,
+		"--model", model,
+		"--output-format", "stream-json",
+		"--verbose",
+		"--max-turns", "1",
+		"--tools", "",
+		"--append-system-prompt", systemPrompt,
+	}
+}
+
+// StreamNoTools runs Claude without any tools and removes X/browser-facing
+// credentials from the subprocess environment. Model-provider credentials are
+// retained because they are required to start Claude, but the model cannot
+// invoke a shell or inspect the environment.
+func StreamNoTools(ctx context.Context, prompt, model, systemPrompt string, emit func(Event)) {
+	cmd := exec.CommandContext(ctx, "claude", BuildNoToolsArgs(prompt, model, systemPrompt)...)
+	cmd.Env = withoutSensitiveRuntimeEnv(os.Environ())
+	StreamCommand(ctx, cmd, emit)
+}
+
+func withoutSensitiveRuntimeEnv(env []string) []string {
+	blocked := []string{
+		"AUTH_TOKEN=",
+		"CT0=",
+		"TWITTER_AUTH_TOKEN=",
+		"TWITTER_CT0=",
+		"BIRDY_ACCOUNTS=",
+		"BIRDY_HARNESS_ACCOUNTS=",
+		"BIRDY_HOST_INVITE_CODE=",
+		"BIRDY_HOST_TOKEN=",
+		"BIRDY_HARNESS_TOKEN_HASHES=",
+	}
+	out := make([]string, 0, len(env))
+	for _, entry := range env {
+		sensitive := false
+		for _, prefix := range blocked {
+			if strings.HasPrefix(entry, prefix) {
+				sensitive = true
+				break
+			}
+		}
+		if !sensitive {
+			out = append(out, entry)
+		}
+	}
+	return out
 }
 
 // StreamCommand parses Claude Code stream-json output from cmd. Callers can

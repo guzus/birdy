@@ -88,6 +88,62 @@ func TestStreamRequiresAPIKey(t *testing.T) {
 	}
 }
 
+func TestStreamNoToolsOmitsXCredentialsAndBirdyPermissions(t *testing.T) {
+	dir := t.TempDir()
+	argsPath := filepath.Join(dir, "args.txt")
+	envPath := filepath.Join(dir, "env.txt")
+	runnerPath := filepath.Join(dir, "fake-node.sh")
+	script := "#!/bin/sh\n" +
+		"printf '%s\\n' \"$@\" > \"$ARGS_PATH\"\n" +
+		"env > \"$ENV_PATH\"\n" +
+		"printf '%s\\n' '{\"type\":\"result\",\"result\":\"ok\"}'\n"
+	if err := os.WriteFile(runnerPath, []byte(script), 0755); err != nil {
+		t.Fatalf("write fake runner: %v", err)
+	}
+
+	t.Setenv(templateEnv, "bird-box-test")
+	t.Setenv(apiKeyEnv, "e2b-test-key")
+	t.Setenv(nodePathEnv, runnerPath)
+	t.Setenv(runnerPathEnv, "/unused/claude.mjs")
+	t.Setenv("ARGS_PATH", argsPath)
+	t.Setenv("ENV_PATH", envPath)
+	t.Setenv("BIRDY_ACCOUNTS", "x-cookie-pool")
+	t.Setenv("BIRDY_HARNESS_ACCOUNTS", "harness-x-cookie-pool")
+	t.Setenv("BIRDY_HOST_INVITE_CODE", "shared-invite")
+	t.Setenv("BIRDY_HOST_TOKEN", "legacy-invite")
+	t.Setenv("BIRDY_HARNESS_TOKEN_HASHES", "install-hashes")
+	t.Setenv("AUTH_TOKEN", "x-auth")
+	t.Setenv("CT0", "x-csrf")
+	t.Setenv("TWITTER_AUTH_TOKEN", "legacy-x-auth")
+	t.Setenv("TWITTER_CT0", "legacy-x-csrf")
+
+	StreamNoTools(context.Background(), "untrusted", "sonnet", "system", func(claude.Event) {})
+	argsBytes, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read args: %v", err)
+	}
+	args := string(argsBytes)
+	if !strings.Contains(args, "--tools\n\n") {
+		t.Fatalf("expected empty tool set, args=%q", args)
+	}
+	for _, forbidden := range []string{"--allowedTools", "Bash(", "Skill(birdy)"} {
+		if strings.Contains(args, forbidden) {
+			t.Fatalf("no-tools bird-box args contain %q: %q", forbidden, args)
+		}
+	}
+
+	envBytes, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("read env: %v", err)
+	}
+	env := string(envBytes)
+	for _, secret := range []string{"BIRDY_ACCOUNTS=", "BIRDY_HARNESS_ACCOUNTS=", "BIRDY_HOST_INVITE_CODE=", "BIRDY_HOST_TOKEN=", "BIRDY_HARNESS_TOKEN_HASHES=", "AUTH_TOKEN=", "CT0=", "TWITTER_AUTH_TOKEN=", "TWITTER_CT0="} {
+		if strings.Contains(env, secret) {
+			t.Fatalf("no-tools bird-box retained %q in %q", secret, env)
+		}
+	}
+}
+
 func TestStreamCancellationGivesRunnerSIGTERMGrace(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("signal behavior is Unix-specific")

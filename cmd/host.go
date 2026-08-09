@@ -43,6 +43,9 @@ var hostCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		if _, err := loadHarnessConfig(inviteCode); err != nil {
+			return err
+		}
 
 		allowedOrigins := parseAllowedOrigins(os.Getenv("BIRDY_HOST_ALLOWED_ORIGINS"))
 		webDir, err := resolveHostWebDir()
@@ -111,6 +114,7 @@ func buildHostedMux(inviteCode string, allowedOrigins map[string]struct{}, webDi
 	mux.Handle("/api/command", withHostedSecurityHeaders(handleAPICommand(inviteCode)))
 	mux.Handle("/api/multi-command", withHostedSecurityHeaders(handleAPIMultiCommand(inviteCode)))
 	mux.Handle("/api/chat", withHostedSecurityHeaders(handleAPIChat(inviteCode)))
+	mux.Handle("/api/harness/chat", withHostedSecurityHeaders(newHarnessChatHandlerFromEnv(inviteCode)))
 	mux.Handle("/", makeHostedWebHandler(webDir))
 	return mux
 }
