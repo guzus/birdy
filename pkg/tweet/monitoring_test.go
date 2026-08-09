@@ -31,6 +31,92 @@ func monitoringClient(t *testing.T, serverURL string) *Client {
 	return c
 }
 
+func TestReadPostPreservesReplyQuoteAndRepostRelations(t *testing.T) {
+	t.Setenv("BIRDY_QUOTE_DEPTH", "0")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "TweetDetail") {
+			t.Errorf("operation path = %q, want TweetDetail", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"data":{"threaded_conversation_with_injections_v2":{"instructions":[{"entries":[
+			{"content":{"itemContent":{"tweet_results":{"result":{
+				"rest_id":"20000",
+				"core":{"user_results":{"result":{"rest_id":"9001","legacy":{"screen_name":"outer","name":"Outer"}}}},
+				"quoted_status_result":{"result":{"rest_id":"30000","core":{"user_results":{"result":{"rest_id":"9003","legacy":{"screen_name":"quoted","name":"Quoted"}}}},"legacy":{"full_text":"quoted"}}},
+				"legacy":{"full_text":"RT @source: quoted reply","conversation_id_str":"10000","in_reply_to_status_id_str":"10000",
+					"retweeted_status_result":{"result":{"rest_id":"40000","core":{"user_results":{"result":{"rest_id":"9004","legacy":{"screen_name":"source","name":"Source"}}}},"legacy":{"full_text":"original"}}}
+				}
+			}}}}}
+		]}]}}}`))
+	}))
+	defer server.Close()
+
+	client, err := NewMonitoringClient(MonitoringOptions{AccountsJSON: testAccounts, AccountPool: []string{"main"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, _ := client.store.Get("main")
+	api, err := client.apiClientFor(account)
+	if err != nil {
+		t.Fatal(err)
+	}
+	api.SetBaseURL(server.URL)
+
+	got, err := client.ReadPost(t.Context(), "https://x.com/outer/status/20000")
+	if err != nil {
+		t.Fatalf("ReadPost: %v", err)
+	}
+	if got.ID != "20000" || got.InReplyToStatusID != "10000" {
+		t.Fatalf("reply relation lost: %+v", got)
+	}
+	if got.QuotedTweet == nil || got.QuotedTweet.ID != "30000" {
+		t.Fatalf("quote relation lost: %+v", got.QuotedTweet)
+	}
+	if got.RepostedTweet == nil || got.RepostedTweet.ID != "40000" {
+		t.Fatalf("repost relation lost: %+v", got.RepostedTweet)
+	}
+	if got.RepostedTweet == (*Tweet)(nil) || got.QuotedTweet == got.RepostedTweet {
+		t.Fatal("relation pointers were not independently converted")
+	}
+}
+
+func TestReadPostStrictRelationsDoNotChangeLegacyRead(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"data":{"threaded_conversation_with_injections_v2":{"instructions":[{"entries":[
+			{"content":{"itemContent":{"tweet_results":{"result":{
+				"rest_id":"20000","core":{"user_results":{"result":{"legacy":{"screen_name":"outer","name":"Outer"}}}},
+				"legacy":{"full_text":"outer"},"quoted_status_result":{}
+			}}}}}
+		]}]}}}`))
+	}))
+	defer server.Close()
+
+	client := monitoringClient(t, server.URL)
+	if _, err := client.ReadPost(t.Context(), "20000"); err == nil || !strings.Contains(err.Error(), "malformed quoted_status_result") {
+		t.Fatalf("ReadPost accepted malformed relation: %v", err)
+	}
+	legacy, err := client.Read(t.Context(), "20000")
+	if err != nil || legacy.ID != "20000" || legacy.QuotedTweet != nil {
+		t.Fatalf("legacy Read behavior changed: tweet=%+v err=%v", legacy, err)
+	}
+}
+
+func TestReadPostPublicMethodContract(t *testing.T) {
+	var _ interface {
+		ReadPost(context.Context, string) (*TimelineTweet, error)
+	} = (*Client)(nil)
+
+	c, err := NewMonitoringClient(MonitoringOptions{AccountsJSON: testAccounts, AccountPool: []string{"alt"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Accounts(); len(got) != 1 || got[0] != "alt" {
+		t.Fatalf("ReadPost dependency client escaped AccountPool: %v", got)
+	}
+	if _, err := c.ReadPost(t.Context(), "not-a-tweet"); err == nil {
+		t.Fatal("ReadPost accepted an invalid reference before account selection")
+	}
+}
+
 func TestFollowingReportsCompletenessAndResumeCursor(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var variables map[string]any

@@ -177,8 +177,15 @@ func TestIntegrationMonitoringCanaries(t *testing.T) {
 			if err != nil {
 				t.Fatalf("UserProfile: %v", err)
 			}
-			if _, err := client.UserTimeline(ctx, target, UserTimelineOptions{Limit: 5, MaxPages: 1}); err != nil {
+			timeline, err := client.UserTimeline(ctx, target, UserTimelineOptions{Limit: 5, MaxPages: 1})
+			if err != nil {
 				t.Fatalf("UserTimeline: %v", err)
+			}
+			if len(timeline.Tweets) == 0 {
+				t.Fatal("UserTimeline returned no post for ReadPost canary")
+			}
+			if _, err := client.ReadPost(ctx, timeline.Tweets[0].ID); err != nil {
+				t.Fatalf("ReadPost: %v", err)
 			}
 			if _, err := client.UserReplies(ctx, target, UserTimelineOptions{Limit: 5, MaxPages: 1}); err != nil {
 				t.Fatalf("UserReplies: %v", err)

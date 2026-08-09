@@ -37,6 +37,29 @@ type TimelineTweet struct {
 	RepostedTweet *Tweet `json:"repostedTweet,omitempty"`
 }
 
+// ReadPost fetches one tweet with the monitoring relation shape. Unlike Read,
+// it preserves the structured repost target in addition to Tweet's reply and
+// quote fields. Account selection still obeys the Client's configured
+// MonitoringOptions pool and rotation strategy.
+func (c *Client) ReadPost(ctx context.Context, ref string) (*TimelineTweet, error) {
+	tweetID, err := ExtractTweetID(ref)
+	if err != nil {
+		return nil, err
+	}
+
+	var result *TimelineTweet
+	err = c.withAccount(ctx, func(ctx context.Context, api *xapi.Client) error {
+		post, err := api.MonitoringTweet(ctx, tweetID)
+		if err != nil {
+			return err
+		}
+		converted := convertTimelineTweets([]xapi.Tweet{*post})[0]
+		result = &converted
+		return nil
+	})
+	return result, err
+}
+
 // UserTimeline returns X's Posts profile timeline. It does not promise replies;
 // poll UserReplies separately when replies are part of the monitored activity.
 // The terminal response page is never truncated, so Tweets may exceed Limit

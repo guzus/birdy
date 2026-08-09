@@ -1,6 +1,7 @@
 package xapi
 
 import (
+	"encoding/json"
 	"testing"
 )
 
@@ -341,6 +342,47 @@ func TestTweetDetailModuleCursorExceptionIsParserScoped(t *testing.T) {
 	}
 	if _, err := parseStrictTimelineInstructions([]byte(`[` + instruction + `]`)); err == nil {
 		t.Fatal("strict monitoring parser accepted the TweetDetail-only module cursor")
+	}
+}
+
+func TestMonitoringRelationIDsFailClosedWithoutChangingLegacyMapper(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{"non-decimal reply", `{"rest_id":"20000","core":{"user_results":{"result":{"legacy":{"screen_name":"outer","name":"Outer"}}}},"legacy":{"full_text":"outer","in_reply_to_status_id_str":"abc"}}`},
+		{"leading-zero quote", `{"rest_id":"20000","core":{"user_results":{"result":{"legacy":{"screen_name":"outer","name":"Outer"}}}},"legacy":{"full_text":"outer"},"quoted_status_result":{"result":{"rest_id":"01234","core":{"user_results":{"result":{"legacy":{"screen_name":"quoted","name":"Quoted"}}}},"legacy":{"full_text":"quoted"}}}}`},
+		{"self repost", `{"rest_id":"20000","core":{"user_results":{"result":{"legacy":{"screen_name":"outer","name":"Outer"}}}},"legacy":{"full_text":"outer","retweeted_status_result":{"result":{"rest_id":"20000","core":{"user_results":{"result":{"legacy":{"screen_name":"source","name":"Source"}}}},"legacy":{"full_text":"original"}}}}}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var raw tweetResult
+			if err := json.Unmarshal([]byte(tt.raw), &raw); err != nil {
+				t.Fatal(err)
+			}
+			mapped, err := mapMonitoringTweet(&raw)
+			if err != nil {
+				t.Fatalf("map monitoring relation shape: %v", err)
+			}
+			if err := validateMonitoringTweetIDs(&mapped); err == nil {
+				t.Fatal("strict monitoring mapper accepted malformed relation ID")
+			}
+			if _, ok := mapTweet(&raw); !ok {
+				t.Fatal("legacy mapper behavior changed")
+			}
+		})
+	}
+}
+
+func TestMonitoringTweetIgnoresMalformedUnrelatedConversationPost(t *testing.T) {
+	body := []byte(`{"data":{"threaded_conversation_with_injections_v2":{"instructions":[{"entries":[
+		{"content":{"itemContent":{"tweet_results":{"result":{"rest_id":"10000","core":{"user_results":{"result":{"legacy":{"screen_name":"bad","name":"Bad"}}}},"legacy":{"full_text":"unrelated"},"quoted_status_result":{}}}}}},
+		{"content":{"itemContent":{"tweet_results":{"result":{"rest_id":"20000","core":{"user_results":{"result":{"legacy":{"screen_name":"target","name":"Target"}}}},"legacy":{"full_text":"target"}}}}}}
+	]}]}}}`)
+
+	got, err := parseMonitoringConversationTweet(body, "20000")
+	if err != nil || got.ID != "20000" {
+		t.Fatalf("valid target was poisoned by unrelated malformed relation: tweet=%+v err=%v", got, err)
 	}
 }
 

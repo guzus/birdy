@@ -42,6 +42,10 @@ exceed `Limit`, and `NextCursor` then resumes after every returned entry instead
 of skipping an over-delivered suffix. `UserTimeline` is the Posts stream;
 `UserReplies` is a separate Latest Search stream with an independent cursor.
 Missing collection roots fail closed and are not interpreted as empty data.
+`ReadPost` applies the same strict monitoring relation mapper to one TweetDetail
+read: reply, quote, and repost relations are preserved, while a present but
+malformed relation returns an error. Legacy `Read` retains its existing shape
+and permissive relation behavior.
 
 `pkg/tweet`'s structs are declared in `pkg/tweet/types.go` as their own types
 rather than aliases into `internal/xapi`, precisely so that a parser change

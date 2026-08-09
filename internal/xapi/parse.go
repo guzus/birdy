@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -356,6 +357,8 @@ func mapTweetWithoutRepost(raw *tweetResult) (Tweet, bool) {
 
 const monitoringRelationDepth = 8
 
+var monitoringTweetIDPattern = regexp.MustCompile(`^[1-9][0-9]{4,24}$`)
+
 // mapMonitoringTweet preserves relation presence independently of the legacy
 // BIRDY_QUOTE_DEPTH display preference. Present-but-malformed relations fail;
 // they never degrade into an ordinary post.
@@ -396,6 +399,31 @@ func mapMonitoringTweetDepth(raw *tweetResult, depth int) (Tweet, error) {
 		post.RepostedTweet = &reposted
 	}
 	return post, nil
+}
+
+func validateMonitoringTweetIDs(post *Tweet) error {
+	if !monitoringTweetIDPattern.MatchString(post.ID) {
+		return &APIError{Message: fmt.Sprintf("monitoring tweet has malformed id %q", post.ID)}
+	}
+	if post.InReplyToStatusID != "" && (!monitoringTweetIDPattern.MatchString(post.InReplyToStatusID) || post.InReplyToStatusID == post.ID) {
+		return &APIError{Message: fmt.Sprintf("tweet %q has malformed reply relation", post.ID)}
+	}
+	for _, relation := range []struct {
+		name    string
+		related *Tweet
+	}{{name: "quote", related: post.QuotedTweet}, {name: "repost", related: post.RepostedTweet}} {
+		name, related := relation.name, relation.related
+		if related == nil {
+			continue
+		}
+		if related.ID == post.ID {
+			return &APIError{Message: fmt.Sprintf("tweet %q has self-referencing %s relation", post.ID, name)}
+		}
+		if err := validateMonitoringTweetIDs(related); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // mapQuoted resolves the quoted tweet, descending at most depth levels.
@@ -914,6 +942,59 @@ func parseConversation(body []byte) ([]Tweet, error) {
 		return nil, &APIError{Message: "TweetDetail response contained no usable tweets"}
 	}
 	return tweets, nil
+}
+
+func parseMonitoringConversationTweet(body []byte, tweetID string) (*Tweet, error) {
+	var resp graphQLResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, &APIError{Message: "decoding response: " + err.Error()}
+	}
+
+	var instructions []instruction
+	if resp.Data.Conversation != nil {
+		instructions = resp.Data.Conversation.Instructions
+	}
+	if len(instructions) == 0 && len(resp.Errors) > 0 {
+		messages := make([]string, 0, len(resp.Errors))
+		for _, e := range resp.Errors {
+			messages = append(messages, e.Message)
+		}
+		return nil, &APIError{Message: strings.Join(messages, ", ")}
+	}
+
+	var found *Tweet
+	for _, ins := range instructions {
+		for _, entry := range ins.Entries {
+			nodes, err := collectFromEntry(entry, true)
+			if err != nil {
+				return nil, err
+			}
+			for _, node := range nodes {
+				if isKnownNonTweetResult(node) {
+					continue
+				}
+				raw := node.unwrap()
+				if raw == nil || raw.RestID != tweetID {
+					continue
+				}
+				post, err := mapMonitoringTweet(node)
+				if err != nil {
+					return nil, err
+				}
+				if err := validateMonitoringTweetIDs(&post); err != nil {
+					return nil, err
+				}
+				if post.ID == tweetID && found == nil {
+					copy := post
+					found = &copy
+				}
+			}
+		}
+	}
+	if found == nil {
+		return nil, &APIError{Message: fmt.Sprintf("tweet %s not found in the conversation response", tweetID)}
+	}
+	return found, nil
 }
 
 // --- Type helpers ------------------------------------------------------------

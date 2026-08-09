@@ -199,6 +199,26 @@ func (c *Client) Tweet(ctx context.Context, tweetID string) (*Tweet, error) {
 	return nil, &APIError{Message: fmt.Sprintf("tweet %s not found in the conversation response", tweetID)}
 }
 
+// MonitoringTweet fetches a single TweetDetail post through the strict
+// monitoring mapper. Unlike Tweet, malformed quote or repost relations fail
+// closed instead of degrading to an ordinary post.
+func (c *Client) MonitoringTweet(ctx context.Context, tweetID string) (*Tweet, error) {
+	tweetID = strings.TrimSpace(tweetID)
+	if tweetID == "" {
+		return nil, fmt.Errorf("x api: empty tweet id")
+	}
+	body, err := c.graphQL(ctx, "TweetDetail", tweetDetailVariables(tweetID), tweetDetailFeatures, tweetDetailFieldToggles)
+	if err != nil {
+		return nil, err
+	}
+	found, err := parseMonitoringConversationTweet(body, tweetID)
+	if err != nil {
+		return nil, err
+	}
+	c.recoverArticleBody(ctx, found)
+	return found, nil
+}
+
 // recoverArticleBody fills in an X Article whose TweetDetail response carried a
 // title and nothing else.
 //
