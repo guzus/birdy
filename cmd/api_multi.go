@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/guzus/birdy/internal/birdtool"
 	"github.com/guzus/birdy/internal/rotation"
 	"github.com/guzus/birdy/internal/runner"
 	"github.com/guzus/birdy/internal/state"
@@ -215,7 +216,7 @@ func handleAPIMultiCommand(inviteCode string) http.HandlerFunc {
 				tasks[i] = t
 				continue
 			}
-			if _, ok := apiAllowedBirdCommands[first]; !ok {
+			if !birdtool.APIAllowed(first) {
 				t.Err = "unsupported command"
 				tasks[i] = t
 				continue

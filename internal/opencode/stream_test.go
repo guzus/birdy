@@ -56,6 +56,84 @@ func TestBuildConfigPinsRouteAndDeniesEveryTool(t *testing.T) {
 	}
 }
 
+func TestBirdyToolsConfigAllowsOnlyGeneratedBashOverride(t *testing.T) {
+	raw, err := buildProfileConfig("restricted system", birdyToolsProfile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		t.Fatal(err)
+	}
+	permission := got["permission"].(map[string]any)
+	if permission["*"] != "deny" || permission["bash"] != "allow" || len(permission) != 2 {
+		t.Fatalf("general permission boundary is not exact: %s", raw)
+	}
+	agent := got["agent"].(map[string]any)["birdy-web"].(map[string]any)
+	if agent["steps"] != float64(maxGeneralSteps) || agent["permission"].(map[string]any)["bash"] != "allow" {
+		t.Fatalf("general agent boundary is not exact: %s", raw)
+	}
+	tool, err := buildBirdyTool("/app/birdy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{`Bun.spawn([birdyExecutable, "--strategy", "random", ...parsed.slice(1)]`, `argv[0] !== birdyExecutable`, `allowedCommands.has(argv[1])`, `child.kill()`, `60000`} {
+		if !strings.Contains(tool, required) {
+			t.Fatalf("generated tool missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"shell: true", "OPENCODE_API_KEY", "whoami", "account list"} {
+		if strings.Contains(tool, forbidden) {
+			t.Fatalf("generated tool contains forbidden capability %q", forbidden)
+		}
+	}
+}
+
+func TestGeneratedBirdyToolUsesArgvAndScrubsProviderKey(t *testing.T) {
+	bun, err := exec.LookPath("bun")
+	if err != nil {
+		t.Skip("bun is not installed")
+	}
+	dir := t.TempDir()
+	capture := filepath.Join(dir, "capture")
+	fakeBirdy := filepath.Join(dir, "birdy fake")
+	script := fmt.Sprintf("#!/bin/sh\n[ -z \"${OPENCODE_API_KEY:-}\" ] || exit 91\nprintf '%%s\\n' \"$@\" > %q\nprintf 'safe output'\n", capture)
+	if err := os.WriteFile(fakeBirdy, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	toolSource, err := buildBirdyTool(fakeBirdy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolPath := filepath.Join(dir, "bash.ts")
+	if err := os.WriteFile(toolPath, []byte(toolSource), 0600); err != nil {
+		t.Fatal(err)
+	}
+	runner := filepath.Join(dir, "run.ts")
+	runnerSource := fmt.Sprintf("import tool from %q\nconst output = await tool.execute({command: %q})\nif (output !== 'safe output') process.exit(92)\n", toolPath, `"`+fakeBirdy+`" search "AI agents"`)
+	if err := os.WriteFile(runner, []byte(runnerSource), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(bun, runner)
+	cmd.Env = append(os.Environ(), "OPENCODE_API_KEY=must-not-reach-birdy", `BIRDY_ACCOUNTS=[{"name":"safe"}]`)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("generated tool failed: %v output=%q", err, output)
+	}
+	args := mustRead(t, capture)
+	if args != "--strategy\nrandom\nsearch\nAI agents\n" {
+		t.Fatalf("Birdy argv was not exact: %q", args)
+	}
+
+	badRunner := filepath.Join(dir, "bad.ts")
+	badSource := fmt.Sprintf("import tool from %q\nawait tool.execute({command: %q})\n", toolPath, `"`+fakeBirdy+`" home; /bin/echo pwned`)
+	if err := os.WriteFile(badRunner, []byte(badSource), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := exec.Command(bun, badRunner).Run(); err == nil {
+		t.Fatal("generated tool accepted shell syntax")
+	}
+}
+
 func TestInstalledOpenCodeAcceptsEffectiveConfig(t *testing.T) {
 	executable, err := exec.LookPath("opencode")
 	if err != nil {
@@ -116,6 +194,24 @@ func TestStreamCommandRejectsToolUse(t *testing.T) {
 	events := runHelper(t, "tool")
 	if !hasType(events, claude.EventToolUse) || events[len(events)-1].Type != claude.EventDone {
 		t.Fatalf("tool use was not surfaced to the harness blocker: %#v", events)
+	}
+}
+
+func TestStreamCommandAllowsRestrictedToolAcrossMultipleSteps(t *testing.T) {
+	events := runHelperWithProfile(t, "general-success", birdyToolsProfile)
+	if len(events) != 3 || events[0] != (claude.Event{Type: claude.EventToolUse, Command: "/app/birdy search \"AI agents\""}) || events[1] != (claude.Event{Type: claude.EventSnapshot, Text: "answer"}) || events[2].Type != claude.EventDone {
+		t.Fatalf("unexpected general tool events: %#v", events)
+	}
+}
+
+func TestStreamCommandRejectsUnprovenGeneralToolEvents(t *testing.T) {
+	for _, mode := range []string{"general-wrong-tool", "general-pending-tool", "general-unknown-input", "general-duplicate-call", "general-mixed-message"} {
+		t.Run(mode, func(t *testing.T) {
+			events := runHelperWithProfile(t, mode, birdyToolsProfile)
+			if !hasType(events, claude.EventError) || events[len(events)-1].Type != claude.EventDone {
+				t.Fatalf("invalid general tool event did not fail closed: %#v", events)
+			}
+		})
 	}
 }
 
@@ -220,11 +316,36 @@ func TestLiveOpenCodeGoCanary(t *testing.T) {
 	}
 }
 
+func TestLiveOpenCodeGoBirdyToolCanary(t *testing.T) {
+	if os.Getenv("BIRDY_LIVE_OPENCODE_TOOL_CANARY") != "1" {
+		t.Skip("set BIRDY_LIVE_OPENCODE_TOOL_CANARY=1 with OPENCODE_API_KEY and BIRDY_LIVE_BIRDY_PATH to run")
+	}
+	birdyPath := strings.TrimSpace(os.Getenv("BIRDY_LIVE_BIRDY_PATH"))
+	if birdyPath == "" {
+		t.Fatal("BIRDY_LIVE_BIRDY_PATH is required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	counts := make(map[claude.EventType]int)
+	prompt := fmt.Sprintf("Use the bash tool exactly once to run %q read 2086268347319243025. After it succeeds, answer with exactly OK.", birdyPath)
+	StreamWithBirdy(ctx, prompt, claude.BuildSystemPrompt(birdyPath), birdyPath, func(event claude.Event) {
+		counts[event.Type]++
+	})
+	t.Logf("event_counts token=%d snapshot=%d error=%d tool_use=%d done=%d", counts[claude.EventToken], counts[claude.EventSnapshot], counts[claude.EventError], counts[claude.EventToolUse], counts[claude.EventDone])
+	if ctx.Err() != nil || counts[claude.EventSnapshot] == 0 || counts[claude.EventError] != 0 || counts[claude.EventToolUse] != 1 || counts[claude.EventDone] != 1 {
+		t.Fatalf("live Birdy tool canary failed; aggregate event contract only")
+	}
+}
+
 func runHelper(t *testing.T, mode string) []claude.Event {
+	return runHelperWithProfile(t, mode, noToolsProfile)
+}
+
+func runHelperWithProfile(t *testing.T, mode string, profile runtimeProfile) []claude.Event {
 	t.Helper()
 	cmd := helperCommand(context.Background(), mode)
 	var events []claude.Event
-	streamCommand(context.Background(), cmd, func(event claude.Event) { events = append(events, event) })
+	streamCommandWithProfile(context.Background(), cmd, profile, func(event claude.Event) { events = append(events, event) })
 	return events
 }
 
@@ -300,6 +421,29 @@ func TestOpenCodeHelperProcess(t *testing.T) {
 	case "tool":
 		fmt.Fprintln(os.Stdout, eventJSON("step_start", 1, "ses_fixture", "step-start", ""))
 		fmt.Fprintln(os.Stdout, `{"type":"tool_use","timestamp":2,"sessionID":"ses_fixture","part":{"id":"prt_2","sessionID":"ses_fixture","messageID":"msg_assistant","type":"tool","tool":"bash"}}`)
+	case "general-success":
+		fmt.Fprintln(os.Stdout, eventJSONWithMessage("step_start", 1, "ses_fixture", "msg_one", "step-start", ""))
+		fmt.Fprintln(os.Stdout, toolEventJSON(2, "msg_one", "bash", "call_one", "completed", map[string]any{"command": `/app/birdy search "AI agents"`}))
+		fmt.Fprintln(os.Stdout, eventJSONWithMessage("step_finish", 3, "ses_fixture", "msg_one", "step-finish", ""))
+		fmt.Fprintln(os.Stdout, eventJSONWithMessage("step_start", 4, "ses_fixture", "msg_two", "step-start", ""))
+		fmt.Fprintln(os.Stdout, eventJSONWithMessage("text", 5, "ses_fixture", "msg_two", "text", "answer"))
+		fmt.Fprintln(os.Stdout, eventJSONWithMessage("step_finish", 6, "ses_fixture", "msg_two", "step-finish", ""))
+	case "general-wrong-tool":
+		fmt.Fprintln(os.Stdout, eventJSONWithMessage("step_start", 1, "ses_fixture", "msg_one", "step-start", ""))
+		fmt.Fprintln(os.Stdout, toolEventJSON(2, "msg_one", "bash_real", "call_one", "completed", map[string]any{"command": "/app/birdy home"}))
+	case "general-pending-tool":
+		fmt.Fprintln(os.Stdout, eventJSONWithMessage("step_start", 1, "ses_fixture", "msg_one", "step-start", ""))
+		fmt.Fprintln(os.Stdout, toolEventJSON(2, "msg_one", "bash", "call_one", "pending", map[string]any{"command": "/app/birdy home"}))
+	case "general-unknown-input":
+		fmt.Fprintln(os.Stdout, eventJSONWithMessage("step_start", 1, "ses_fixture", "msg_one", "step-start", ""))
+		fmt.Fprintln(os.Stdout, toolEventJSON(2, "msg_one", "bash", "call_one", "completed", map[string]any{"command": "/app/birdy home", "secret": true}))
+	case "general-duplicate-call":
+		fmt.Fprintln(os.Stdout, eventJSONWithMessage("step_start", 1, "ses_fixture", "msg_one", "step-start", ""))
+		fmt.Fprintln(os.Stdout, toolEventJSON(2, "msg_one", "bash", "call_one", "completed", map[string]any{"command": "/app/birdy home"}))
+		fmt.Fprintln(os.Stdout, toolEventJSON(3, "msg_one", "bash", "call_one", "completed", map[string]any{"command": "/app/birdy news"}))
+	case "general-mixed-message":
+		fmt.Fprintln(os.Stdout, eventJSONWithMessage("step_start", 1, "ses_fixture", "msg_one", "step-start", ""))
+		fmt.Fprintln(os.Stdout, toolEventJSON(2, "msg_other", "bash", "call_one", "completed", map[string]any{"command": "/app/birdy home"}))
 	case "partial-failure":
 		fmt.Fprintln(os.Stdout, eventJSON("step_start", 1, "ses_fixture", "step-start", ""))
 		fmt.Fprintln(os.Stdout, eventJSON("text", 2, "ses_fixture", "text", "partial"))
@@ -314,9 +458,13 @@ func TestOpenCodeHelperProcess(t *testing.T) {
 }
 
 func eventJSON(eventType string, timestamp int64, sessionID, partType, text string) string {
+	return eventJSONWithMessage(eventType, timestamp, sessionID, "msg_assistant", partType, text)
+}
+
+func eventJSONWithMessage(eventType string, timestamp int64, sessionID, messageID, partType, text string) string {
 	part := map[string]any{
 		"id": fmt.Sprintf("prt_%d", timestamp), "sessionID": sessionID,
-		"messageID": "msg_assistant", "type": partType,
+		"messageID": messageID, "type": partType,
 	}
 	if text != "" {
 		part["text"] = text
@@ -327,6 +475,19 @@ func eventJSON(eventType string, timestamp int64, sessionID, partType, text stri
 	value := map[string]any{
 		"type": eventType, "timestamp": timestamp, "sessionID": sessionID,
 		"part": part,
+	}
+	raw, _ := json.Marshal(value)
+	return string(raw)
+}
+
+func toolEventJSON(timestamp int64, messageID, tool, callID, status string, input map[string]any) string {
+	value := map[string]any{
+		"type": "tool_use", "timestamp": timestamp, "sessionID": "ses_fixture",
+		"part": map[string]any{
+			"id": fmt.Sprintf("prt_%d", timestamp), "sessionID": "ses_fixture", "messageID": messageID,
+			"type": "tool", "tool": tool, "callID": callID,
+			"state": map[string]any{"status": status, "input": input},
+		},
 	}
 	raw, _ := json.Marshal(value)
 	return string(raw)

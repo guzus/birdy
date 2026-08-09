@@ -29,17 +29,15 @@ jobs:
           cache: npm
           cache-dependency-path: e2b-runner/package-lock.json
 
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.2.23
+
       - name: Install Bird Box runner dependencies
         run: npm ci --prefix e2b-runner --omit=dev --ignore-scripts
 
       - name: Build
         run: go build ./...
 
-      - name: Vet
-        run: go vet ./...
-
-      - name: Test
-        run: go test ./... -count=1
-
-      - name: Test Bird Box runner
-        run: npm test --prefix e2b-runner
+      - name: Verify Go, Bird Box, and Birdy Web
+        run: make verify

@@ -1,6 +1,19 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { parseMarkdownBlocks } from './markdown';
+import {
+  createChatRequest,
+  createQueuedChat,
+  defaultChatModelId,
+  effectiveConversationModelId,
+  fallbackChatModels,
+  modelDisplayName,
+  modelsWithSavedSelection,
+  newConversationModelId,
+  normalizeStoredModelId,
+  parseChatModelCatalog,
+} from './chatModels';
+import type { ChatModel } from './chatModels';
 
 const inviteCodeKey = 'birdy_host_invite_code';
 const conversationsKey = 'birdy_conversations';
@@ -19,7 +32,7 @@ type AlphaCard = {
 
 type FeedItem =
   | { kind: 'card'; card: AlphaCard }
-  | { kind: 'chat'; id: string; role: 'user' | 'assistant'; text: string; loading: boolean };
+  | { kind: 'chat'; id: string; role: 'user' | 'assistant'; text: string; loading: boolean; modelLabel?: string };
 
 type Conversation = {
   id: string;
@@ -28,6 +41,7 @@ type Conversation = {
   cards: AlphaCard[];
   createdAt: number;
   updatedAt: number;
+  modelId: string;
 };
 
 type RunningKind = 'chat' | 'scan';
@@ -42,6 +56,7 @@ function loadConversations(): Conversation[] {
     if (raw) {
       return (JSON.parse(raw) as Conversation[]).map(c => ({
         ...c,
+        modelId: normalizeStoredModelId(c.modelId),
         cards: c.cards.map(card => ({ ...card, timestamp: new Date(card.timestamp) })),
         chatItems: c.chatItems.map(item => item.loading ? { ...item, loading: false } : item),
       }));
@@ -62,7 +77,7 @@ function loadConversations(): Conversation[] {
         const firstMsg = chatItems.find(i => i.role === 'user');
         return [{
           id: makeConvId(), title: firstMsg?.text.slice(0, 50) ?? 'Imported chat',
-          chatItems, cards, createdAt: Date.now(), updatedAt: Date.now(),
+		  chatItems, cards, modelId: defaultChatModelId, createdAt: Date.now(), updatedAt: Date.now(),
         }];
       }
     }
@@ -426,14 +441,15 @@ function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
   let part = 0;
 
   while (rest) {
-    const patterns: Array<{
+    const candidates: Array<{
       kind: 'code' | 'link' | 'strong';
       match: RegExpExecArray | null;
     }> = [
       { kind: 'code', match: /`([^`\n]+)`/.exec(rest) },
       { kind: 'link', match: /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/.exec(rest) },
       { kind: 'strong', match: /\*\*([^*][\s\S]*?)\*\*/.exec(rest) },
-    ].filter((entry) => entry.match);
+    ];
+    const patterns = candidates.filter((entry) => entry.match !== null);
 
     if (patterns.length === 0) {
       nodes.push(rest);
@@ -646,9 +662,11 @@ function InvitePanel({
 function AlphaCardView({
   card,
   onDeepDive,
+  toolsAvailable,
 }: {
   card: AlphaCard;
   onDeepDive: (card: AlphaCard) => void;
+  toolsAvailable: boolean;
 }) {
   const meta = categoryMeta[card.category];
   return (
@@ -676,8 +694,10 @@ function AlphaCardView({
         </div>
       )}
       <button
-        className="self-start text-text-dim text-xs font-medium underline underline-offset-2 cursor-pointer font-[inherit] bg-transparent border-none p-0 hover:text-text transition-colors"
+        className="self-start text-text-dim text-xs font-medium underline underline-offset-2 cursor-pointer font-[inherit] bg-transparent border-none p-0 hover:text-text transition-colors disabled:cursor-not-allowed disabled:opacity-40"
+        disabled={!toolsAvailable}
         onClick={() => onDeepDive(card)}
+        title={toolsAvailable ? 'Research this topic' : 'Choose an available model with Birdy tools'}
       >
         Deep dive
       </button>
@@ -717,23 +737,55 @@ function ScanIndicator({ tools, onCancel }: { tools: string[]; onCancel: () => v
   );
 }
 
-function Composer({
+export function Composer({
   prompt,
   busy,
+	models,
+	modelId,
+	modelStatus,
   onChange,
+	onModelChange,
   onSend,
   onStop,
 }: {
   prompt: string;
   busy: boolean;
+	models: ChatModel[];
+	modelId: string;
+	modelStatus: string;
   onChange: (v: string) => void;
+	onModelChange: (v: string) => void;
   onSend: () => void;
   onStop?: () => void;
 }) {
   const isMobile = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches;
+  const selected = models.find(model => model.id === modelId);
+  const canSend = Boolean(prompt.trim() && selected?.available && selected.supportsBirdyTools);
 
   return (
-    <footer className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 items-end border-t border-border pt-2 sm:pt-3 px-1">
+	<footer className="border-t border-border pt-2 sm:pt-3 px-1">
+	  <div className="mb-2 flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1.5">
+		<label className="flex min-w-0 max-w-full items-center gap-2 text-[11px] text-text-dim">
+		  <span className="shrink-0 font-medium uppercase tracking-wide">Model</span>
+		  <select
+			aria-label="Chat model"
+			value={modelId}
+			disabled={busy}
+			onChange={(event) => onModelChange(event.target.value)}
+			className="min-w-0 max-w-[250px] rounded-md border border-border bg-bg px-2 py-1.5 text-xs text-text outline-none focus:border-text disabled:cursor-not-allowed disabled:opacity-50 sm:max-w-[360px]"
+		  >
+			{models.map(model => (
+			  <option key={model.id} value={model.id} disabled={!model.available || !model.supportsBirdyTools}>
+				{modelDisplayName(model)}{model.available && model.supportsBirdyTools ? '' : ' — unavailable'}
+			  </option>
+			))}
+		  </select>
+		</label>
+		<span className={`text-[10px] ${selected?.available && selected.supportsBirdyTools ? 'text-text-dim' : 'text-danger'}`} aria-live="polite">
+		  {modelStatus || (selected?.available && selected.supportsBirdyTools ? 'Birdy tools enabled' : selected?.unavailableReason || 'Choose an available model')}
+		</span>
+	  </div>
+	  <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 items-end">
       <textarea
         value={prompt}
         placeholder={busy ? 'Type to queue next message\u2026' : 'Ask anything...'}
@@ -759,23 +811,26 @@ function Composer({
         )}
         <button
           type="button"
-          disabled={!prompt.trim()}
+		  disabled={!canSend}
           className="w-10 h-10 rounded-lg border border-border bg-text text-bg text-lg font-bold cursor-pointer flex items-center justify-center transition-opacity duration-150 disabled:opacity-20 disabled:cursor-not-allowed"
           onClick={onSend}
         >
           &rarr;
         </button>
       </div>
+	  </div>
     </footer>
   );
 }
 
 function ChatBubble({ item }: { item: FeedItem & { kind: 'chat' } }) {
-  const text = item.loading && !item.text ? 'Thinking...' : item.text || 'No response.';
+	const text = item.loading && !item.text
+	  ? `${item.modelLabel || 'Birdy'} is thinking...`
+	  : item.text || 'No response.';
   return (
     <div className={`border-b border-border py-3 sm:py-4 flex flex-col gap-1 ${item.role === 'user' ? 'bg-accent-light rounded' : ''}`}>
       <div className={`text-[11px] font-medium uppercase tracking-wide ${item.role === 'user' ? 'text-text' : 'text-text-dim'}`}>
-        {item.role === 'user' ? 'You' : 'birdy'}
+		{item.role === 'user' ? 'You' : `birdy${item.modelLabel ? ` · ${item.modelLabel}` : ''}`}
       </div>
       <div className={item.role === 'user' ? 'text-sm leading-relaxed whitespace-pre-wrap break-words text-text' : ''}>
         {item.role === 'user' ? text : <MarkdownMessage text={text} />}
@@ -805,6 +860,9 @@ export function App() {
   const [prompt, setPrompt] = useState('');
   const [runningByConv, setRunningByConv] = useState<Record<string, RunningKind>>({});
   const [scanToolsByConv, setScanToolsByConv] = useState<Record<string, string[]>>({});
+  const [chatModels, setChatModels] = useState<ChatModel[]>(fallbackChatModels);
+  const [catalogDefaultModelId, setCatalogDefaultModelId] = useState(defaultChatModelId);
+  const [modelCatalogStatus, setModelCatalogStatus] = useState('');
 
   const activeConv = conversations.find(c => c.id === activeConvId) ?? null;
   const cards = activeConv?.cards ?? [];
@@ -813,27 +871,33 @@ export function App() {
   const scanning = activeRunning === 'scan';
   const genBusy = activeRunning === 'chat';
   const scanTools = activeConvId ? (scanToolsByConv[activeConvId] ?? []) : [];
+  const activeModelId = effectiveConversationModelId(activeConv?.modelId, catalogDefaultModelId);
+  const pickerModels = modelsWithSavedSelection(chatModels, activeModelId);
+  const activeModel = pickerModels.find(model => model.id === activeModelId) as ChatModel;
+  const activeModelReady = activeModel.available && activeModel.supportsBirdyTools;
 
   const updateConv = useCallback((id: string, fn: (c: Conversation) => Conversation) => {
     setConversations(prev => prev.map(c => c.id === id ? fn(c) : c));
   }, []);
 
-  const ensureConv = useCallback((): string => {
-    if (activeConvId) return activeConvId;
+  const ensureConv = useCallback((): { id: string; modelId: string } => {
+    const active = conversations.find(conversation => conversation.id === activeConvId);
+    if (active) return { id: active.id, modelId: active.modelId };
+    const modelId = newConversationModelId(catalogDefaultModelId);
     const newConv: Conversation = {
       id: makeConvId(), title: 'New chat', chatItems: [], cards: [],
-      createdAt: Date.now(), updatedAt: Date.now(),
+      modelId, createdAt: Date.now(), updatedAt: Date.now(),
     };
     setConversations(prev => [newConv, ...prev]);
     setActiveConvId(newConv.id);
-    return newConv.id;
-  }, [activeConvId]);
+    return { id: newConv.id, modelId };
+  }, [activeConvId, catalogDefaultModelId, conversations]);
 
   const streamAbortRefs = useRef(new Map<string, AbortController>());
   const didAutoAuthRef = useRef(false);
   const feedRef = useRef<HTMLDivElement>(null);
-  const queuedPromptRef = useRef<{ convId: string; prompt: string } | null>(null);
-  const doSendRef = useRef<((ask: string, convId?: string) => void) | undefined>(undefined);
+  const queuedPromptRef = useRef<{ convId: string; prompt: string; modelId: string } | null>(null);
+  const doSendRef = useRef<((ask: string, convId: string, modelId: string) => void) | undefined>(undefined);
 
   const setConvRunning = useCallback((id: string, kind: RunningKind) => {
     setRunningByConv(prev => ({ ...prev, [id]: kind }));
@@ -885,9 +949,48 @@ export function App() {
     writeInviteCodeCookie(code);
   }, []);
 
+  useEffect(() => {
+    if (!authed) {
+      setChatModels(fallbackChatModels);
+      setCatalogDefaultModelId(defaultChatModelId);
+      setModelCatalogStatus('');
+      return;
+    }
+
+    const controller = new AbortController();
+    setModelCatalogStatus('Loading models…');
+    void (async () => {
+      try {
+        const response = await fetch('/api/chat/models', {
+          headers: { 'X-Invite-Code': inviteCodeRef.current.trim() },
+          signal: controller.signal,
+        });
+        if (response.status === 401) {
+          setAuthed(false);
+          setAuthStatus('Code expired.');
+          return;
+        }
+        if (!response.ok) throw new Error('model catalog unavailable');
+        const catalog = parseChatModelCatalog(await response.json());
+        if (controller.signal.aborted) return;
+        setChatModels(catalog.models);
+        setCatalogDefaultModelId(catalog.defaultId);
+        setModelCatalogStatus('');
+      } catch {
+        if (controller.signal.aborted) return;
+        setChatModels(fallbackChatModels);
+        setCatalogDefaultModelId(defaultChatModelId);
+        setModelCatalogStatus('Model list unavailable; Claude Sonnet only.');
+      }
+    })();
+
+    return () => controller.abort();
+  }, [authed]);
+
   const streamChat = useCallback(
     async (
       askPrompt: string,
+      modelId: string,
       opts: {
         onToken: (text: string) => void;
         onSnapshot: (text: string) => void;
@@ -903,7 +1006,7 @@ export function App() {
           'Content-Type': 'application/json',
           'X-Invite-Code': inviteCodeRef.current.trim(),
         },
-        body: JSON.stringify({ prompt: askPrompt, model: 'sonnet' }),
+        body: JSON.stringify(createChatRequest(askPrompt, modelId)),
         signal: opts.signal,
       });
 
@@ -979,8 +1082,10 @@ export function App() {
   );
 
   const runScan = useCallback(async () => {
-    if (scanning || genBusy) return;
-    const convId = ensureConv();
+    if (scanning || genBusy || !activeModelReady) return;
+    const target = ensureConv();
+    const modelId = target.modelId;
+    const convId = target.id;
     abortConvStream(convId);
     setConvRunning(convId, 'scan');
     clearConvScanTools(convId);
@@ -995,7 +1100,7 @@ export function App() {
     };
 
     try {
-      await streamChat(SCAN_PROMPT, {
+      await streamChat(SCAN_PROMPT, modelId, {
         signal: controller.signal,
         onToken: (text) => {
           if (controller.signal.aborted) return;
@@ -1031,7 +1136,7 @@ export function App() {
     } finally {
       finishConvStream(convId, controller);
     }
-  }, [scanning, genBusy, streamChat, ensureConv, updateConv, abortConvStream, setConvRunning, clearConvScanTools, finishConvStream]);
+  }, [scanning, genBusy, activeModelReady, activeModel.id, streamChat, ensureConv, updateConv, abortConvStream, setConvRunning, clearConvScanTools, finishConvStream]);
 
   const cancelScan = useCallback(() => {
     if (!activeConvId) return;
@@ -1110,8 +1215,11 @@ export function App() {
 
   const handleDeepDive = useCallback(
     async (card: AlphaCard) => {
-      if (genBusy || scanning) return;
-      const convId = ensureConv();
+      if (genBusy || scanning || !activeModelReady) return;
+      const target = ensureConv();
+      const modelId = target.modelId;
+      const modelLabel = modelDisplayName(activeModel);
+      const convId = target.id;
       abortConvStream(convId);
       setConvRunning(convId, 'chat');
 
@@ -1121,7 +1229,7 @@ export function App() {
       };
       const assistantId = `a-${Date.now()}`;
       const assistantItem: FeedItem & { kind: 'chat' } = {
-        kind: 'chat', id: assistantId, role: 'assistant', text: '', loading: true,
+        kind: 'chat', id: assistantId, role: 'assistant', text: '', loading: true, modelLabel,
       };
       updateConv(convId, c => ({
         ...c,
@@ -1139,7 +1247,7 @@ export function App() {
       const deepDivePrompt = `Deep dive into this topic from Twitter: "${card.title}"\n\nContext from initial scan:\n${card.rawMarkdown}\n\nInstructions:\n1. Search for more details using \`birdy search "${card.title}"\`\n2. Look for related threads and discussions\n3. Provide a thorough analysis with:\n   - What's actually happening\n   - Key players and their positions\n   - Potential implications\n   - Links to relevant tweets/threads if found\n\nBe concise but thorough.`;
 
       try {
-        await streamChat(deepDivePrompt, {
+        await streamChat(deepDivePrompt, modelId, {
           signal: controller.signal,
           onToken: (text) => { if (controller.signal.aborted) return; mapItem(i => ({ ...i, text: i.text + text })); },
           onSnapshot: (text) => { if (controller.signal.aborted) return; mapItem(i => ({ ...i, text })); },
@@ -1155,7 +1263,7 @@ export function App() {
         finishConvStream(convId, controller);
       }
     },
-    [genBusy, scanning, streamChat, ensureConv, updateConv, abortConvStream, setConvRunning, finishConvStream],
+    [genBusy, scanning, activeModelReady, activeModel, streamChat, ensureConv, updateConv, abortConvStream, setConvRunning, finishConvStream],
   );
 
   const buildChatPrompt = useCallback((newMessage: string, convId: string): string => {
@@ -1169,13 +1277,30 @@ export function App() {
     return `Conversation so far:\n${lines}\n\nUser: ${newMessage}\n\nContinue the conversation. Respond to the latest message using the context above.`;
   }, [conversations]);
 
-  const sendMessage = useCallback(async (overridePrompt?: string, targetConvId?: string) => {
+  const sendMessage = useCallback(async (
+    overridePrompt?: string,
+    targetConvId?: string,
+    requestedModelId?: string,
+  ) => {
     const ask = (overridePrompt ?? prompt).trim();
     if (!ask) return;
 
-    const convId = targetConvId ?? ensureConv();
+    const target = targetConvId
+      ? {
+          id: targetConvId,
+          modelId: effectiveConversationModelId(
+            conversations.find(conversation => conversation.id === targetConvId)?.modelId,
+            catalogDefaultModelId,
+          ),
+        }
+      : ensureConv();
+    const convId = target.id;
+    const modelId = requestedModelId
+      ?? target.modelId;
+    const model = chatModels.find(candidate => candidate.id === modelId);
+    if (!model?.available || !model.supportsBirdyTools) return;
     if (runningByConv[convId]) {
-      queuedPromptRef.current = { convId, prompt: ask };
+      queuedPromptRef.current = createQueuedChat(convId, ask, modelId);
       if (!overridePrompt) setPrompt('');
       return;
     }
@@ -1190,6 +1315,7 @@ export function App() {
     const assistantId = `a-${Date.now()}`;
     const assistantItem: FeedItem & { kind: 'chat' } = {
       kind: 'chat', id: assistantId, role: 'assistant', text: '', loading: true,
+      modelLabel: modelDisplayName(model),
     };
     updateConv(convId, c => ({
       ...c,
@@ -1205,7 +1331,7 @@ export function App() {
     streamAbortRefs.current.set(convId, controller);
 
     try {
-      await streamChat(contextPrompt, {
+      await streamChat(contextPrompt, modelId, {
         signal: controller.signal,
         onToken: (text) => { if (controller.signal.aborted) return; mapItem(i => ({ ...i, text: i.text + text })); },
         onSnapshot: (text) => { if (controller.signal.aborted) return; mapItem(i => ({ ...i, text })); },
@@ -1220,16 +1346,16 @@ export function App() {
     } finally {
       finishConvStream(convId, controller);
     }
-  }, [prompt, streamChat, buildChatPrompt, ensureConv, updateConv, runningByConv, setConvRunning, finishConvStream]);
+  }, [prompt, conversations, chatModels, catalogDefaultModelId, streamChat, buildChatPrompt, ensureConv, updateConv, runningByConv, setConvRunning, finishConvStream]);
 
-  doSendRef.current = (ask: string, convId?: string) => void sendMessage(ask, convId);
+  doSendRef.current = (ask: string, convId: string, modelId: string) => void sendMessage(ask, convId, modelId);
 
   useEffect(() => {
     const queued = queuedPromptRef.current;
     if (!queued) return;
     if (runningByConv[queued.convId]) return;
     queuedPromptRef.current = null;
-    doSendRef.current?.(queued.prompt, queued.convId);
+    doSendRef.current?.(queued.prompt, queued.convId, queued.modelId);
   }, [runningByConv]);
 
   useEffect(() => {
@@ -1241,12 +1367,23 @@ export function App() {
   const handleNewChat = useCallback(() => {
     const newConv: Conversation = {
       id: makeConvId(), title: 'New chat', chatItems: [], cards: [],
-      createdAt: Date.now(), updatedAt: Date.now(),
+      modelId: newConversationModelId(catalogDefaultModelId), createdAt: Date.now(), updatedAt: Date.now(),
     };
     setConversations(prev => [newConv, ...prev]);
     setActiveConvId(newConv.id);
     setSidebarOpen(false);
-  }, []);
+  }, [catalogDefaultModelId]);
+
+  const handleModelChange = useCallback((modelId: string) => {
+    const model = chatModels.find(candidate => candidate.id === modelId);
+    if (!model?.available || !model.supportsBirdyTools) return;
+    const target = ensureConv();
+    updateConv(target.id, conversation => ({
+      ...conversation,
+      modelId,
+      updatedAt: Date.now(),
+    }));
+  }, [chatModels, ensureConv, updateConv]);
 
   const switchConv = useCallback((id: string) => {
     setActiveConvId(id);
@@ -1358,8 +1495,9 @@ export function App() {
               <p className="m-0 text-text-dim text-sm">Start a conversation or scan your timeline.</p>
               <button
                 className="bg-text text-bg border-none rounded-lg font-[inherit] text-sm font-medium py-2.5 px-6 cursor-pointer hover:opacity-80 transition-opacity disabled:opacity-30 disabled:cursor-not-allowed"
-                disabled={genBusy}
+                disabled={genBusy || !activeModelReady}
                 onClick={() => void runScan()}
+                title={activeModelReady ? 'Scan with the selected model' : 'Choose an available model with Birdy tools'}
               >
                 Scan Timeline
               </button>
@@ -1367,7 +1505,7 @@ export function App() {
           )}
 
           {cards.map((card) => (
-            <AlphaCardView key={card.id} card={card} onDeepDive={handleDeepDive} />
+            <AlphaCardView key={card.id} card={card} onDeepDive={handleDeepDive} toolsAvailable={activeModelReady} />
           ))}
 
           {chatItems.map((item) => (
@@ -1378,7 +1516,11 @@ export function App() {
         <Composer
           prompt={prompt}
           busy={genBusy || scanning}
+          models={pickerModels}
+          modelId={activeModelId}
+          modelStatus={modelCatalogStatus}
           onChange={setPrompt}
+          onModelChange={handleModelChange}
           onSend={() => void sendMessage()}
           onStop={genBusy ? cancelChat : scanning ? cancelScan : undefined}
         />

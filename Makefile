@@ -3,7 +3,7 @@ COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "none")
 DATE    ?= $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 LDFLAGS := -ldflags "-s -w -X github.com/guzus/birdy/cmd.version=$(VERSION) -X github.com/guzus/birdy/cmd.commit=$(COMMIT) -X github.com/guzus/birdy/cmd.date=$(DATE)"
 
-.PHONY: build install clean test test-e2b test-race vet verify release-notes e2b-deps
+.PHONY: build install clean test test-e2b test-web test-race vet verify release-notes e2b-deps web-deps
 
 build:
 	go build $(LDFLAGS) -o birdy .
@@ -26,13 +26,21 @@ e2b-deps:
 test-e2b: e2b-deps
 	npm test --prefix e2b-runner
 
+web-deps:
+	bun install --cwd web --frozen-lockfile
+
+test-web: web-deps
+	bun test --cwd web
+	bun run --cwd web typecheck
+	bun run --cwd web build
+
 test-race:
 	go test -race ./tui ./cmd ./internal/birdbox ./internal/claude ./internal/state ./internal/store -count=1
 
 vet:
 	go vet ./...
 
-verify: vet test test-e2b test-race
+verify: vet test test-e2b test-web test-race
 
 release-notes:
 	./scripts/release_notes.sh "$${TAG:-HEAD}"

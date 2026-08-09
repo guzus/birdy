@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/guzus/birdy/internal/chatmodel"
 	"github.com/guzus/birdy/internal/state"
 	"github.com/guzus/birdy/internal/store"
 )
@@ -204,6 +205,107 @@ func TestAPIChatDefaultRoutesToClaudeCLI(t *testing.T) {
 	}
 }
 
+func TestAPIChatRoutesDeepSeekThroughRestrictedOpenCode(t *testing.T) {
+	binDir := t.TempDir()
+	opencodeScript := filepath.Join(binDir, "opencode")
+	content := strings.Join([]string{
+		"#!/bin/sh",
+		`case " $* " in *" --pure "*) ;; *) exit 90 ;; esac`,
+		`case " $* " in *" --agent birdy-web "*) ;; *) exit 91 ;; esac`,
+		`cat >/dev/null`,
+		`printf '%s\n' '{"type":"step_start","timestamp":1,"sessionID":"ses_api","part":{"id":"prt_1","sessionID":"ses_api","messageID":"msg_api","type":"step-start"}}'`,
+		`printf '%s\n' '{"type":"text","timestamp":2,"sessionID":"ses_api","part":{"id":"prt_2","sessionID":"ses_api","messageID":"msg_api","type":"text","text":"from deepseek","time":{"start":2,"end":3}}}'`,
+		`printf '%s\n' '{"type":"step_finish","timestamp":3,"sessionID":"ses_api","part":{"id":"prt_3","sessionID":"ses_api","messageID":"msg_api","type":"step-finish"}}'`,
+	}, "\n")
+	if err := os.WriteFile(opencodeScript, []byte(content), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("OPENCODE_API_KEY", "provider-key")
+	t.Setenv("BIRDY_ACCOUNTS", `[{"name":"test","auth_token":"auth","ct0":"ct0"}]`)
+
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/api/chat", bytes.NewBufferString(`{"prompt":"hello","model":"deepseek-flash"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Invite-Code", "birdy")
+	rr := httptest.NewRecorder()
+	handleAPIChat("birdy").ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"text":"from deepseek"`) {
+		t.Fatalf("OpenCode response = %d %q", rr.Code, rr.Body.String())
+	}
+	if got := rr.Header().Get("X-Birdy-Model-ID"); got != chatmodel.DeepSeekClientModelID {
+		t.Fatalf("model response header = %q", got)
+	}
+}
+
+func TestAPIChatRejectsUnknownAndUnavailableModelsBeforeSSE(t *testing.T) {
+	for _, tt := range []struct {
+		name, model string
+		status      int
+	}{
+		{name: "unknown", model: "opencode-go/attacker-model", status: http.StatusBadRequest},
+		{name: "unavailable", model: chatmodel.DeepSeekClientModelID, status: http.StatusServiceUnavailable},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("OPENCODE_API_KEY", "")
+			req := httptest.NewRequest(http.MethodPost, "http://example.com/api/chat", bytes.NewBufferString(`{"prompt":"hello","model":"`+tt.model+`"}`))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("X-Invite-Code", "birdy")
+			rr := httptest.NewRecorder()
+			handleAPIChat("birdy").ServeHTTP(rr, req)
+			if rr.Code != tt.status || strings.Contains(rr.Body.String(), "event:") || rr.Header().Get("Content-Type") != "application/json; charset=utf-8" {
+				t.Fatalf("response = %d headers=%v body=%q", rr.Code, rr.Header(), rr.Body.String())
+			}
+		})
+	}
+}
+
+func TestAPIChatModelsIsAuthenticatedDeterministicAndDoesNotChargeChatLimit(t *testing.T) {
+	binDir := t.TempDir()
+	for _, name := range []string{"claude", "codex", "opencode"} {
+		if err := os.WriteFile(filepath.Join(binDir, name), []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("OPENCODE_API_KEY", "provider-key")
+	t.Setenv("BIRDY_ACCOUNTS", `[{"name":"test","auth_token":"auth","ct0":"ct0"}]`)
+
+	unauthorized := httptest.NewRecorder()
+	handleAPIChatModels("birdy").ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "http://example.com/api/chat/models", nil))
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized model discovery = %d", unauthorized.Code)
+	}
+
+	priorLimiter := chatLimiter
+	chatLimiter = newRateLimiter(1, time.Minute)
+	defer func() { chatLimiter = priorLimiter }()
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/api/chat/models", nil)
+	req.Header.Set("X-Invite-Code", "birdy")
+	rr := httptest.NewRecorder()
+	handleAPIChatModels("birdy").ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK || rr.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("model discovery = %d headers=%v body=%q", rr.Code, rr.Header(), rr.Body.String())
+	}
+	var response apiChatModelsResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	wantIDs := []string{chatmodel.DefaultClientModelID, chatmodel.CodexClientModelID, chatmodel.DeepSeekClientModelID}
+	if len(response.Models) != len(wantIDs) || response.Default != chatmodel.DefaultClientModelID {
+		t.Fatalf("model catalog = %#v", response)
+	}
+	for i, want := range wantIDs {
+		if response.Models[i].ID != want || !response.Models[i].Available || !response.Models[i].SupportsBirdyTools {
+			t.Fatalf("model[%d] = %#v, want id=%q available tool-capable", i, response.Models[i], want)
+		}
+	}
+	if !chatLimiter.allow(clientIP(req)) {
+		t.Fatal("model discovery consumed the POST chat limiter")
+	}
+}
+
 func TestAPIChatUnauthorized(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/api/chat", bytes.NewBufferString(`{"prompt":"hello"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -249,6 +351,11 @@ func TestAPIChatRejectsTrailingJSONValues(t *testing.T) {
 }
 
 func TestAPIChatStreamingUnsupportedReturnsJSONError(t *testing.T) {
+	binDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(binDir, "claude"), []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/api/chat", bytes.NewBufferString(`{"prompt":"hello"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Invite-Code", "birdy")

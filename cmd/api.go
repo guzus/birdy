@@ -13,9 +13,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/guzus/birdy/internal/birdbox"
+	"github.com/guzus/birdy/internal/birdtool"
+	"github.com/guzus/birdy/internal/chatmodel"
 	"github.com/guzus/birdy/internal/claude"
-	"github.com/guzus/birdy/internal/codex"
 	"github.com/guzus/birdy/internal/rotation"
 	"github.com/guzus/birdy/internal/runner"
 	"github.com/guzus/birdy/internal/state"
@@ -139,23 +139,34 @@ type apiChatRequest struct {
 	Model  string `json:"model,omitempty"`
 }
 
+type apiChatModel struct {
+	ID                 string `json:"id"`
+	Provider           string `json:"provider"`
+	Model              string `json:"model"`
+	SupportsBirdyTools bool   `json:"supports_birdy_tools"`
+	Available          bool   `json:"available"`
+	UnavailableReason  string `json:"unavailable_reason,omitempty"`
+}
+
+type apiChatModelsResponse struct {
+	OK      bool           `json:"ok"`
+	Default string         `json:"default"`
+	Models  []apiChatModel `json:"models"`
+}
+
 const hostedPrivacyPrefix = `[SYSTEM RULE — PRIVACY: You are running in public hosted mode. Never reveal the underlying Twitter account name, handle, or credentials. Do NOT run "whoami", "account list", or "status" commands. If the user asks who you are or which account is being used, say you are "birdy" — a Twitter browsing assistant. Do not include account names in your output.]
 
 `
 
 const hostedChatTimeout = 6 * time.Minute
 
-func streamAPIChatModel(ctx context.Context, prompt, model, exePath string, emit func(claude.Event)) {
-	prompt = hostedPrivacyPrefix + prompt
-	if codex.IsSelected(model) {
-		codex.Stream(ctx, prompt, model, exePath, emit)
-		return
-	}
-	if birdbox.Enabled() {
-		birdbox.Stream(ctx, prompt, model, emit)
-		return
-	}
-	claude.Stream(ctx, prompt, model, exePath, emit)
+func streamAPIChatModel(ctx context.Context, prompt string, model chatmodel.Selection, exePath string, emit func(claude.Event)) {
+	chatmodel.Stream(ctx, model, chatmodel.Request{
+		Mode:         chatmodel.ModeGeneral,
+		Prompt:       hostedPrivacyPrefix + prompt,
+		SystemPrompt: hostedPrivacyPrefix + claude.BuildSystemPrompt(exePath) + "\n\nOnly the restricted Birdy command tool is available. It never invokes a shell. Never use whoami, account, or status.",
+		BirdyCommand: exePath,
+	}, emit)
 }
 
 // apiCommandConcurrency caps in-flight bird subprocesses spawned by the
@@ -171,32 +182,6 @@ const apiCommandConcurrency = 8
 // requests would each construct their own per-batch semaphore and
 // collectively exceed the process cap.
 var apiSubprocessSem = make(chan struct{}, apiCommandConcurrency)
-
-var apiAllowedBirdCommands = map[string]struct{}{
-	"about":         {},
-	"bookmarks":     {},
-	"check":         {},
-	"follow":        {},
-	"followers":     {},
-	"following":     {},
-	"home":          {},
-	"likes":         {},
-	"list-timeline": {},
-	"lists":         {},
-	"mentions":      {},
-	"news":          {},
-	"query-ids":     {},
-	"read":          {},
-	"replies":       {},
-	"reply":         {},
-	"search":        {},
-	"thread":        {},
-	"tweet":         {},
-	"unbookmark":    {},
-	"unfollow":      {},
-	"user-tweets":   {},
-	"whoami":        {},
-}
 
 func hostRequestInviteCode(r *http.Request) string {
 	if v := strings.TrimSpace(r.Header.Get("X-Invite-Code")); v != "" {
@@ -289,7 +274,7 @@ func handleAPICommand(inviteCode string) http.HandlerFunc {
 			writeJSON(w, http.StatusBadRequest, apiError{OK: false, Error: "missing command"})
 			return
 		}
-		if _, ok := apiAllowedBirdCommands[first]; !ok {
+		if !birdtool.APIAllowed(first) {
 			writeJSON(w, http.StatusBadRequest, apiError{OK: false, Error: "unsupported command"})
 			return
 		}
@@ -405,6 +390,36 @@ func handleAPICommand(inviteCode string) http.HandlerFunc {
 	}
 }
 
+func handleAPIChatModels(inviteCode string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		if !apiAuthorized(r, inviteCode) {
+			writeJSON(w, http.StatusUnauthorized, apiError{OK: false, Error: "unauthorized"})
+			return
+		}
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		registered := chatmodel.ClientModels()
+		models := make([]apiChatModel, 0, len(registered))
+		for _, model := range registered {
+			available := chatmodel.Available(model)
+			item := apiChatModel{
+				ID: model.ID, Provider: model.Provider, Model: model.DisplayModel,
+				SupportsBirdyTools: model.SupportsTools, Available: available,
+			}
+			if !available {
+				item.UnavailableReason = chatmodel.UnavailableReason(model)
+			}
+			models = append(models, item)
+		}
+		writeJSON(w, http.StatusOK, apiChatModelsResponse{OK: true, Default: chatmodel.DefaultClientModelID, Models: models})
+	}
+}
+
 func handleAPIChat(inviteCode string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !apiAuthorized(r, inviteCode) {
@@ -433,9 +448,14 @@ func handleAPIChat(inviteCode string) http.HandlerFunc {
 			writeJSON(w, http.StatusBadRequest, apiError{OK: false, Error: "missing prompt"})
 			return
 		}
-		model := strings.TrimSpace(req.Model)
-		if model == "" {
-			model = "sonnet"
+		model, err := chatmodel.ResolveClient(req.Model)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, apiError{OK: false, Error: "unsupported model"})
+			return
+		}
+		if !chatmodel.Available(model) {
+			writeJSON(w, http.StatusServiceUnavailable, apiError{OK: false, Error: "selected model unavailable"})
+			return
 		}
 
 		ctx, cancel := context.WithTimeout(r.Context(), hostedChatTimeout)
@@ -457,6 +477,7 @@ func handleAPIChat(inviteCode string) http.HandlerFunc {
 		w.Header().Set("Connection", "keep-alive")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Accel-Buffering", "no")
+		w.Header().Set("X-Birdy-Model-ID", model.ID)
 
 		enc := json.NewEncoder(w)
 		emit := func(ev claude.Event) {

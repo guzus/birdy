@@ -48,9 +48,10 @@ The TUI features:
 
 Birdy Web is the invite-gated React interface served by `birdy host`. It is
 built for X-hitchhiking agents: a user asks for a timeline scan, research, or a
-deep dive, and Claude works inside a disposable Bird Box sandbox. The sandbox
-receives the configured X session set, and birdy randomly selects one account
-for each command.
+deep dive, then chooses an available server-registered model. Claude works
+inside a disposable Bird Box sandbox when configured; Codex and OpenCode Go run
+on the host. Each backend can use Birdy's bounded command surface, and birdy
+randomly selects one configured X account for each command.
 
 The hosted instance is available at [birdy.guzus.xyz](https://birdy.guzus.xyz).
 Access is invite-only; DM [@uncanny_guzus](https://x.com/uncanny_guzus) on X to
@@ -64,7 +65,7 @@ request an invite code.
 
 The web app provides:
 
-- **Timeline scans** — Claude explores home, search, and news feeds, then turns
+- **Timeline scans** — the selected model explores home, search, and news feeds, then turns
   the results into source-linked alpha cards.
 - **Streaming chat and Deep Dive** — `/api/chat` streams model text and birdy
   tool calls to the browser over server-sent events (SSE).
@@ -92,7 +93,9 @@ BIRDY_HOST_INVITE_CODE=local-dev go run . host --addr 127.0.0.1:8787
 Open `http://127.0.0.1:8787` and enter `local-dev`. Add at least one birdy
 account first, and have Claude Code installed/authenticated for local AI chat.
 When `BIRDY_E2B_TEMPLATE` and `E2B_API_KEY` are set, Claude chat is routed to
-Bird Box instead of running Claude Code on the host.
+Bird Box instead of running Claude Code on the host. OpenCode Go additionally
+requires the pinned `opencode` CLI and `OPENCODE_API_KEY`; its option remains
+visible but disabled when the host is not configured.
 
 ### Request flow
 
@@ -103,11 +106,13 @@ flowchart LR
     Host -->|"/api/chat SSE"| Box["fresh E2B Bird Box"]
     Box --> Claude["Claude Code"]
     Claude -->|"birdy --strategy random"| X["X / Twitter"]
+    Host -->|"host-local /api/chat"| OpenCode["OpenCode Go / DeepSeek V4 Flash"]
+    OpenCode -->|"restricted birdy argv tool"| X
     Host -->|"/ws"| TUI["PTY birdy tui"]
 ```
 
-Claude models use Bird Box when it is configured. Codex model selections remain
-host-local. Each Bird Box receives only the allowlisted runtime variables,
+Claude models use Bird Box when it is configured. Codex and OpenCode model
+selections remain host-local. Each Bird Box receives only the allowlisted runtime variables,
 including the complete `BIRDY_ACCOUNTS` value, and streams its result through
 the host. The host requests deletion after completion, failure, disconnect, or
 timeout; the sandbox TTL is the cleanup backstop if deletion cannot reach E2B.
@@ -127,6 +132,7 @@ includes a stable error code, message, and request ID.
 | `GET /healthz` | none | `200 ok` |
 | `POST /api/command` | `{"command":"search","args":["agents"]}` | JSON with `ok`, `account`, `exit_code`, `stdout`, `stderr`, and `duration_ms` |
 | `POST /api/multi-command` | `{"operations":[{"id":"one","command":"news"}]}` | Ordered per-operation results; maximum 16 operations |
+| `GET /api/chat/models` | none beyond invite authentication | Deterministically ordered registered models with `available` and `supports_birdy_tools`; `Cache-Control: no-store` |
 | `POST /api/chat` | `{"prompt":"Scan for AI agent news","model":"sonnet"}` | Zero or more `snapshot`, `token`, `tool_use`, or `error` SSE events; terminal `done` |
 | `POST /api/harness/chat` | Versioned, bounded locally normalized visible-post context (see [Harness API](docs/HARNESS_API.md)) | Scoped-token SSE with `snapshot`, `token`, or sanitized `error`; terminal `done` |
 | `GET /ws` | WebSocket auth message, then terminal input/resize messages | PTY-backed TUI stream |
@@ -144,6 +150,24 @@ curl -N https://your-birdy-host.example/api/chat \
   -H 'X-Invite-Code: replace-with-invite-code' \
   -d '{"prompt":"Find the strongest AI-agent signals today","model":"sonnet"}'
 ```
+
+The client model IDs are server-owned and bounded: `sonnet` (default), `codex`,
+and `deepseek-flash`. `deepseek-flash` maps to the exact pinned runtime route
+`opencode-go/deepseek-v4-flash`; the full runtime ID is accepted only as a
+compatibility alias. The legacy explicit aliases `opus`, `haiku`, `gpt-5.4`,
+and `gpt-5.4-mini` remain accepted. Unknown IDs return JSON `400`; a registered
+but unconfigured model returns JSON `503`, both before SSE begins. Birdy never
+falls back to a different provider. Successful streams include the canonical
+`X-Birdy-Model-ID` response header.
+
+OpenCode Web chat runs in a fresh temporary HOME/XDG tree with sharing,
+auto-update, plugins, MCP, and every built-in tool denied. Its generated custom
+`bash` replacement is not a shell: it parses a bounded command, requires the
+exact Birdy executable plus an allowlisted Birdy subcommand, then launches argv
+directly. It has a 60-second per-tool deadline and bounded output. The
+OpenCode key reaches only the OpenCode process; the Birdy child receives the X
+account pool and read-only flag but not provider, invite, or harness secrets.
+The Chrome harness keeps its separate fixed, no-tools backend policy.
 
 Command traffic is limited to 60 operations per minute per IP; a batch is
 charged once per operation. Chat is limited to 20 requests per minute per IP.
@@ -244,6 +268,8 @@ BIRDY_HOST_INVITE_CODE=replace-with-long-random-secret
 # Alternative exact route (no automatic fallback):
 # BIRDY_HARNESS_BACKEND=opencode
 # BIRDY_HARNESS_MODEL=opencode-go/deepseek-v4-flash
+# Also enables the normal Birdy Web `deepseek-flash` option. Remove the key to
+# back out that option; Claude Sonnet remains the default.
 # OPENCODE_API_KEY=replace-with-opencode-go-key
 # Set only when a trusted edge overwrites X-Forwarded-For.
 # BIRDY_HARNESS_TRUST_PROXY=1

@@ -114,6 +114,7 @@ func buildHostedMux(inviteCode string, allowedOrigins map[string]struct{}, webDi
 	})
 	mux.Handle("/api/command", withHostedSecurityHeaders(handleAPICommand(inviteCode)))
 	mux.Handle("/api/multi-command", withHostedSecurityHeaders(handleAPIMultiCommand(inviteCode)))
+	mux.Handle("/api/chat/models", withHostedSecurityHeaders(handleAPIChatModels(inviteCode)))
 	mux.Handle("/api/chat", withHostedSecurityHeaders(handleAPIChat(inviteCode)))
 	mux.Handle("/api/harness/chat", withHostedSecurityHeaders(newHarnessChatHandlerFromEnv(inviteCode)))
 	mux.Handle("/", makeHostedWebHandler(webDir))

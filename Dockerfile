@@ -37,8 +37,9 @@ ARG CLAUDE_CODE_VERSION=2.1.207
 RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
     && npm cache clean --force
 
-# OpenCode is an opt-in harness provider. Match the version whose JSONL run
-# contract and OpenCode Go model catalog are covered by the Go parser tests.
+# OpenCode is an opt-in Birdy Web and harness provider. Match the version whose
+# JSONL run contract and OpenCode Go model catalog are covered by the Go parser
+# tests.
 # Install dependencies without lifecycle scripts, then run only the package's
 # required platform-binary installer explicitly.
 ARG OPENCODE_VERSION=1.18.3

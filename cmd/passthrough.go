@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/guzus/birdy/internal/birdtool"
 	"github.com/guzus/birdy/internal/rotation"
 	"github.com/guzus/birdy/internal/runner"
 	"github.com/guzus/birdy/internal/state"
@@ -298,7 +299,7 @@ func isKnownBirdCommand(arg string) bool {
 	if arg == "" || strings.HasPrefix(arg, "-") {
 		return false
 	}
-	if _, ok := apiAllowedBirdCommands[arg]; ok {
+	if birdtool.APIAllowed(arg) {
 		return true
 	}
 	if _, ok := readOnlyBlockedBirdCommands[arg]; ok {

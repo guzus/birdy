@@ -23,9 +23,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/guzus/birdy/internal/birdbox"
+	"github.com/guzus/birdy/internal/chatmodel"
 	"github.com/guzus/birdy/internal/claude"
-	"github.com/guzus/birdy/internal/opencode"
 )
 
 const (
@@ -52,7 +51,6 @@ var (
 	harnessInstallIDPattern    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 	harnessTweetIDPattern      = regexp.MustCompile(`^[1-9][0-9]{4,24}$`)
 	harnessAuthorHandlePattern = regexp.MustCompile(`^[A-Za-z0-9_]{1,15}$`)
-	harnessModelPattern        = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$`)
 	harnessTweetPathPattern    = regexp.MustCompile(`^/([A-Za-z0-9_]{1,15}|i)/status/([1-9][0-9]{4,24})$`)
 	harnessChatSem             = make(chan struct{}, harnessMaxConcurrency)
 	harnessRequestSeq          atomic.Uint64
@@ -259,28 +257,14 @@ func loadHarnessModelConfig() (harnessModelConfig, error) {
 	}
 	model := strings.TrimSpace(os.Getenv(harnessModelEnv))
 
-	switch backend {
-	case "claude-code":
-		if model == "" {
-			model = "sonnet"
-		}
-		if !harnessModelPattern.MatchString(model) {
-			return harnessModelConfig{}, fmt.Errorf("%s must be a Claude model identifier of at most 80 characters", harnessModelEnv)
-		}
-	case "opencode":
-		if model == "" {
-			model = opencode.ModelDeepSeekV4Flash
-		}
-		if model != opencode.ModelDeepSeekV4Flash {
-			return harnessModelConfig{}, fmt.Errorf("%s=%s supports only %s=%s", harnessBackendEnv, backend, harnessModelEnv, opencode.ModelDeepSeekV4Flash)
-		}
-		if strings.TrimSpace(os.Getenv("OPENCODE_API_KEY")) == "" {
-			return harnessModelConfig{}, fmt.Errorf("OPENCODE_API_KEY is required when %s=%s", harnessBackendEnv, backend)
-		}
-	default:
-		return harnessModelConfig{}, fmt.Errorf("%s must be one of claude-code or opencode", harnessBackendEnv)
+	selection, err := chatmodel.ResolveServer(backend, model)
+	if err != nil {
+		return harnessModelConfig{}, fmt.Errorf("invalid harness model config: %w", err)
 	}
-	return harnessModelConfig{backend: backend, model: model}, nil
+	if !chatmodel.AvailableNoTools(selection) {
+		return harnessModelConfig{}, fmt.Errorf("OPENCODE_API_KEY is required when %s=%s", harnessBackendEnv, backend)
+	}
+	return harnessModelConfig{backend: string(selection.Backend), model: selection.RuntimeModel}, nil
 }
 
 func newHarnessChatHandlerFromEnv(inviteCode string) http.Handler {
@@ -296,19 +280,13 @@ func newHarnessChatHandlerFromEnv(inviteCode string) http.Handler {
 }
 
 func streamHarnessModel(ctx context.Context, prompt string, model harnessModelConfig, systemPrompt string, emit func(claude.Event)) {
-	switch model.backend {
-	case "claude-code":
-		if birdbox.Enabled() {
-			birdbox.StreamNoTools(ctx, prompt, model.model, systemPrompt, emit)
-			return
-		}
-		claude.StreamNoTools(ctx, prompt, model.model, systemPrompt, emit)
-	case "opencode":
-		opencode.StreamNoTools(ctx, prompt, systemPrompt, emit)
-	default:
+	selection, err := chatmodel.ResolveServer(model.backend, model.model)
+	if err != nil {
 		emit(claude.Event{Type: claude.EventError, Error: "unsupported harness model provider"})
 		emit(claude.Event{Type: claude.EventDone})
+		return
 	}
+	chatmodel.Stream(ctx, selection, chatmodel.Request{Mode: chatmodel.ModeNoTools, Prompt: prompt, SystemPrompt: systemPrompt}, emit)
 }
 
 func newHarnessChatHandler(config harnessConfig, deps harnessDependencies) http.Handler {
