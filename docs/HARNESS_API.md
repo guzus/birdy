@@ -1,67 +1,55 @@
 # Birdy Harness API
 
-`POST /api/harness/chat` is the narrow server boundary for a Chrome MV3
-extension. It is deliberately separate from `/api/chat`: a harness token grants
-no access to commands, the PTY, private timelines, or the general chat tool
-surface, and the Birdy Web invite code does not grant harness access.
+`POST /api/harness/chat` is the narrow server boundary for Birdy Web's Chrome
+MV3 extension. It is deliberately separate from `/api/chat`: a harness token
+grants no command, PTY, private-timeline, or general chat-tool capability, and
+the Birdy Web invite code does not grant harness access.
 
-The endpoint is disabled with HTTP `503` until scoped installation tokens are
-configured. It never falls back to invite-code authentication. If a token
-mapping is present but malformed, collides with the host invite code, reuses a
-token across installations, or lacks a valid dedicated account pool, `birdy
-host` fails startup instead of reporting a healthy but silently disabled API.
+The extension reads the current tab with the user's local browser session and
+sends a small normalized representation of posts already rendered there. The
+server never receives X cookies, never logs in to X, and never resolves tweet
+IDs. All submitted tweet metadata and text is treated as untrusted quoted model
+input, not as authenticated X data or proof that a post was visible.
 
 ## Provision and revoke an installation
 
-Generate one high-entropy token per extension installation. Give the raw token
-to that installation once; configure only its SHA-256 hash on the server:
+The endpoint is disabled with HTTP `503` until scoped installation tokens are
+configured. It never falls back to invite-code authentication. Generate one
+high-entropy token per installation and configure only its SHA-256 hash:
 
 ```bash
 TOKEN="$(openssl rand -hex 32)"
 printf '%s' "$TOKEN" | shasum -a 256
 ```
 
-Set the digest under a stable installation ID:
-
 ```text
 BIRDY_HARNESS_TOKEN_HASHES={"laptop-a":"<64-hex-sha256>","laptop-b":"<64-hex-sha256>"}
-BIRDY_HARNESS_ACCOUNTS=[{"name":"harness-public","auth_token":"...","ct0":"...","read_only":true}]
 ```
 
-Installation IDs must match `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`. Tokens must be
-32–256 bytes. The JSON object may contain at most 256 installations. Restart or
-redeploy after changing the environment. Revoke one installation by deleting
-its entry or replacing its hash; other installations keep working.
+Installation IDs must match `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`. Raw tokens must
+be 32–256 bytes. The JSON object may contain at most 256 installations. Restart
+after changing it. Revoke one installation by deleting its entry or replacing
+its hash. Malformed mappings, duplicate tokens, or a token that hashes to the
+host invite code fail host startup.
 
-`BIRDY_HARNESS_ACCOUNTS` is a separate, required X account pool whenever
-harness tokens are configured. Birdy validates it at startup and never falls
-back to the general `BIRDY_ACCOUNTS` pool. Use a dedicated read-only account
-that follows no protected accounts and has no private timeline access. The
-endpoint can fetch any submitted tweet ID; `page_url` is validated context, not
-cryptographic proof that an ID was visible in the tab. If strict page-visibility
-provenance is required, send explicit `selected_text` and no tweet IDs.
-
-This manual provisioning is intentional. A remotely exposed pairing or token
-minting endpoint would add an enrollment credential and a larger attack
-surface. A future pairing flow must preserve the same per-install scope and
-revocation properties.
-
-Optional server settings:
+Optional settings:
 
 ```text
 BIRDY_HARNESS_MODEL=sonnet
 BIRDY_HARNESS_TRUST_PROXY=1
 ```
 
-The model is selected only by the server and defaults to `sonnet`.
-`BIRDY_HARNESS_TRUST_PROXY=1` should be set only when a trusted reverse proxy
-overwrites (rather than appends user input to) `X-Forwarded-For`. Otherwise the
-server ignores forwarding headers for rate limiting.
+The model is fixed by the server and defaults to `sonnet`.
+`BIRDY_HARNESS_TRUST_PROXY=1` is safe only when a trusted reverse proxy
+overwrites `X-Forwarded-For`; otherwise forwarding headers are ignored.
 
-## Request
+`BIRDY_HARNESS_ACCOUNTS` has been removed. Delete it during the v2 migration.
+The general `BIRDY_ACCOUNTS` setting remains for Birdy's other commands, but
+the harness handler neither reads it nor creates an X client.
 
-Send the token from the MV3 service worker or an extension page, not from a
-content script:
+## Version 2 request
+
+Send the token from the MV3 service worker or an extension page:
 
 ```http
 POST /api/harness/chat HTTP/1.1
@@ -70,53 +58,95 @@ X-Birdy-Harness-Install-ID: laptop-a
 Content-Type: application/json
 
 {
-  "version": "1",
+  "version": "2",
   "page_url": "https://x.com/home",
-  "visible_tweet_ids": ["2084912076502282341"],
+  "visible_tweets": [
+    {
+      "id": "2084912076502282341",
+      "url": "https://x.com/example/status/2084912076502282341",
+      "author_handle": "example",
+      "author_name": "Example",
+      "text": "Text rendered in the visible post",
+      "created_at": "2026-08-09T03:00:00Z",
+      "truncated": false,
+      "reply_to_id": "2084000000000000000",
+      "quoted_tweet_id": "2083000000000000000",
+      "repost_of_id": "2082000000000000000"
+    }
+  ],
   "prompt": "Summarize the claim and the evidence.",
   "selected_text": "Optional text the user explicitly selected"
 }
 ```
 
-The version 1 schema is strict; unknown fields and trailing JSON values are
-rejected. In particular, the endpoint has no `model`, `command`, `account`,
-`cookies`, `html`, `dom`, or general `url` field.
+The schema is exact at every nesting level. Unknown fields, trailing JSON,
+cookies, auth values, raw HTML, whole-DOM text, commands, client-selected
+models, and arbitrary fetch URLs are rejected.
 
 | Field | Contract |
 | --- | --- |
-| `version` | Required string, exactly `"1"` |
-| `page_url` | Required HTTPS URL whose host is exactly `x.com` or `twitter.com`; no subdomain, port, userinfo, or fragment; maximum 2 KiB |
-| `visible_tweet_ids` | Zero to 12 raw decimal tweet IDs; input order is preserved and repeated IDs are fetched once |
-| `prompt` | Required, non-whitespace UTF-8 text; maximum 4 KiB measured in bytes |
-| `selected_text` | Optional text from an explicit user selection; maximum 8 KiB measured in bytes |
+| `version` | Required string, exactly `"2"` |
+| `page_url` | Required HTTPS URL on exactly `x.com` or `twitter.com`; no subdomain, port, userinfo, or fragment; maximum 2 KiB |
+| `visible_tweets` | Required array of zero to 12 normalized objects in page order; use `[]` for selection-only requests |
+| `prompt` | Required non-whitespace UTF-8 text; maximum 4 KiB |
+| `selected_text` | Optional explicit browser selection; maximum 8 KiB |
 
-At least one visible tweet ID or non-empty explicit selection is required. The
-server fetches only the listed tweet IDs through birdy's quota-aware read API.
-It never consumes X cookies or auth values from the request and it does not
-accept page HTML, whole-DOM text, hidden nodes, or a client-selected fetch URL.
-Clients should source `selected_text` directly from the user's current browser
-selection, never from `document.body.innerText`.
+Each visible tweet has these exact fields:
 
-The complete JSON body is limited to 16 KiB. Fetched tweet text is sanitized to
-a small public shape and bounded to 8 KiB per tweet before model execution. The
-entire exact-ID fetch phase has a 45-second deadline before model streaming.
+| Field | Contract |
+| --- | --- |
+| `id` | Required decimal tweet ID, 5–25 digits, no leading zero |
+| `url` | Required exact `https://x.com/<handle>/status/<id>` or `https://twitter.com/<handle>/status/<id>` source URL; `i` may replace the handle; ID must match; no query, fragment, port, userinfo, suffix path, or encoding |
+| `author_handle` | Optional handle without `@`; 1–15 ASCII letters, digits, or underscores |
+| `author_name` | Optional UTF-8 display name; maximum 256 bytes |
+| `text` | Required non-whitespace UTF-8 visible text; maximum 8 KiB |
+| `created_at` | Optional RFC3339 timestamp; normalized to UTC before model input |
+| `truncated` | Optional boolean indicating that the local extractor intentionally bounded the visible text |
+| `reply_to_id` | Optional validated tweet ID; may refer to a post outside the submitted set |
+| `quoted_tweet_id` | Optional validated tweet ID; may refer to a post outside the submitted set |
+| `repost_of_id` | Optional validated tweet ID; may refer to a post outside the submitted set |
 
-## Response
+Relations may coexist because they report independently observed structure, but
+none may self-reference. The server does not fetch relation targets. Tweet text
+is limited to 32 KiB in aggregate and the complete body to 64 KiB. At least one
+visible tweet or a non-empty explicit selection is required.
+
+Input order is preserved. Exact duplicate IDs with identical normalized
+content are collapsed to their first occurrence. A duplicate ID with conflicting
+content is rejected as `conflicting_duplicate_tweet`; the server never guesses
+which copy is true. Clients should submit only rendered post cards and the
+user's explicit selection, never `document.body.innerText` or hidden DOM.
+
+Structural validation does not establish provenance. A token holder can invent
+otherwise well-formed text, URLs, authors, timestamps, and relations. The model
+is instructed accordingly, and responses must not be treated as authenticated
+copies of X content.
+
+## Cutover from version 1
+
+Version 2 is intentionally incompatible. Version 1 requests receive
+`400 unsupported_version`; the removed `visible_tweet_ids` field receives
+`400 invalid_json`. There is no dual-read fallback and the server never turns
+an ID into an X request. Deploy a v2-capable server and extension as one
+coordinated cutover; old clients stop working rather than regaining server-side
+cookie access.
+
+Remove `BIRDY_HARNESS_ACCOUNTS` from deployment secrets. No replacement X
+credential is required. Keep `BIRDY_HARNESS_TOKEN_HASHES`, and rotate only if
+the client installation/token relationship itself changed.
+
+## Response and limits
 
 Every response has a server-generated `X-Request-ID` and
-`X-Birdy-Harness-Version: 1`. Pre-stream failures are JSON:
+`X-Birdy-Harness-Version: 2`. Pre-stream failures are JSON:
 
 ```json
-{
-  "ok": false,
-  "error": "invalid_page_url",
-  "message": "page_url must be an HTTPS URL on exactly x.com or twitter.com",
-  "request_id": "9fcbd57a-3a7f-45f2-a4d9-60757bc37b71"
-}
+{"ok":false,"error":"invalid_page_url","message":"page_url must be an HTTPS URL on exactly x.com or twitter.com","request_id":"..."}
 ```
 
-Successful requests use the existing server-sent event framing. Each JSON event
-also carries `request_id`:
+Contract and authentication failures are `4xx`; disabled configuration and
+capacity exhaustion are `503`. Once accepted, responses use the existing SSE
+events. Every event carries the same request ID:
 
 ```text
 event: token
@@ -126,73 +156,24 @@ event: done
 data: {"type":"done","request_id":"..."}
 ```
 
-The public route emits only `snapshot`, `token`, sanitized `error`, and terminal
-`done` events. It suppresses tool commands. A backend that exits without a
-`done` event is repaired by the handler so clients always get one terminal
-event while the connection remains writable.
+Only `snapshot`, `token`, sanitized `error`, and exactly one terminal `done`
+are public. Tool events are suppressed and converted to a sanitized error.
+Cancellation and the six-minute request deadline remain in force.
 
-Requests are limited in fixed one-minute windows, separately to 10 per
-installation token and 30 per client IP. Authentication failures consume the IP
-budget. Exact-ID reads have additional budgets of 60 per installation and 120
-for the whole process per minute. At most four harness chats execute
-concurrently; excess requests fail fast with `503` rather than queueing. Limits
-are process-local, so a public deployment should remain at one replica unless
-these controls move to a shared edge or datastore.
+Requests use fixed one-minute windows: 10 per installation and 30 per client
+IP. Authentication failures consume the IP budget. At most four chats execute
+concurrently; excess requests fail fast with `503`. Limits are process-local,
+so a public deployment should remain at one replica unless they move to a
+shared edge or datastore.
 
-### Tweet-fetch diagnostics
+## Model and network boundaries
 
-An X fetch deadline returns the generic `504 tweet_context_timeout`; other X
-or transport failures return the generic `502 tweet_context_unavailable`.
-Neither response exposes upstream details. The server emits a structured
-`harness tweet context fetch failed` process log correlated by `request_id`.
-Its fields are limited to `failure_class`, `stage`, aggregate `tweet_count`,
-`elapsed_ms`, and numeric `upstream_status` when X supplied one. It never logs
-the underlying error string, credentials, account name, tweet IDs or text,
-page URL, selection, or prompt. Failure classes are `configuration`,
-`transport_dns`, `transport_connect`,
-`transport_tls_certificate_unknown_authority`,
-`transport_tls_certificate_hostname`, `transport_tls_certificate_invalid`,
-`transport_tls_certificate_system_roots`,
-`transport_tls_certificate_verification`,
-`transport_tls_alert`, `transport_tls_protocol`, `transport_tls_other`,
-`transport_proxy`, `transport_other`, `upstream_http`, `upstream_response`,
-`upstream_rate_limited`, `timeout`, `canceled`, or `unknown`. Concrete DNS and
-TLS causes take precedence over their enclosing connect operation. Within TLS,
-unknown certificate authority, hostname mismatch, invalid certificate,
-unavailable system roots, generic certificate verification, peer alerts, and
-malformed record or protocol errors have distinct classes. Certificate
-validity reason/code/time/certificate data, alert codes, and underlying details
-are never logged. Request timeout or cancellation, configuration, and upstream
-API classifications take precedence over every transport subtype.
+Claude runs with tools disabled and a single-turn limit. The model subprocess
+or Bird Box receives no Birdy account pool, X auth/CSRF values, host invite
+code, or harness token hashes. Codex's host-local tool path is never used.
 
-A configured harness pool must contain at least one enabled read-only account.
-Disabled accounts may remain in the pool, but an all-disabled pool fails host
-startup instead of turning every request into an unexplained runtime `502`.
-
-The production Docker image explicitly installs or upgrades Debian's standard
-`ca-certificates` package, refreshes its bundle, and fails the build if the
-bundle is empty. It does not disable TLS verification or add private roots.
-If `transport_tls_certificate_unknown_authority` persists after a rebuild,
-bump the Docker build argument `CA_CERTIFICATES_REFRESH` to a new date to bust
-the trust-store layer cache before investigating the network path further.
-
-## Model capability boundary
-
-The host resolves the exact tweet IDs before starting the model. Claude then
-runs with its tool set disabled and a single-turn limit. The model subprocess or
-Bird Box receives neither `BIRDY_ACCOUNTS` nor X auth/CSRF values, the host
-invite code, or harness token hashes. Codex's host-local tool path is never used
-for this endpoint. Tweet and selected text are explicitly marked as untrusted
-quoted data in the system prompt.
-
-## Chrome MV3 networking
-
-Declare the exact Birdy host under `host_permissions`, then have the content
-script send a narrow message containing the structured fields above to the MV3
-service worker. The service worker performs `fetch`.
-
-Extension service-worker and extension-page requests covered by
-`host_permissions` do not require server CORS. Accordingly, this endpoint does
-not emit `Access-Control-Allow-Origin` and does not implement a permissive
-preflight route. A content-script fetch runs in the page origin and is the
-wrong transport for this contract.
+Declare the exact Birdy host under MV3 `host_permissions`, then message the
+service worker from the content script and let the worker perform `fetch`.
+Extension-worker requests covered by `host_permissions` need no server CORS.
+The endpoint therefore emits no `Access-Control-Allow-Origin` and provides no
+permissive preflight route.

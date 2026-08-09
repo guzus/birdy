@@ -128,7 +128,7 @@ includes a stable error code, message, and request ID.
 | `POST /api/command` | `{"command":"search","args":["agents"]}` | JSON with `ok`, `account`, `exit_code`, `stdout`, `stderr`, and `duration_ms` |
 | `POST /api/multi-command` | `{"operations":[{"id":"one","command":"news"}]}` | Ordered per-operation results; maximum 16 operations |
 | `POST /api/chat` | `{"prompt":"Scan for AI agent news","model":"sonnet"}` | Zero or more `snapshot`, `token`, `tool_use`, or `error` SSE events; terminal `done` |
-| `POST /api/harness/chat` | Versioned, bounded X-page context (see [Harness API](docs/HARNESS_API.md)) | Scoped-token SSE with `snapshot`, `token`, or sanitized `error`; terminal `done` |
+| `POST /api/harness/chat` | Versioned, bounded locally normalized visible-post context (see [Harness API](docs/HARNESS_API.md)) | Scoped-token SSE with `snapshot`, `token`, or sanitized `error`; terminal `done` |
 | `GET /ws` | WebSocket auth message, then terminal input/resize messages | PTY-backed TUI stream |
 
 Example read-only calls:
@@ -237,9 +237,8 @@ BIRDY_HOST_INVITE_CODE=replace-with-long-random-secret
 # Optional: enable only the scoped Chrome harness endpoint. Values are
 # SHA-256 hashes of independently generated per-install bearer tokens.
 # BIRDY_HARNESS_TOKEN_HASHES={"install-id":"64-lowercase-hex-characters"}
-# Required with harness tokens: a dedicated read-only, no-follows X account
-# pool. The harness never falls back to BIRDY_ACCOUNTS.
-# BIRDY_HARNESS_ACCOUNTS=[{"name":"harness-public","auth_token":"...","ct0":"...","read_only":true}]
+# Harness v2 receives bounded normalized visible-post text from the extension;
+# it needs no X account pool and never fetches X content server-side.
 # BIRDY_HARNESS_MODEL=sonnet
 # Set only when a trusted edge overwrites X-Forwarded-For.
 # BIRDY_HARNESS_TRUST_PROXY=1
@@ -602,6 +601,11 @@ for _, m := range t.Media {
     fmt.Println(m.Type, m.DownloadURL()) // videos resolve to the mp4, not the thumbnail
 }
 
+// ReadPost returns the strict monitoring shape for one exact post, including
+// its structured reply, quote, and repost relations.
+post, err := client.ReadPost(ctx, t.ID)
+fmt.Println(post.InReplyToStatusID, post.QuotedTweet, post.RepostedTweet)
+
 // Conversations come back flat; ancestry lives in InReplyToStatusID.
 thread, err := client.Thread(ctx, t.ConversationID)
 parents := tweet.AncestorChain(thread, t.ID) // root-first, target excluded
@@ -672,6 +676,9 @@ Notes:
 - Timeline results use `TimelineTweet`, which embeds the frozen `Tweet` type and
   adds `RepostedTweet` only on this new monitoring surface. Existing unkeyed
   `Tweet` literals therefore continue to compile unchanged.
+- `ReadPost` returns that same monitoring shape for one exact tweet and fails
+  closed when a present quote or repost relation is malformed. Legacy `Read`
+  retains its existing return type and behavior.
 - A timeline `Limit` is a target capped at 200, not a truncation boundary. The
   full terminal response page is returned, so the slice may exceed `Limit` but
   `NextCursor` never skips entries X over-delivered on that page.

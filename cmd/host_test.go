@@ -83,7 +83,6 @@ func TestHostReturnsConfiguredWebDirError(t *testing.T) {
 func TestHostFailsStartupForMalformedHarnessConfiguration(t *testing.T) {
 	t.Setenv("BIRDY_HOST_INVITE_CODE", "distinct-invite")
 	t.Setenv(harnessTokenHashesEnv, `{not-json`)
-	t.Setenv(harnessAccountsEnv, harnessTestAccounts)
 
 	prevAddr, prevInvite := hostAddrFlag, hostInviteCodeFlag
 	hostAddrFlag, hostInviteCodeFlag = "127.0.0.1:8787", ""
