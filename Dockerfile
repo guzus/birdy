@@ -20,6 +20,17 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o
 
 FROM node:22-bookworm-slim
 
+# Keep the runtime trust store explicit even though the upstream Node image
+# currently installs it. Bump this value to force a fresh apt index/package
+# layer when the mutable base tag itself has not changed.
+ARG CA_CERTIFICATES_REFRESH=2026-08-09
+RUN test -n "${CA_CERTIFICATES_REFRESH}" \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && update-ca-certificates --fresh \
+    && test -s /etc/ssl/certs/ca-certificates.crt \
+    && rm -rf /var/lib/apt/lists/*
+
 # Node stays because Claude Code is a Node application. bird does not: birdy
 # serves every command natively, so the image no longer installs it.
 ARG CLAUDE_CODE_VERSION=2.1.207

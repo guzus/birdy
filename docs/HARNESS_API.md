@@ -169,6 +169,13 @@ A configured harness pool must contain at least one enabled read-only account.
 Disabled accounts may remain in the pool, but an all-disabled pool fails host
 startup instead of turning every request into an unexplained runtime `502`.
 
+The production Docker image explicitly installs or upgrades Debian's standard
+`ca-certificates` package, refreshes its bundle, and fails the build if the
+bundle is empty. It does not disable TLS verification or add private roots.
+If `transport_tls_certificate_unknown_authority` persists after a rebuild,
+bump the Docker build argument `CA_CERTIFICATES_REFRESH` to a new date to bust
+the trust-store layer cache before investigating the network path further.
+
 ## Model capability boundary
 
 The host resolves the exact tweet IDs before starting the model. Claude then
