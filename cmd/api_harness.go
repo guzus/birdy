@@ -599,8 +599,8 @@ func classifyHarnessTransportFailure(err error) string {
 	if errors.As(err, &dnsErr) {
 		return "transport_dns"
 	}
-	if isHarnessTLSFailure(err) {
-		return "transport_tls"
+	if tlsClass := classifyHarnessTLSFailure(err); tlsClass != "" {
+		return tlsClass
 	}
 
 	var opErr *net.OpError
@@ -623,21 +623,32 @@ func classifyHarnessTransportFailure(err error) string {
 	return ""
 }
 
-func isHarnessTLSFailure(err error) bool {
+func classifyHarnessTLSFailure(err error) string {
 	var verificationErr *tls.CertificateVerificationError
-	var recordHeaderErr tls.RecordHeaderError
-	var alertErr tls.AlertError
 	var unknownAuthorityErr x509.UnknownAuthorityError
 	var hostnameErr x509.HostnameError
 	var certificateInvalidErr x509.CertificateInvalidError
 	var systemRootsErr x509.SystemRootsError
-	return errors.As(err, &verificationErr) ||
-		errors.As(err, &recordHeaderErr) ||
-		errors.As(err, &alertErr) ||
+	if errors.As(err, &verificationErr) ||
 		errors.As(err, &unknownAuthorityErr) ||
 		errors.As(err, &hostnameErr) ||
 		errors.As(err, &certificateInvalidErr) ||
-		errors.As(err, &systemRootsErr)
+		errors.As(err, &systemRootsErr) {
+		return "transport_tls_certificate"
+	}
+	var alertErr tls.AlertError
+	if errors.As(err, &alertErr) {
+		return "transport_tls_alert"
+	}
+	var recordHeaderErr tls.RecordHeaderError
+	if errors.As(err, &recordHeaderErr) {
+		return "transport_tls_protocol"
+	}
+	var echRejectionErr *tls.ECHRejectionError
+	if errors.As(err, &echRejectionErr) {
+		return "transport_tls_other"
+	}
+	return ""
 }
 
 func logHarnessTweetFetchFailure(logger *slog.Logger, failure harnessTweetFetchFailure) {

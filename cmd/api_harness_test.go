@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
@@ -387,12 +388,36 @@ func TestHarnessTweetFetchFailureClassification(t *testing.T) {
 			wantClass: "transport_connect", wantStage: "tweet_read",
 		},
 		{
-			name: "TLS cause wins over enclosing connect operation",
+			name: "TLS certificate cause wins over enclosing connect operation",
 			err: &harnessTweetFetchError{stage: harnessTweetFetchStageRead, cause: &url.Error{
 				Op: "Get", URL: "https://secret-tls.example/status/12345",
-				Err: &net.OpError{Op: "dial", Net: "tcp", Err: x509.UnknownAuthorityError{}},
+				Err: &net.OpError{Op: "dial", Net: "tcp", Err: &tls.CertificateVerificationError{Err: x509.UnknownAuthorityError{}}},
 			}},
-			wantClass: "transport_tls", wantStage: "tweet_read",
+			wantClass: "transport_tls_certificate", wantStage: "tweet_read",
+		},
+		{
+			name: "TLS peer alert wins over enclosing proxy operation",
+			err: &harnessTweetFetchError{stage: harnessTweetFetchStageRead, cause: &url.Error{
+				Op: "Get", URL: "https://secret-alert.example/status/12345",
+				Err: &net.OpError{Op: "proxyconnect", Net: "tcp", Err: tls.AlertError(42)},
+			}},
+			wantClass: "transport_tls_alert", wantStage: "tweet_read",
+		},
+		{
+			name: "TLS malformed record through wrappers",
+			err: &harnessTweetFetchError{stage: harnessTweetFetchStageRead, cause: &url.Error{
+				Op: "Get", URL: "https://secret-record.example/status/12345",
+				Err: &net.OpError{Op: "connect", Net: "tcp", Err: tls.RecordHeaderError{Msg: "secret record detail"}},
+			}},
+			wantClass: "transport_tls_protocol", wantStage: "tweet_read",
+		},
+		{
+			name: "other exported TLS cause through wrappers",
+			err: &harnessTweetFetchError{stage: harnessTweetFetchStageRead, cause: &url.Error{
+				Op: "Get", URL: "https://secret-ech.example/status/12345",
+				Err: &net.OpError{Op: "connect", Net: "tcp", Err: &tls.ECHRejectionError{RetryConfigList: []byte("secret retry config")}},
+			}},
+			wantClass: "transport_tls_other", wantStage: "tweet_read",
 		},
 		{
 			name: "proxy connect operation",
@@ -450,9 +475,27 @@ func TestHarnessTransportSubtypeLogsDoNotLeakWrappedDetails(t *testing.T) {
 			},
 		},
 		{
-			name: "TLS", wantClass: "transport_tls",
+			name: "TLS certificate", wantClass: "transport_tls_certificate",
 			err: &url.Error{Op: "Get", URL: "https://secret-tls.example/status/12345", Err: x509.HostnameError{
 				Host: "secret-tls.example",
+			}},
+		},
+		{
+			name: "TLS alert", wantClass: "transport_tls_alert",
+			err: &url.Error{Op: "Get", URL: "https://secret-alert.example/status/12345", Err: &net.OpError{
+				Op: "connect", Net: "tcp", Err: tls.AlertError(42),
+			}},
+		},
+		{
+			name: "TLS protocol", wantClass: "transport_tls_protocol",
+			err: &url.Error{Op: "Get", URL: "https://secret-record.example/status/12345", Err: &net.OpError{
+				Op: "connect", Net: "tcp", Err: tls.RecordHeaderError{Msg: "secret record detail", RecordHeader: [5]byte{1, 2, 3, 4, 5}},
+			}},
+		},
+		{
+			name: "TLS other", wantClass: "transport_tls_other",
+			err: &url.Error{Op: "Get", URL: "https://secret-ech.example/status/12345", Err: &net.OpError{
+				Op: "connect", Net: "tcp", Err: &tls.ECHRejectionError{RetryConfigList: []byte("secret retry config")},
 			}},
 		},
 		{
@@ -474,15 +517,34 @@ func TestHarnessTransportSubtypeLogsDoNotLeakWrappedDetails(t *testing.T) {
 				t.Fatalf("class = %q, want %q", failure.Class, tt.wantClass)
 			}
 			var output bytes.Buffer
-			logHarnessTweetFetchFailure(slog.New(slog.NewTextHandler(&output, nil)), failure)
+			handler := slog.NewJSONHandler(&output, &slog.HandlerOptions{ReplaceAttr: func(groups []string, attr slog.Attr) slog.Attr {
+				if len(groups) == 0 && attr.Key == slog.TimeKey {
+					return slog.Attr{}
+				}
+				return attr
+			}})
+			logHarnessTweetFetchFailure(slog.New(handler), failure)
 			logged := output.String()
 			for _, forbidden := range []string{"secret", "status/12345", "192.0.2.", "account"} {
 				if strings.Contains(strings.ToLower(logged), forbidden) {
 					t.Fatalf("sanitized %s log leaked %q: %s", tt.name, forbidden, logged)
 				}
 			}
-			if !strings.Contains(logged, "failure_class="+tt.wantClass) {
+			var fields map[string]any
+			if err := json.Unmarshal(output.Bytes(), &fields); err != nil {
+				t.Fatalf("decode sanitized log: %v log=%s", err, logged)
+			}
+			if fields["failure_class"] != tt.wantClass {
 				t.Fatalf("sanitized log missing class: %s", logged)
+			}
+			allowed := map[string]bool{
+				"level": true, "msg": true, "request_id": true, "failure_class": true,
+				"stage": true, "tweet_count": true, "elapsed_ms": true,
+			}
+			for key := range fields {
+				if !allowed[key] {
+					t.Fatalf("sanitized log exposed unexpected field %q: %s", key, logged)
+				}
 			}
 		})
 	}
