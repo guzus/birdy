@@ -761,7 +761,10 @@ func parseStrictTimelineInstructions(raw json.RawMessage) (timelinePage, error) 
 		if err := json.Unmarshal(rawInstruction, &object); err != nil || object == nil {
 			return timelinePage{}, &APIError{Message: fmt.Sprintf("malformed timeline instruction %d", index)}
 		}
-		typeName := rawStringField(object, "type", "__typename")
+		typeName, err := rawTypeDiscriminator(object, "timeline instruction")
+		if err != nil {
+			return timelinePage{}, err
+		}
 		entriesRaw, hasEntries := object["entries"]
 		entryRaw, hasEntry := object["entry"]
 		if hasEntries && hasEntry {
@@ -823,6 +826,9 @@ func parseStrictTimelineInstructions(raw json.RawMessage) (timelinePage, error) 
 		if !isKnownDecorativeInstruction(typeName) {
 			return timelinePage{}, &APIError{Message: fmt.Sprintf("unrecognized timeline instruction %d type %q", index, typeName)}
 		}
+		if err := validateNonDataInstructionKeys(object, typeName); err != nil {
+			return timelinePage{}, err
+		}
 	}
 	return timelinePage{tweets: tweets, cursor: cursor}, nil
 }
@@ -840,7 +846,11 @@ func parseStrictTimelineEntry(raw json.RawMessage) ([]Tweet, string, error) {
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		return nil, "", &APIError{Message: "malformed timeline entry content"}
 	}
-	typedCursor := parsed.Content.TypeName == "TimelineTimelineCursor" || parsed.Content.EntryType == "TimelineTimelineCursor"
+	contentType, err := consistentDiscriminator(parsed.Content.EntryType, parsed.Content.TypeName, "timeline entry content")
+	if err != nil {
+		return nil, "", err
+	}
+	typedCursor := contentType == "TimelineTimelineCursor"
 	if typedCursor && parsed.Content.CursorType == "" {
 		return nil, "", &APIError{Message: "malformed typed timeline cursor: missing cursorType"}
 	}
@@ -860,6 +870,9 @@ func parseStrictTimelineEntry(raw json.RawMessage) ([]Tweet, string, error) {
 	if parsed.Content.CursorType != "" && parsed.Content.CursorType != "Top" {
 		return nil, "", &APIError{Message: fmt.Sprintf("unsupported timeline cursor type %q", parsed.Content.CursorType)}
 	}
+	if err := validateStrictTimelineItemTypes(parsed); err != nil {
+		return nil, "", err
+	}
 	nodes, err := collectFromEntry(parsed)
 	if err != nil {
 		return nil, "", err
@@ -878,23 +891,48 @@ func parseStrictTimelineEntry(raw json.RawMessage) ([]Tweet, string, error) {
 	return tweets, "", nil
 }
 
-func rawStringField(object map[string]json.RawMessage, keys ...string) string {
-	for _, key := range keys {
-		var value string
-		if raw, ok := object[key]; ok && json.Unmarshal(raw, &value) == nil && value != "" {
-			return value
+func rawTypeDiscriminator(object map[string]json.RawMessage, context string) (string, error) {
+	values := make(map[string]string, 2)
+	for _, key := range []string{"type", "__typename"} {
+		raw, present := object[key]
+		if !present {
+			continue
 		}
+		var value string
+		if err := json.Unmarshal(raw, &value); err != nil || value == "" {
+			return "", &APIError{Message: fmt.Sprintf("malformed %s discriminator %s", context, key)}
+		}
+		values[key] = value
 	}
-	return ""
+	return consistentDiscriminator(values["type"], values["__typename"], context)
 }
 
 func isKnownDecorativeInstruction(typeName string) bool {
 	switch typeName {
-	case "TimelineClearCache", "TimelineTerminateTimeline", "TimelineShowAlert":
+	case "TimelineClearCache", "TimelineTerminateTimeline":
 		return true
 	default:
 		return false
 	}
+}
+
+func validateNonDataInstructionKeys(object map[string]json.RawMessage, typeName string) error {
+	allowed := map[string]struct{}{"type": {}, "__typename": {}}
+	if typeName == "TimelineTerminateTimeline" {
+		allowed["direction"] = struct{}{}
+	}
+	for key := range object {
+		if _, ok := allowed[key]; !ok {
+			return &APIError{Message: fmt.Sprintf("non-data instruction %q has unsupported key %q", typeName, key)}
+		}
+	}
+	if raw, present := object["direction"]; present {
+		var direction string
+		if err := json.Unmarshal(raw, &direction); err != nil || (direction != "Top" && direction != "Bottom") {
+			return &APIError{Message: fmt.Sprintf("non-data instruction %q has malformed direction", typeName)}
+		}
+	}
+	return nil
 }
 
 // navigate walks a JSON object along a path of keys.

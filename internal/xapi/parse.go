@@ -115,9 +115,34 @@ type entry struct {
 type itemContent struct {
 	TypeName     string `json:"__typename"`
 	ItemType     string `json:"itemType"`
+	typeShapeErr string
 	TweetResults *struct {
 		Result *tweetResult `json:"result"`
 	} `json:"tweet_results"`
+}
+
+func (item *itemContent) UnmarshalJSON(data []byte) error {
+	type alias itemContent
+	var decoded alias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*item = itemContent(decoded)
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(data, &object); err != nil {
+		return err
+	}
+	for _, key := range []string{"itemType", "__typename"} {
+		raw, present := object[key]
+		if !present {
+			continue
+		}
+		var value string
+		if err := json.Unmarshal(raw, &value); err != nil || value == "" {
+			item.typeShapeErr = fmt.Sprintf("%s is present but not a nonempty string", key)
+		}
+	}
+	return nil
 }
 
 type timelineModuleItem struct {
@@ -638,13 +663,87 @@ func collectFromEntry(e entry) ([]*tweetResult, error) {
 	return out, nil
 }
 
-func isKnownNonTweetItemContent(item *itemContent) bool {
-	switch firstNonEmpty(item.ItemType, item.TypeName) {
-	case "TimelineMessagePrompt", "TimelineLabel", "TimelineSpelling", "TimelineShowAlert":
+func validateStrictTimelineItemTypes(e entry) error {
+	if _, err := consistentDiscriminator(e.Content.EntryType, e.Content.TypeName, "timeline entry content"); err != nil {
+		return err
+	}
+	validate := func(item *itemContent) error {
+		if item.typeShapeErr != "" {
+			return &APIError{Message: "malformed timeline item discriminator: " + item.typeShapeErr}
+		}
+		kind, err := consistentDiscriminator(item.ItemType, item.TypeName, "timeline item content")
+		if err != nil {
+			return err
+		}
+		if isKnownNonTweetType(kind) && item.TweetResults != nil {
+			return &APIError{Message: fmt.Sprintf("non-tweet timeline item %q unexpectedly carries tweet_results", kind)}
+		}
+		return nil
+	}
+	if e.Content.ItemContent != nil {
+		if err := validate(e.Content.ItemContent); err != nil {
+			return err
+		}
+	}
+	if e.Content.Item != nil && e.Content.Item.ItemContent != nil {
+		if err := validate(e.Content.Item.ItemContent); err != nil {
+			return err
+		}
+	}
+	if e.Content.Items != nil {
+		for _, moduleItem := range *e.Content.Items {
+			for _, item := range []*itemContent{
+				moduleItem.ItemContent,
+				itemContentFromItem(moduleItem.Item),
+				itemContentFromContent(moduleItem.Content),
+			} {
+				if item != nil {
+					if err := validate(item); err != nil {
+						return err
+					}
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func itemContentFromItem(item *struct {
+	ItemContent *itemContent `json:"itemContent"`
+}) *itemContent {
+	if item == nil {
+		return nil
+	}
+	return item.ItemContent
+}
+
+func itemContentFromContent(content *struct {
+	ItemContent *itemContent `json:"itemContent"`
+}) *itemContent {
+	if content == nil {
+		return nil
+	}
+	return content.ItemContent
+}
+
+func isKnownNonTweetType(kind string) bool {
+	switch kind {
+	case "TimelineMessagePrompt", "TimelineLabel", "TimelineSpelling", "TimelineShowAlert", "TimelineUser":
 		return true
 	default:
 		return false
 	}
+}
+
+func consistentDiscriminator(primary, typeName, context string) (string, error) {
+	if primary != "" && typeName != "" && primary != typeName {
+		return "", &APIError{Message: fmt.Sprintf("conflicting %s discriminators %q and %q", context, primary, typeName)}
+	}
+	return firstNonEmpty(primary, typeName), nil
+}
+
+func isKnownNonTweetItemContent(item *itemContent) bool {
+	return isKnownNonTweetType(firstNonEmpty(item.ItemType, item.TypeName))
 }
 
 func isKnownNonTweetEntryType(typeName string) bool {

@@ -7,6 +7,11 @@ import (
 	"testing"
 )
 
+// Sanitized from a live Following response on 2026-08-09. Only structural
+// keys and the typename are retained; this instruction invalidates client
+// cache state and carries no graph membership.
+const liveFollowingNonDataInstructionsFixture = `{"data":{"user":{"result":{"timeline":{"timeline":{"instructions":[{"type":"TimelineClearCache"},{"entries":[]},{"type":"TimelineTerminateTimeline"}]}}}}}}`
+
 // userListBody wraps timeline entries in the envelope X returns, so each test
 // writes only the part it cares about instead of counting braces.
 func userListBody(entries string) []byte {
@@ -172,6 +177,7 @@ func TestParseUserListRejectsMalformedUserEntries(t *testing.T) {
 		`[{"content":{"entryType":"TimelineTimelineModule","items":[{"item":{"itemContent":{"user_results":{"result":{"__typename":"User","rest_id":"8"}}}}}]}}]`,
 		`[{"content":{"itemContent":{"__typename":"TimelineTimelineModule"}}}]`,
 		`[{"content":{"entryType":"TimelineTimelineCursor"}}]`,
+		`[{"content":{"entryType":"TimelineTimelineCursor","__typename":"TimelineTweet","cursorType":"Bottom","value":"C"}}]`,
 		`[{"content":{"cursorType":"Bottom","value":""}}]`,
 		`[{"content":{"cursorType":"Top","value":""}}]`,
 		`[{"content":{"cursorType":"Bottom","value":"C","itemContent":{"__typename":"TimelineMessagePrompt"}}}]`,
@@ -192,12 +198,21 @@ func TestParseUserListRejectsMalformedUserEntries(t *testing.T) {
 }
 
 func TestParseUserListRejectsEnvelopeAndInstructionAmbiguity(t *testing.T) {
+	page, err := parseUserList([]byte(liveFollowingNonDataInstructionsFixture))
+	if err != nil || len(page.Users) != 0 || page.NextCursor != "" {
+		t.Fatalf("live clear-cache fixture = %+v, %v", page, err)
+	}
+
 	withErrors := []byte(`{"errors":[{"message":"partial"}],"data":{"user":{"result":{"timeline":{"timeline":{"instructions":[]}}}}}}`)
 	if page, err := parseUserList(withErrors); err == nil || page != nil {
 		t.Fatalf("partial GraphQL error accepted: page=%+v err=%v", page, err)
 	}
 	for _, instructions := range []string{
 		`[{}]`,
+		`[{"type":"TimelineClearCache","__typename":"UnknownInstruction","items":[{"itemContent":{"user_results":{"result":{"__typename":"User","rest_id":"7","legacy":{"screen_name":"hidden","name":"Hidden"}}}}}]}]`,
+		`[{"type":"TimelineClearCache","items":[{"itemContent":{"user_results":{"result":{"__typename":"User","rest_id":"7","legacy":{"screen_name":"hidden","name":"Hidden"}}}}}]}]`,
+		`[{"type":"TimelineTerminateTimeline","user_results":{"result":{"__typename":"User","rest_id":"7"}}}]`,
+		`[{"type":null}]`,
 		`[{"type":"NewInstruction","entries":[]}]`,
 		`[{"type":"TimelineReplaceEntry","entry":{"content":{"itemContent":{"__typename":"TimelineMessagePrompt"}}}}]`,
 	} {

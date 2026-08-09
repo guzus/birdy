@@ -152,3 +152,40 @@ func TestIntegrationUserReplies(t *testing.T) {
 	}
 	t.Fatalf("Tweets & Replies returned %d entries but none was a reply", len(page.Tweets))
 }
+
+func TestIntegrationMonitoringCanaries(t *testing.T) {
+	requireIntegration(t)
+	base, err := NewClient(Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	accounts := base.Accounts()
+	if len(accounts) < 2 {
+		t.Skip("monitoring canary requires two configured accounts")
+	}
+	targets := []string{"thsottiaux", "guzus"}
+	for index, account := range accounts[:2] {
+		target := targets[index]
+		t.Run(account+"/"+target, func(t *testing.T) {
+			client, err := NewMonitoringClient(MonitoringOptions{Account: account})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
+			defer cancel()
+			profile, err := client.UserProfile(ctx, target)
+			if err != nil {
+				t.Fatalf("UserProfile: %v", err)
+			}
+			if _, err := client.UserTimeline(ctx, target, UserTimelineOptions{Limit: 5, MaxPages: 1}); err != nil {
+				t.Fatalf("UserTimeline: %v", err)
+			}
+			if _, err := client.UserReplies(ctx, target, UserTimelineOptions{Limit: 5, MaxPages: 1}); err != nil {
+				t.Fatalf("UserReplies: %v", err)
+			}
+			if _, err := client.Following(ctx, profile.ID, FollowingOptions{PageSize: 20, MaxPages: 1}); err != nil {
+				t.Fatalf("Following: %v", err)
+			}
+		})
+	}
+}

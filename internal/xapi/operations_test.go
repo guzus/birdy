@@ -6,6 +6,11 @@ import (
 	"testing"
 )
 
+// Sanitized from a live UserTweets response on 2026-08-09. Only structural
+// keys and typenames are retained; TimelineUser is a profile decoration, not
+// a tweet result.
+const liveTimelineUserDecorationFixture = `[{"entries":[{"content":{"itemContent":{"__typename":"TimelineUser"}}}]}]`
+
 func TestClampCount(t *testing.T) {
 	cases := map[string]struct{ in, want int }{
 		"zero defaults":      {0, 20},
@@ -213,11 +218,15 @@ func TestStrictTimelineParserFailsClosed(t *testing.T) {
 			`[{}]`,
 			`[{"type":"NewInstruction"}]`,
 			`[{"type":"NewInstruction","entries":[]}]`,
+			`[{"type":"TimelineClearCache","items":[{"content":{"itemContent":{"tweet_results":{"result":{}}}}}]}]`,
+			`[{"type":"TimelineTerminateTimeline","content":{"tweet_results":{}}}]`,
+			`[{"type":"TimelineTerminateTimeline","direction":"Sideways"}]`,
 			`[{"type":"NewSingular","entry":` + validEntry + `}]`,
 			`[{"entries":[{}]}]`,
 			`[{"entries":[{"content":{"entryType":"TimelineTimelineCursor"}}]}]`,
 			`[{"entries":[{"content":{"cursorType":"Bottom","value":""}}]}]`,
 			`[{"entries":[{"content":{"cursorType":"Top","value":""}}]}]`,
+			`[{"entries":[{"content":{"entryType":"TimelineTimelineCursor","__typename":"TimelineTweet","cursorType":"Bottom","value":"C"}}]}]`,
 			`[{"entries":[{"content":{"cursorType":"Bottom","value":"C","itemContent":{"__typename":"TimelineTweet","tweet_results":{}}}}]}]`,
 		}
 		for _, raw := range bad {
@@ -235,6 +244,36 @@ func TestStrictTimelineParserFailsClosed(t *testing.T) {
 		page, err = parseStrictTimelineInstructions([]byte(`[{"type":"TimelineReplaceEntry","entry":{"content":{"entryType":"TimelineTimelineCursor","cursorType":"Bottom","value":"NEXT"}}}]`))
 		if err != nil || page.cursor != "NEXT" {
 			t.Fatalf("replacement cursor = %+v, %v", page, err)
+		}
+	})
+
+	t.Run("live TimelineUser decoration is explicitly non-data", func(t *testing.T) {
+		page, err := parseStrictTimelineInstructions([]byte(liveTimelineUserDecorationFixture))
+		if err != nil || len(page.tweets) != 0 || page.cursor != "" {
+			t.Fatalf("TimelineUser decoration = %+v, %v", page, err)
+		}
+		mixed := `[{"entries":[{"content":{"itemContent":{"__typename":"TimelineUser","tweet_results":{"result":{}}}}}]}]`
+		if _, err := parseStrictTimelineInstructions([]byte(mixed)); err == nil {
+			t.Fatal("TimelineUser carrying tweet_results must fail closed")
+		}
+		conflict := `[{"entries":[{"content":{"itemContent":{"itemType":"TimelineUser","__typename":"TimelineTweet"}}}]}]`
+		if _, err := parseStrictTimelineInstructions([]byte(conflict)); err == nil {
+			t.Fatal("conflicting itemType/__typename must fail closed")
+		}
+	})
+
+	t.Run("legacy parser remains permissive for typed non-tweet with tweet payload", func(t *testing.T) {
+		body := []byte(`{"data":{"search_by_raw_query":{"search_timeline":{"timeline":{"instructions":[{"entries":[
+			{"content":{"itemContent":{"__typename":"TimelineUser","tweet_results":{"result":{
+				"rest_id":"1","core":{"user_results":{"result":{"legacy":{"screen_name":"a","name":"A"}}}},"legacy":{"full_text":"legacy"}
+			}}}}}
+		]}]}}}}}`)
+		tweets, err := parseTimeline(body, opSearch.roots)
+		if err != nil || len(tweets) != 1 || tweets[0].ID != "1" {
+			t.Fatalf("legacy timeline = %+v, %v", tweets, err)
+		}
+		if _, err := parseTimelinePageStrict(body, opSearch.roots); err == nil {
+			t.Fatal("strict monitoring accepted contradictory non-tweet payload")
 		}
 	})
 

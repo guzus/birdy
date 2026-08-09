@@ -123,10 +123,37 @@ type userInstructions struct {
 }
 
 type userInstruction struct {
-	TypeName string       `json:"__typename"`
-	Type     string       `json:"type"`
-	Entries  *[]userEntry `json:"entries"`
-	Entry    *userEntry   `json:"entry"`
+	TypeName     string `json:"__typename"`
+	Type         string `json:"type"`
+	typeShapeErr string
+	rawObject    map[string]json.RawMessage
+	Entries      *[]userEntry `json:"entries"`
+	Entry        *userEntry   `json:"entry"`
+}
+
+func (instruction *userInstruction) UnmarshalJSON(data []byte) error {
+	type alias userInstruction
+	var decoded alias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*instruction = userInstruction(decoded)
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(data, &object); err != nil {
+		return err
+	}
+	instruction.rawObject = object
+	for _, key := range []string{"type", "__typename"} {
+		raw, present := object[key]
+		if !present {
+			continue
+		}
+		var value string
+		if err := json.Unmarshal(raw, &value); err != nil || value == "" {
+			instruction.typeShapeErr = fmt.Sprintf("%s is present but not a nonempty string", key)
+		}
+	}
+	return nil
 }
 
 type userEntry struct {
@@ -240,10 +267,25 @@ func parseUserList(body []byte) (*UserListPage, error) {
 
 	page := &UserListPage{}
 	for _, instruction := range *timeline.Instructions {
-		if instruction.Entry != nil || instruction.Entries == nil {
-			return nil, &APIError{Message: "unsupported user-list instruction: expected entries collection"}
+		if instruction.typeShapeErr != "" {
+			return nil, &APIError{Message: "malformed user-list instruction discriminator: " + instruction.typeShapeErr}
 		}
-		kind := firstNonEmpty(instruction.Type, instruction.TypeName)
+		kind, err := consistentDiscriminator(instruction.Type, instruction.TypeName, "user-list instruction")
+		if err != nil {
+			return nil, err
+		}
+		if instruction.Entries == nil {
+			if instruction.Entry == nil && (kind == "TimelineClearCache" || kind == "TimelineTerminateTimeline") {
+				if err := validateNonDataInstructionKeys(instruction.rawObject, kind); err != nil {
+					return nil, err
+				}
+				continue // observed live non-data cache/termination instructions
+			}
+			return nil, &APIError{Message: fmt.Sprintf("unsupported user-list instruction %q: expected entries collection", firstNonEmpty(instruction.Type, instruction.TypeName))}
+		}
+		if instruction.Entry != nil {
+			return nil, &APIError{Message: fmt.Sprintf("unsupported singular user-list instruction %q", kind)}
+		}
 		if kind != "" && kind != "TimelineAddEntries" {
 			return nil, &APIError{Message: fmt.Sprintf("unsupported user-list instruction type %q", kind)}
 		}
@@ -251,8 +293,12 @@ func parseUserList(body []byte) (*UserListPage, error) {
 			if entry.Content == nil {
 				return nil, &APIError{Message: "malformed user-list entry: missing content"}
 			}
+			contentType, err := consistentDiscriminator(entry.Content.EntryType, entry.Content.TypeName, "user-list entry content")
+			if err != nil {
+				return nil, err
+			}
 			hasData := entry.Content.ItemContent != nil || entry.Content.Items != nil
-			typedCursor := entry.Content.TypeName == "TimelineTimelineCursor" || entry.Content.EntryType == "TimelineTimelineCursor"
+			typedCursor := contentType == "TimelineTimelineCursor"
 			if typedCursor && entry.Content.CursorType == "" {
 				return nil, &APIError{Message: "malformed typed user-list cursor: missing cursorType"}
 			}
@@ -292,7 +338,11 @@ func usersFromEntry(entry userEntry) ([]ListedUser, error) {
 	if entry.Content == nil {
 		return nil, &APIError{Message: "malformed user-list entry: missing content"}
 	}
-	if !isUserModule(entry) {
+	kind, err := consistentDiscriminator(entry.Content.EntryType, entry.Content.TypeName, "user-list entry content")
+	if err != nil {
+		return nil, err
+	}
+	if kind != "TimelineTimelineModule" {
 		user, ok, err := mapUserEntry(entry)
 		if err != nil || !ok {
 			return nil, err
@@ -338,10 +388,6 @@ func usersFromEntry(entry userEntry) ([]ListedUser, error) {
 	return users, nil
 }
 
-func isUserModule(entry userEntry) bool {
-	return entry.Content != nil && (entry.Content.TypeName == "TimelineTimelineModule" || entry.Content.EntryType == "TimelineTimelineModule")
-}
-
 func mapUserEntry(entry userEntry) (ListedUser, bool, error) {
 	if entry.Content == nil {
 		return ListedUser{}, false, &APIError{Message: "malformed user-list entry: missing content"}
@@ -353,11 +399,15 @@ func mapUserEntry(entry userEntry) (ListedUser, bool, error) {
 		}
 		return ListedUser{}, false, &APIError{Message: "unrecognized user-list entry: no item content"}
 	}
+	kind, err := consistentDiscriminator(item.ItemType, item.TypeName, "user-list item content")
+	if err != nil {
+		return ListedUser{}, false, err
+	}
 	if item.UserResults == nil {
-		if isNonUserTimelineType(item.TypeName) || isNonUserTimelineType(item.ItemType) {
+		if isNonUserTimelineType(kind) {
 			return ListedUser{}, false, nil
 		}
-		return ListedUser{}, false, &APIError{Message: fmt.Sprintf("unrecognized user-list item type %q", firstNonEmpty(item.ItemType, item.TypeName))}
+		return ListedUser{}, false, &APIError{Message: fmt.Sprintf("unrecognized user-list item type %q", kind)}
 	}
 	raw := item.UserResults.Result
 	if raw == nil {
