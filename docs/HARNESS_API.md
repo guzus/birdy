@@ -139,6 +139,23 @@ concurrently; excess requests fail fast with `503` rather than queueing. Limits
 are process-local, so a public deployment should remain at one replica unless
 these controls move to a shared edge or datastore.
 
+### Tweet-fetch diagnostics
+
+An X fetch deadline returns the generic `504 tweet_context_timeout`; other X
+or transport failures return the generic `502 tweet_context_unavailable`.
+Neither response exposes upstream details. The server emits a structured
+`harness tweet context fetch failed` process log correlated by `request_id`.
+Its fields are limited to `failure_class`, `stage`, aggregate `tweet_count`,
+`elapsed_ms`, and numeric `upstream_status` when X supplied one. It never logs
+the underlying error string, credentials, account name, tweet IDs or text,
+page URL, selection, or prompt. Failure classes are `configuration`,
+`transport`, `upstream_http`, `upstream_response`,
+`upstream_rate_limited`, `timeout`, `canceled`, or `unknown`.
+
+A configured harness pool must contain at least one enabled read-only account.
+Disabled accounts may remain in the pool, but an all-disabled pool fails host
+startup instead of turning every request into an unexplained runtime `502`.
+
 ## Model capability boundary
 
 The host resolves the exact tweet IDs before starting the model. Claude then

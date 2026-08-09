@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime"
 	"net"
 	"net/http"
@@ -25,6 +26,7 @@ import (
 
 	"github.com/guzus/birdy/internal/birdbox"
 	"github.com/guzus/birdy/internal/claude"
+	"github.com/guzus/birdy/internal/xapi"
 	"github.com/guzus/birdy/pkg/tweet"
 )
 
@@ -103,15 +105,43 @@ type harnessModelInput struct {
 }
 
 type harnessDependencies struct {
-	fetch        func(context.Context, []string) ([]harnessTweetContext, error)
-	stream       func(context.Context, string, string, string, func(claude.Event))
-	tokenLimiter *harnessRateLimiter
-	ipLimiter    *harnessRateLimiter
-	sem          chan struct{}
-	requestID    func() string
-	readLimiter  *harnessRateLimiter
-	globalReads  *harnessRateLimiter
-	fetchTimeout time.Duration
+	fetch              func(context.Context, []string) ([]harnessTweetContext, error)
+	stream             func(context.Context, string, string, string, func(claude.Event))
+	reportFetchFailure func(harnessTweetFetchFailure)
+	tokenLimiter       *harnessRateLimiter
+	ipLimiter          *harnessRateLimiter
+	sem                chan struct{}
+	requestID          func() string
+	readLimiter        *harnessRateLimiter
+	globalReads        *harnessRateLimiter
+	fetchTimeout       time.Duration
+}
+
+type harnessTweetFetchStage string
+
+const (
+	harnessTweetFetchStageClientInit harnessTweetFetchStage = "client_init"
+	harnessTweetFetchStageRead       harnessTweetFetchStage = "tweet_read"
+)
+
+type harnessTweetFetchError struct {
+	stage harnessTweetFetchStage
+	cause error
+}
+
+// Error is intentionally generic. The cause can contain an account name,
+// upstream response excerpt, URL, or transport detail and must never reach an
+// HTTP response or an unstructured production log.
+func (e *harnessTweetFetchError) Error() string { return "harness tweet fetch failed" }
+func (e *harnessTweetFetchError) Unwrap() error { return e.cause }
+
+type harnessTweetFetchFailure struct {
+	RequestID      string
+	Class          string
+	Stage          string
+	UpstreamStatus int
+	TweetCount     int
+	ElapsedMS      int64
 }
 
 type harnessRateEntry struct {
@@ -203,14 +233,22 @@ func loadHarnessConfig(inviteCode string) (harnessConfig, error) {
 	}
 	var accountPolicies []struct {
 		ReadOnly bool `json:"read_only"`
+		Disabled bool `json:"disabled"`
 	}
 	if err := json.Unmarshal([]byte(accountsJSON), &accountPolicies); err != nil || len(accountPolicies) == 0 {
 		return harnessConfig{}, fmt.Errorf("%s must be a non-empty account JSON array", harnessAccountsEnv)
 	}
+	enabledAccounts := 0
 	for _, account := range accountPolicies {
 		if !account.ReadOnly {
 			return harnessConfig{}, fmt.Errorf("every %s account must set read_only=true", harnessAccountsEnv)
 		}
+		if !account.Disabled {
+			enabledAccounts++
+		}
+	}
+	if enabledAccounts == 0 {
+		return harnessConfig{}, fmt.Errorf("%s must contain at least one enabled read-only account", harnessAccountsEnv)
 	}
 	if _, err := tweet.NewClient(tweet.Options{AccountsJSON: accountsJSON, Strategy: "quota-aware"}); err != nil {
 		return harnessConfig{}, fmt.Errorf("invalid %s: %w", harnessAccountsEnv, err)
@@ -271,8 +309,11 @@ func envTruthy(value string) bool {
 func newHarnessChatHandlerFromEnv(inviteCode string) http.Handler {
 	config, _ := loadHarnessConfig(inviteCode)
 	deps := harnessDependencies{
-		fetch:        newHarnessTweetFetcher(config.accountsJSON),
-		stream:       streamHarnessModel,
+		fetch:  newHarnessTweetFetcher(config.accountsJSON),
+		stream: streamHarnessModel,
+		reportFetchFailure: func(failure harnessTweetFetchFailure) {
+			logHarnessTweetFetchFailure(slog.Default(), failure)
+		},
 		tokenLimiter: newHarnessRateLimiter(harnessTokenRequestsMinute, time.Minute, 256),
 		ipLimiter:    newHarnessRateLimiter(harnessIPRequestsMinute, time.Minute, 10_000),
 		sem:          harnessChatSem,
@@ -299,13 +340,13 @@ func newHarnessTweetFetcher(accountsJSON string) func(context.Context, []string)
 			client, clientErr = tweet.NewClient(tweet.Options{AccountsJSON: accountsJSON, Strategy: "quota-aware"})
 		})
 		if clientErr != nil {
-			return nil, clientErr
+			return nil, &harnessTweetFetchError{stage: harnessTweetFetchStageClientInit, cause: clientErr}
 		}
 		result := make([]harnessTweetContext, 0, len(ids))
 		for _, id := range ids {
 			post, err := client.Read(ctx, id)
 			if err != nil {
-				return nil, err
+				return nil, &harnessTweetFetchError{stage: harnessTweetFetchStageRead, cause: err}
 			}
 			text, truncated := truncateHarnessText(post.Text, harnessMaxTweetTextBytes)
 			result = append(result, harnessTweetContext{
@@ -419,10 +460,20 @@ func newHarnessChatHandler(config harnessConfig, deps harnessDependencies) http.
 		}
 
 		fetchCtx, fetchCancel := context.WithTimeout(ctx, deps.fetchTimeout)
+		fetchStarted := time.Now()
 		posts, err := deps.fetch(fetchCtx, normalized.VisibleTweetIDs)
+		fetchContextErr := fetchCtx.Err()
 		fetchCancel()
 		if err != nil {
-			if errors.Is(fetchCtx.Err(), context.DeadlineExceeded) {
+			classificationErr := err
+			if fetchContextErr != nil {
+				classificationErr = errors.Join(err, fetchContextErr)
+			}
+			failure := classifyHarnessTweetFetchFailure(classificationErr, requestID, len(normalized.VisibleTweetIDs), time.Since(fetchStarted))
+			if deps.reportFetchFailure != nil {
+				deps.reportFetchFailure(failure)
+			}
+			if errors.Is(fetchContextErr, context.DeadlineExceeded) {
 				writeHarnessError(w, http.StatusGatewayTimeout, "tweet_context_timeout", "timed out loading visible tweet context", requestID)
 				return
 			}
@@ -496,6 +547,62 @@ func newHarnessChatHandler(config harnessConfig, deps harnessDependencies) http.
 		finalizing = true
 		emit(claude.Event{Type: claude.EventDone})
 	})
+}
+
+func classifyHarnessTweetFetchFailure(err error, requestID string, tweetCount int, elapsed time.Duration) harnessTweetFetchFailure {
+	failure := harnessTweetFetchFailure{
+		RequestID:  requestID,
+		Class:      "unknown",
+		TweetCount: tweetCount,
+		ElapsedMS:  max(elapsed.Milliseconds(), 0),
+	}
+	var staged *harnessTweetFetchError
+	if errors.As(err, &staged) {
+		failure.Stage = string(staged.stage)
+	}
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		failure.Class = "timeout"
+	case errors.Is(err, context.Canceled):
+		failure.Class = "canceled"
+	case staged != nil && staged.stage == harnessTweetFetchStageClientInit:
+		failure.Class = "configuration"
+	case tweet.IsRateLimited(err):
+		failure.Class = "upstream_rate_limited"
+	}
+	var apiErr *xapi.APIError
+	if errors.As(err, &apiErr) {
+		failure.UpstreamStatus = apiErr.StatusCode
+		if failure.Class == "unknown" {
+			if apiErr.StatusCode > 0 {
+				failure.Class = "upstream_http"
+			} else {
+				failure.Class = "upstream_response"
+			}
+		}
+	}
+	if failure.Class == "unknown" {
+		var urlErr *url.Error
+		var netErr net.Error
+		if errors.As(err, &urlErr) || errors.As(err, &netErr) {
+			failure.Class = "transport"
+		}
+	}
+	return failure
+}
+
+func logHarnessTweetFetchFailure(logger *slog.Logger, failure harnessTweetFetchFailure) {
+	attrs := []any{
+		"request_id", failure.RequestID,
+		"failure_class", failure.Class,
+		"stage", failure.Stage,
+		"tweet_count", failure.TweetCount,
+		"elapsed_ms", failure.ElapsedMS,
+	}
+	if failure.UpstreamStatus > 0 {
+		attrs = append(attrs, "upstream_status", failure.UpstreamStatus)
+	}
+	logger.Error("harness tweet context fetch failed", attrs...)
 }
 
 func validateHarnessRequest(req harnessChatRequest) (harnessChatRequest, string, string) {

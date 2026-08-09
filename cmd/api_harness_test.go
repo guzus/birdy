@@ -6,14 +6,20 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/guzus/birdy/internal/claude"
+	"github.com/guzus/birdy/internal/xapi"
 )
 
 const harnessTestToken = "test-harness-token-not-a-real-secret-000"
@@ -313,6 +319,8 @@ func TestHarnessChatDeadlineEmitsErrorThenExactlyOneDone(t *testing.T) {
 func TestHarnessChatBoundsTweetContextFetchBeforeStreaming(t *testing.T) {
 	deps := harnessTestDependencies()
 	deps.fetchTimeout = 5 * time.Millisecond
+	var failure harnessTweetFetchFailure
+	deps.reportFetchFailure = func(got harnessTweetFetchFailure) { failure = got }
 	deps.fetch = func(ctx context.Context, _ []string) ([]harnessTweetContext, error) {
 		<-ctx.Done()
 		return nil, ctx.Err()
@@ -324,6 +332,102 @@ func TestHarnessChatBoundsTweetContextFetchBeforeStreaming(t *testing.T) {
 	}
 	if strings.Contains(rr.Body.String(), "event:") {
 		t.Fatalf("pre-stream timeout unexpectedly used SSE: %q", rr.Body.String())
+	}
+	if failure.Class != "timeout" || failure.RequestID != "req-123" || failure.TweetCount != 1 {
+		t.Fatalf("timeout failure report = %#v", failure)
+	}
+}
+
+func TestHarnessTweetFetchFailureClassification(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		wantClass  string
+		wantStage  string
+		wantStatus int
+	}{
+		{
+			name: "upstream HTTP",
+			err: &harnessTweetFetchError{stage: harnessTweetFetchStageRead, cause: &xapi.APIError{
+				StatusCode: http.StatusForbidden, Message: "sensitive upstream body",
+			}},
+			wantClass: "upstream_http", wantStage: "tweet_read", wantStatus: http.StatusForbidden,
+		},
+		{
+			name: "upstream response",
+			err: &harnessTweetFetchError{stage: harnessTweetFetchStageRead, cause: &xapi.APIError{
+				Message: "sensitive schema excerpt",
+			}},
+			wantClass: "upstream_response", wantStage: "tweet_read",
+		},
+		{
+			name: "upstream rate limit",
+			err: &harnessTweetFetchError{stage: harnessTweetFetchStageRead, cause: &xapi.APIError{
+				StatusCode: http.StatusTooManyRequests, RateLimited: true, Message: "sensitive upstream body",
+			}},
+			wantClass: "upstream_rate_limited", wantStage: "tweet_read", wantStatus: http.StatusTooManyRequests,
+		},
+		{
+			name:      "transport",
+			err:       &harnessTweetFetchError{stage: harnessTweetFetchStageRead, cause: &url.Error{Op: "Get", URL: "https://sensitive.example/status/12345", Err: &net.DNSError{Err: "no such host"}}},
+			wantClass: "transport", wantStage: "tweet_read",
+		},
+		{
+			name:      "configuration",
+			err:       &harnessTweetFetchError{stage: harnessTweetFetchStageClientInit, cause: errors.New("secret config detail")},
+			wantClass: "configuration", wantStage: "client_init",
+		},
+		{
+			name: "timeout", err: context.DeadlineExceeded, wantClass: "timeout",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := classifyHarnessTweetFetchFailure(tt.err, "req-safe", 2, 17*time.Millisecond)
+			if got.Class != tt.wantClass || got.Stage != tt.wantStage || got.UpstreamStatus != tt.wantStatus || got.ElapsedMS != 17 {
+				t.Fatalf("classification = %#v", got)
+			}
+		})
+	}
+}
+
+func TestHarnessTweetFetchFailureLogAndResponseDoNotLeak(t *testing.T) {
+	const sensitive = "auth_token=secret-token ct0=secret-ct0 account=harness-public https://x.com/status/12345 prompt-secret"
+	deps := harnessTestDependencies()
+	deps.fetch = func(context.Context, []string) ([]harnessTweetContext, error) {
+		return nil, &harnessTweetFetchError{stage: harnessTweetFetchStageRead, cause: fmt.Errorf("account read: %w", &xapi.APIError{
+			StatusCode: http.StatusForbidden,
+			Message:    sensitive,
+		})}
+	}
+	var failure harnessTweetFetchFailure
+	deps.reportFetchFailure = func(got harnessTweetFetchFailure) { failure = got }
+	rr := httptest.NewRecorder()
+	newHarnessChatHandler(harnessTestConfig(), deps).ServeHTTP(rr, harnessRequest(harnessValidBody()))
+
+	if rr.Code != http.StatusBadGateway || !strings.Contains(rr.Body.String(), `"error":"tweet_context_unavailable"`) {
+		t.Fatalf("upstream failure status = %d body=%q", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), sensitive) || strings.Contains(rr.Body.String(), "upstream_http") || strings.Contains(rr.Body.String(), "403") {
+		t.Fatalf("response leaked internal failure detail: %q", rr.Body.String())
+	}
+	if failure.Class != "upstream_http" || failure.UpstreamStatus != http.StatusForbidden || failure.RequestID != "req-123" {
+		t.Fatalf("failure report = %#v", failure)
+	}
+
+	var logOutput bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logOutput, nil))
+	logHarnessTweetFetchFailure(logger, failure)
+	logged := logOutput.String()
+	for _, forbidden := range []string{sensitive, "secret-token", "secret-ct0", "harness-public", "status/12345", "prompt-secret"} {
+		if strings.Contains(logged, forbidden) {
+			t.Fatalf("sanitized log leaked %q: %s", forbidden, logged)
+		}
+	}
+	for _, required := range []string{"request_id=req-123", "failure_class=upstream_http", "stage=tweet_read", "tweet_count=1", "upstream_status=403"} {
+		if !strings.Contains(logged, required) {
+			t.Fatalf("sanitized log missing %q: %s", required, logged)
+		}
 	}
 }
 
@@ -436,6 +540,20 @@ func TestLoadHarnessConfigRejectsInviteCodeReuseAndMissingDedicatedAccounts(t *t
 	t.Setenv(harnessAccountsEnv, "")
 	if _, err := loadHarnessConfig(inviteCode); err == nil || !strings.Contains(err.Error(), harnessAccountsEnv) {
 		t.Fatalf("expected missing dedicated accounts failure, got %v", err)
+	}
+}
+
+func TestLoadHarnessConfigRejectsAllDisabledDedicatedAccounts(t *testing.T) {
+	digest := sha256.Sum256([]byte(harnessTestToken))
+	t.Setenv(harnessTokenHashesEnv, `{"install-one":"`+hex.EncodeToString(digest[:])+`"}`)
+	const disabledAccounts = `[{"name":"harness-public","auth_token":"fake-secret-auth","ct0":"fake-secret-ct0","read_only":true,"disabled":true}]`
+	t.Setenv(harnessAccountsEnv, disabledAccounts)
+	_, err := loadHarnessConfig("distinct-shared-invite")
+	if err == nil || !strings.Contains(err.Error(), "at least one enabled read-only account") {
+		t.Fatalf("all-disabled pool error = %v", err)
+	}
+	if strings.Contains(err.Error(), "fake-secret") || strings.Contains(err.Error(), "harness-public") {
+		t.Fatalf("configuration error leaked account detail: %v", err)
 	}
 }
 
