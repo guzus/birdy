@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -339,6 +340,11 @@ func TestHarnessChatBoundsTweetContextFetchBeforeStreaming(t *testing.T) {
 }
 
 func TestHarnessTweetFetchFailureClassification(t *testing.T) {
+	secretDNSFailure := &url.Error{
+		Op:  "Get",
+		URL: "https://secret-dns.example/status/12345",
+		Err: &net.OpError{Op: "dial", Net: "tcp", Err: &net.DNSError{Err: "secret resolver detail", Name: "secret-dns.example"}},
+	}
 	tests := []struct {
 		name       string
 		err        error
@@ -368,9 +374,38 @@ func TestHarnessTweetFetchFailureClassification(t *testing.T) {
 			wantClass: "upstream_rate_limited", wantStage: "tweet_read", wantStatus: http.StatusTooManyRequests,
 		},
 		{
-			name:      "transport",
-			err:       &harnessTweetFetchError{stage: harnessTweetFetchStageRead, cause: &url.Error{Op: "Get", URL: "https://sensitive.example/status/12345", Err: &net.DNSError{Err: "no such host"}}},
-			wantClass: "transport", wantStage: "tweet_read",
+			name:      "DNS through url and net operation wrappers",
+			err:       &harnessTweetFetchError{stage: harnessTweetFetchStageRead, cause: secretDNSFailure},
+			wantClass: "transport_dns", wantStage: "tweet_read",
+		},
+		{
+			name: "TCP connect through wrappers",
+			err: &harnessTweetFetchError{stage: harnessTweetFetchStageRead, cause: &url.Error{
+				Op: "Get", URL: "https://secret-connect.example/status/12345",
+				Err: &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("secret dial detail")},
+			}},
+			wantClass: "transport_connect", wantStage: "tweet_read",
+		},
+		{
+			name: "TLS cause wins over enclosing connect operation",
+			err: &harnessTweetFetchError{stage: harnessTweetFetchStageRead, cause: &url.Error{
+				Op: "Get", URL: "https://secret-tls.example/status/12345",
+				Err: &net.OpError{Op: "dial", Net: "tcp", Err: x509.UnknownAuthorityError{}},
+			}},
+			wantClass: "transport_tls", wantStage: "tweet_read",
+		},
+		{
+			name: "proxy connect operation",
+			err: &harnessTweetFetchError{stage: harnessTweetFetchStageRead, cause: &url.Error{
+				Op: "Get", URL: "https://secret-target.example/status/12345",
+				Err: &net.OpError{Op: "proxyconnect", Net: "tcp", Err: errors.New("secret proxy detail")},
+			}},
+			wantClass: "transport_proxy", wantStage: "tweet_read",
+		},
+		{
+			name:      "other URL transport",
+			err:       &harnessTweetFetchError{stage: harnessTweetFetchStageRead, cause: &url.Error{Op: "Get", URL: "https://secret-other.example/status/12345", Err: errors.New("secret other detail")}},
+			wantClass: "transport_other", wantStage: "tweet_read",
 		},
 		{
 			name:      "configuration",
@@ -378,7 +413,12 @@ func TestHarnessTweetFetchFailureClassification(t *testing.T) {
 			wantClass: "configuration", wantStage: "client_init",
 		},
 		{
-			name: "timeout", err: context.DeadlineExceeded, wantClass: "timeout",
+			name: "timeout precedence over DNS", err: errors.Join(context.DeadlineExceeded, secretDNSFailure), wantClass: "timeout",
+		},
+		{
+			name:      "configuration precedence over DNS",
+			err:       &harnessTweetFetchError{stage: harnessTweetFetchStageClientInit, cause: secretDNSFailure},
+			wantClass: "configuration", wantStage: "client_init",
 		},
 	}
 	for _, tt := range tests {
@@ -386,6 +426,63 @@ func TestHarnessTweetFetchFailureClassification(t *testing.T) {
 			got := classifyHarnessTweetFetchFailure(tt.err, "req-safe", 2, 17*time.Millisecond)
 			if got.Class != tt.wantClass || got.Stage != tt.wantStage || got.UpstreamStatus != tt.wantStatus || got.ElapsedMS != 17 {
 				t.Fatalf("classification = %#v", got)
+			}
+		})
+	}
+}
+
+func TestHarnessTransportSubtypeLogsDoNotLeakWrappedDetails(t *testing.T) {
+	tests := []struct {
+		name      string
+		wantClass string
+		err       error
+	}{
+		{
+			name: "DNS", wantClass: "transport_dns",
+			err: &url.Error{Op: "Get", URL: "https://secret-dns.example/status/12345", Err: &net.OpError{
+				Op: "dial", Net: "tcp", Err: &net.DNSError{Err: "secret DNS detail", Name: "secret-dns.example"},
+			}},
+		},
+		{
+			name: "connect", wantClass: "transport_connect",
+			err: &url.Error{Op: "Get", URL: "https://secret-connect.example/status/12345", Err: &net.OpError{
+				Op: "dial", Net: "tcp", Err: errors.New("secret connect detail 192.0.2.1")},
+			},
+		},
+		{
+			name: "TLS", wantClass: "transport_tls",
+			err: &url.Error{Op: "Get", URL: "https://secret-tls.example/status/12345", Err: x509.HostnameError{
+				Host: "secret-tls.example",
+			}},
+		},
+		{
+			name: "proxy", wantClass: "transport_proxy",
+			err: &url.Error{Op: "Get", URL: "https://secret-target.example/status/12345", Err: &net.OpError{
+				Op: "proxyconnect", Net: "tcp", Err: errors.New("secret-proxy.example 192.0.2.2")},
+			},
+		},
+		{
+			name: "other", wantClass: "transport_other",
+			err: &url.Error{Op: "Get", URL: "https://secret-other.example/status/12345", Err: errors.New("secret other detail")},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			wrapped := &harnessTweetFetchError{stage: harnessTweetFetchStageRead, cause: fmt.Errorf("secret account wrapper: %w", tt.err)}
+			failure := classifyHarnessTweetFetchFailure(wrapped, "req-safe", 1, time.Millisecond)
+			if failure.Class != tt.wantClass {
+				t.Fatalf("class = %q, want %q", failure.Class, tt.wantClass)
+			}
+			var output bytes.Buffer
+			logHarnessTweetFetchFailure(slog.New(slog.NewTextHandler(&output, nil)), failure)
+			logged := output.String()
+			for _, forbidden := range []string{"secret", "status/12345", "192.0.2.", "account"} {
+				if strings.Contains(strings.ToLower(logged), forbidden) {
+					t.Fatalf("sanitized %s log leaked %q: %s", tt.name, forbidden, logged)
+				}
+			}
+			if !strings.Contains(logged, "failure_class="+tt.wantClass) {
+				t.Fatalf("sanitized log missing class: %s", logged)
 			}
 		})
 	}

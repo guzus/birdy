@@ -149,8 +149,12 @@ Its fields are limited to `failure_class`, `stage`, aggregate `tweet_count`,
 `elapsed_ms`, and numeric `upstream_status` when X supplied one. It never logs
 the underlying error string, credentials, account name, tweet IDs or text,
 page URL, selection, or prompt. Failure classes are `configuration`,
-`transport`, `upstream_http`, `upstream_response`,
-`upstream_rate_limited`, `timeout`, `canceled`, or `unknown`.
+`transport_dns`, `transport_connect`, `transport_tls`, `transport_proxy`,
+`transport_other`, `upstream_http`, `upstream_response`,
+`upstream_rate_limited`, `timeout`, `canceled`, or `unknown`. Concrete DNS and
+TLS causes take precedence over their enclosing connect operation; request
+timeout or cancellation, configuration, and upstream API classifications take
+precedence over every transport subtype.
 
 A configured harness pool must contain at least one enabled read-only account.
 Disabled accounts may remain in the pool, but an all-disabled pool fails host

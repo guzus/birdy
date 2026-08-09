@@ -6,6 +6,8 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -582,13 +584,60 @@ func classifyHarnessTweetFetchFailure(err error, requestID string, tweetCount in
 		}
 	}
 	if failure.Class == "unknown" {
-		var urlErr *url.Error
-		var netErr net.Error
-		if errors.As(err, &urlErr) || errors.As(err, &netErr) {
-			failure.Class = "transport"
+		if transportClass := classifyHarnessTransportFailure(err); transportClass != "" {
+			failure.Class = transportClass
 		}
 	}
 	return failure
+}
+
+func classifyHarnessTransportFailure(err error) string {
+	// DNS and TLS causes are commonly wrapped by both url.Error and
+	// net.OpError. Inspect them before the enclosing operation so the most
+	// actionable concrete mechanic wins deterministically.
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return "transport_dns"
+	}
+	if isHarnessTLSFailure(err) {
+		return "transport_tls"
+	}
+
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		switch strings.ToLower(opErr.Op) {
+		case "proxyconnect":
+			return "transport_proxy"
+		case "dial", "connect":
+			return "transport_connect"
+		}
+	}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) && strings.EqualFold(urlErr.Op, "proxyconnect") {
+		return "transport_proxy"
+	}
+	var netErr net.Error
+	if errors.As(err, &urlErr) || errors.As(err, &netErr) {
+		return "transport_other"
+	}
+	return ""
+}
+
+func isHarnessTLSFailure(err error) bool {
+	var verificationErr *tls.CertificateVerificationError
+	var recordHeaderErr tls.RecordHeaderError
+	var alertErr tls.AlertError
+	var unknownAuthorityErr x509.UnknownAuthorityError
+	var hostnameErr x509.HostnameError
+	var certificateInvalidErr x509.CertificateInvalidError
+	var systemRootsErr x509.SystemRootsError
+	return errors.As(err, &verificationErr) ||
+		errors.As(err, &recordHeaderErr) ||
+		errors.As(err, &alertErr) ||
+		errors.As(err, &unknownAuthorityErr) ||
+		errors.As(err, &hostnameErr) ||
+		errors.As(err, &certificateInvalidErr) ||
+		errors.As(err, &systemRootsErr)
 }
 
 func logHarnessTweetFetchFailure(logger *slog.Logger, failure harnessTweetFetchFailure) {
