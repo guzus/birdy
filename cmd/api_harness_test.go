@@ -16,7 +16,7 @@ import (
 	"github.com/guzus/birdy/internal/claude"
 )
 
-const harnessTestToken = "0123456789abcdef0123456789abcdef"
+const harnessTestToken = "test-harness-token-not-a-real-secret-000"
 const harnessTestAccounts = `[{"name":"harness-public","auth_token":"test-auth","ct0":"test-ct0","read_only":true}]`
 
 func harnessTestConfig() harnessConfig {
