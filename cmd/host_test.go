@@ -222,6 +222,27 @@ func TestMakeHostedWebHandlerFallsBackToIndexForSPARoute(t *testing.T) {
 	}
 }
 
+func TestMakeHostedWebHandlerMarksShareRoutesPrivateAndUnindexable(t *testing.T) {
+	webDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(webDir, "index.html"), []byte("<html>share</html>"), 0600); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/share/opaque-id", nil)
+	makeHostedWebHandler(webDir).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%q", rr.Code, rr.Body.String())
+	}
+	if got := rr.Header().Get("Cache-Control"); got != "private, no-store" {
+		t.Fatalf("expected private no-store, got %q", got)
+	}
+	if got := rr.Header().Get("X-Robots-Tag"); !strings.Contains(got, "noindex") {
+		t.Fatalf("expected noindex, got %q", got)
+	}
+}
+
 func TestMakeHostedWebHandlerRejectsNonGetMethods(t *testing.T) {
 	webDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(webDir, "index.html"), []byte("<html>ok</html>"), 0600); err != nil {

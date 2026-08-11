@@ -205,6 +205,24 @@ Notes:
 - For public deployments, set `BIRDY_READ_ONLY=1`.
 - Set `BIRDY_HOST_ALLOWED_ORIGINS` when exposing the WebSocket TUI publicly.
 
+### Share a birdy-web conversation
+
+Authenticated birdy-web users can publish the active conversation as a read-only
+snapshot from the **Share** button. A share is not live access: later messages,
+the host invite code, account credentials, tool state, and internal conversation
+IDs are never included.
+
+The browser encrypts each allowlisted snapshot with a fresh AES-GCM key. The host
+stores only ciphertext under `~/.config/birdy/shares/`; the decryption key stays
+after `#` in the share URL, so it is not sent to the host or reverse proxy. Anyone
+who receives the full link can view and copy the snapshot. Links expire after
+seven days and the creator can revoke the most recent link from the Share dialog.
+Each local conversation also gets a separate opaque 256-bit replacement token,
+so creating a new snapshot atomically retires its older link without sending the
+local conversation ID. Storage is capped at 200 active encrypted snapshots;
+expired and corrupt entries are swept during creation. Revocation prevents new
+opens, but a view already in flight may finish and saved copies cannot be erased.
+
 ## Deploy on Railway
 
 This repo now includes a Railway-ready container setup:
@@ -311,6 +329,7 @@ This preserves:
 - `~/.config/birdy/accounts.json`
 - `~/.config/birdy/state.json`
 - `~/.config/birdy/chats/`
+- `~/.config/birdy/shares/` (encrypted, expiring web conversation snapshots)
 
 ### Bird Box container contract
 
