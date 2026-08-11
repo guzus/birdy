@@ -698,6 +698,14 @@ Notes:
   after a walk starting without a cursor reaches X's terminator. A `MaxPages`
   cap returns the collected users with `Complete=false` and `NextCursor`; an X
   or transport failure returns an error instead of a partial snapshot.
+- Any following list of a few hundred accounts contains some X will not render:
+  suspended, deactivated, or hidden from the reading account. They are still
+  members, so they are returned with `Unavailable: true` and **only `ID` set** —
+  no username, name, or counts. Diff snapshots by ID, treat these as still
+  followed, and keep whatever identity you already stored for them rather than
+  overwriting it with the blanks. Their id is recovered from X's timeline entry
+  key; on the rare shape where even that is missing, the page errors rather
+  than quietly shrinking the list into a false unfollow.
 - Following-user descriptions and counts are pointers: `nil` means X omitted
   the value, while a pointer to zero or an empty string means it was reported.
 - `UserTimeline` reads X's Posts tab; it does not promise replies. `UserReplies`

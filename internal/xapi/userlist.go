@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"strconv"
+	"strings"
 )
 
 // ListedUser is a user as it appears in a followers/following listing.
@@ -30,6 +31,11 @@ type ListedUser struct {
 	IsBlueVerified  *bool   `json:"isBlueVerified,omitempty"`
 	ProfileImageURL string  `json:"profileImageUrl,omitempty"`
 	CreatedAt       string  `json:"createdAt,omitempty"`
+	// Unavailable marks a listing member X refused to render — suspended,
+	// deactivated, or hidden from this viewer. Only ID is populated. It is a
+	// real member of the list, so a follow-graph consumer must count it as
+	// present; it is just not describable.
+	Unavailable bool `json:"unavailable,omitempty"`
 }
 
 // UserListPage is one page of a user-list timeline (followers, following).
@@ -157,6 +163,10 @@ func (instruction *userInstruction) UnmarshalJSON(data []byte) error {
 }
 
 type userEntry struct {
+	// EntryID is the timeline entry key, "user-<rest_id>" for a listing member.
+	// It is the only place the id of an unavailable member survives, so it is
+	// read rather than ignored.
+	EntryID string            `json:"entryId"`
 	Content *userEntryContent `json:"content"`
 }
 
@@ -417,7 +427,17 @@ func mapUserEntry(entry userEntry) (ListedUser, bool, error) {
 	case "TimelineMessagePrompt":
 		return ListedUser{}, false, nil
 	case "UserUnavailable", "UserTombstone":
-		return ListedUser{}, false, &APIError{Message: fmt.Sprintf("user-list entry %q has no safe identity", raw.TypeName)}
+		// X answers with no rest_id for a member it will not render, but the
+		// membership itself is real and its id survives in the entry key.
+		// Rejecting the page here discarded every other user on it, and
+		// dropping the entry silently would read a live account as an
+		// unfollow, so the member is returned with the identity X withheld
+		// left empty and Unavailable set.
+		id := userIDFromEntryID(entry.EntryID)
+		if id == "" {
+			return ListedUser{}, false, &APIError{Message: fmt.Sprintf("user-list entry %q has no recoverable id", raw.TypeName)}
+		}
+		return ListedUser{ID: id, Unavailable: true}, true, nil
 	case "UserWithVisibilityResults":
 		if raw.User == nil || raw.User.TypeName != "User" {
 			return ListedUser{}, false, &APIError{Message: "malformed user-list visibility wrapper"}
@@ -432,6 +452,23 @@ func mapUserEntry(entry userEntry) (ListedUser, bool, error) {
 		return ListedUser{}, false, &APIError{Message: fmt.Sprintf("malformed user-list entry for id %q", raw.RestID)}
 	}
 	return user, true, nil
+}
+
+// userIDFromEntryID recovers the numeric id X puts in a user-list entry key
+// ("user-1234567890"). Nested module items carry no key of their own, so the
+// empty string returned for them keeps an ambiguous module entry failing
+// closed rather than borrowing a sibling's id.
+func userIDFromEntryID(entryID string) string {
+	rest, found := strings.CutPrefix(strings.TrimSpace(entryID), "user-")
+	if !found || rest == "" {
+		return ""
+	}
+	for _, digit := range rest {
+		if digit < '0' || digit > '9' {
+			return ""
+		}
+	}
+	return rest
 }
 
 func isNonUserTimelineType(typeName string) bool {

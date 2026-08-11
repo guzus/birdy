@@ -131,9 +131,14 @@ func TestPublicFieldOrderIsFrozen(t *testing.T) {
 		"TimelinePage":        {"Tweets", "NextCursor"},
 		"TimelineTweet":       {"Tweet", "RepostedTweet"},
 		"FollowingOptions":    {"PageSize", "MaxPages", "Cursor"},
+		// Unavailable was appended after v1.1. Every earlier field keeps its
+		// name, type, and position, so keyed literals and the JSON contract are
+		// unchanged; only an unkeyed literal of this struct would break, and
+		// nothing constructs one.
 		"FollowingUser": {
 			"ID", "Username", "Name", "Description", "FollowersCount",
 			"FollowingCount", "IsBlueVerified", "ProfileImageURL", "CreatedAt",
+			"Unavailable",
 		},
 		"FollowingSnapshot": {"Users", "NextCursor", "Complete", "Pages"},
 		"UserProfile": {
@@ -214,6 +219,7 @@ func TestMonitoringStructContractsAreFrozen(t *testing.T) {
 			{"Description", "*string", "description,omitempty"}, {"FollowersCount", "*int", "followersCount,omitempty"},
 			{"FollowingCount", "*int", "followingCount,omitempty"}, {"IsBlueVerified", "*bool", "isBlueVerified,omitempty"},
 			{"ProfileImageURL", "string", "profileImageUrl,omitempty"}, {"CreatedAt", "string", "createdAt,omitempty"},
+			{"Unavailable", "bool", "unavailable,omitempty"},
 		}},
 		"FollowingSnapshot": {reflect.TypeOf(FollowingSnapshot{}), []frozenField{
 			{"Users", "[]FollowingUser", "users"}, {"NextCursor", "string", "nextCursor,omitempty"},

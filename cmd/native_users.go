@@ -63,6 +63,13 @@ func renderUsers(out io.Writer, users []xapi.ListedUser, args nativeArgs) error 
 	}
 
 	for _, user := range users {
+		// X withholds the profile of a suspended, deactivated, or hidden
+		// member but still lists it. Printing "@ ()" would read as a bug.
+		if user.Unavailable {
+			fmt.Fprintf(out, "(unavailable account %s)\n", user.ID)
+			fmt.Fprintln(out, listSeparator)
+			continue
+		}
 		fmt.Fprintf(out, "@%s (%s)\n", user.Username, user.Name)
 		if description := deref(user.Description); description != "" {
 			fmt.Fprintf(out, "  %s\n", truncateJS(description, 100))
