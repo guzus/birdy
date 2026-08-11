@@ -692,12 +692,25 @@ Notes:
 - `tweet.ExtractTweetID` parses status URLs and bare IDs, rejecting anything
   that is not a tweet reference.
 - Timeline and following cursors are opaque X values. Forward them unchanged;
-  do not parse them or infer chronology from them.
+  do not parse them or infer chronology from them. The one exception is X's own
+  end-of-list sentinel on a user list: a Bottom cursor whose leading component
+  is `0` (`0|2087029644107709401`) means there is nothing after this page, the
+  same thing v1.1 says with `next_cursor_str: "0"`. It is consumed, not
+  forwarded — following it returns an empty page and another `0|` cursor with a
+  changed suffix, indefinitely. `NextCursor` is empty at a real end of list.
 - `Following` keeps one selected account for the entire page walk, preserves
   X's order, and de-duplicates overlapping user IDs. `Complete` is true only
   after a walk starting without a cursor reaches X's terminator. A `MaxPages`
   cap returns the collected users with `Complete=false` and `NextCursor`; an X
   or transport failure returns an error instead of a partial snapshot.
+- Any following list of a few hundred accounts contains some X will not render:
+  suspended, deactivated, or hidden from the reading account. They are still
+  members, so they are returned with `Unavailable: true` and **only `ID` set** —
+  no username, name, or counts. Diff snapshots by ID, treat these as still
+  followed, and keep whatever identity you already stored for them rather than
+  overwriting it with the blanks. Their id is recovered from X's timeline entry
+  key; on the rare shape where even that is missing, the page errors rather
+  than quietly shrinking the list into a false unfollow.
 - Following-user descriptions and counts are pointers: `nil` means X omitted
   the value, while a pointer to zero or an empty string means it was reported.
 - `UserTimeline` reads X's Posts tab; it does not promise replies. `UserReplies`

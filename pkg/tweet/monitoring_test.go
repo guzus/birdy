@@ -537,6 +537,10 @@ func TestFollowingPreservesOptionalFieldPresence(t *testing.T) {
 	}
 }
 
+// An unavailable member whose id cannot be recovered is a hole of unknown
+// identity, and pretending the list is whole without it would read as an
+// unfollow. It still fails closed, and must not fall through to REST, which
+// would answer the same question less clearly.
 func TestFollowingUnavailableIdentityCannotBecomeCompleteEmptySnapshot(t *testing.T) {
 	var restHits int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -586,6 +590,96 @@ func TestFollowingRESTMalformedIdentityCannotBecomeCompleteEmptySnapshot(t *test
 
 func followingBodyRaw(entries string) string {
 	return `{"data":{"user":{"result":{"timeline":{"timeline":{"instructions":[{"entries":[` + entries + `]}]}}}}}}`
+}
+
+// X does not end a following list by omitting the Bottom cursor. It sends one
+// whose leading component is "0", answers it with an empty page and another
+// "0|" cursor with a changed suffix, and does that forever. Neither the repeat
+// guard nor the no-advance guard fires on a suffix that keeps changing, so the
+// walk ran to its page cap and reported Complete=false — and a caller must
+// refuse to reconcile an incomplete snapshot, so no following list of any size
+// could be reconciled at all.
+func TestFollowingCompletesOnTheZeroTerminatorCursor(t *testing.T) {
+	var pages int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pages++
+		var variables map[string]any
+		_ = json.Unmarshal([]byte(r.URL.Query().Get("variables")), &variables)
+		if cursor, _ := variables["cursor"].(string); cursor == "" {
+			_, _ = w.Write([]byte(followingBody([][2]string{{"1", "first"}}, "C1")))
+			return
+		}
+		// The real terminal page still carries users, and the suffix moves on
+		// every request so a repeat check cannot catch it.
+		_, _ = w.Write([]byte(followingBody([][2]string{{"2", "second"}},
+			fmt.Sprintf("0|20870296441077094%02d", 99-pages))))
+	}))
+	defer server.Close()
+
+	got, err := monitoringClient(t, server.URL).Following(t.Context(), "42", FollowingOptions{MaxPages: 50})
+	if err != nil {
+		t.Fatalf("Following: %v", err)
+	}
+	if !got.Complete {
+		t.Fatalf("terminator was followed as a cursor: %+v", got)
+	}
+	if got.Pages != 2 || got.NextCursor != "" || len(got.Users) != 2 {
+		t.Fatalf("snapshot = %+v, want a two-page walk that stopped at the terminator", got)
+	}
+}
+
+// A live following list of a few hundred accounts reliably contains one X will
+// not render. Because the walk aborts on the first page error, that single
+// entry used to discard every page already collected and fail the whole
+// account — which is exactly how follow tracking died in production for every
+// watched account at once. The hidden member is a real edge, so the walk keeps
+// going and reports it by id.
+func TestFollowingSurvivesAnUnavailableMemberMidWalk(t *testing.T) {
+	const hidden = `{"entryId":"user-241662924","content":{"__typename":"TimelineTimelineItem",` +
+		`"entryType":"TimelineTimelineItem","itemContent":{"__typename":"TimelineUser",` +
+		`"itemType":"TimelineUser","user_results":{"result":{"__typename":"UserUnavailable",` +
+		`"message":"User is not available","reason":"NoReason"}}}}}`
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var variables map[string]any
+		_ = json.Unmarshal([]byte(r.URL.Query().Get("variables")), &variables)
+		switch cursor, _ := variables["cursor"].(string); cursor {
+		case "":
+			_, _ = w.Write([]byte(followingBody([][2]string{{"1", "first"}}, "C1")))
+		case "C1":
+			_, _ = w.Write([]byte(followingBodyRaw(
+				`{"entryId":"user-2","content":{"itemContent":{"user_results":{"result":{"__typename":"User","rest_id":"2","legacy":{"screen_name":"second","name":"SECOND"}}}}}},` +
+					hidden + `,` +
+					`{"content":{"cursorType":"Bottom","value":"C2"}}`)))
+		default:
+			_, _ = w.Write([]byte(followingBody([][2]string{{"3", "third"}}, "")))
+		}
+	}))
+	defer server.Close()
+
+	got, err := monitoringClient(t, server.URL).Following(t.Context(), "42", FollowingOptions{})
+	if err != nil {
+		t.Fatalf("one unavailable member failed the whole walk: %v", err)
+	}
+	if !got.Complete || got.Pages != 3 {
+		t.Fatalf("snapshot = %+v, want a complete three-page walk", got)
+	}
+	var ids []string
+	for _, user := range got.Users {
+		ids = append(ids, user.ID)
+	}
+	if len(got.Users) != 4 {
+		t.Fatalf("users = %v, want every member of all three pages", ids)
+	}
+	hiddenUser := got.Users[2]
+	if hiddenUser.ID != "241662924" || !hiddenUser.Unavailable || hiddenUser.Username != "" {
+		t.Fatalf("hidden member = %+v, want id-only member flagged Unavailable", hiddenUser)
+	}
+	for _, index := range []int{0, 1, 3} {
+		if got.Users[index].Unavailable || got.Users[index].Username == "" {
+			t.Fatalf("member %d lost its identity: %+v", index, got.Users[index])
+		}
+	}
 }
 
 func TestFollowingContextCancellationDiscardsPartialResult(t *testing.T) {

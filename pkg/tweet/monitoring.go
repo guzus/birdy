@@ -215,6 +215,11 @@ type FollowingUser struct {
 	IsBlueVerified  *bool   `json:"isBlueVerified,omitempty"`
 	ProfileImageURL string  `json:"profileImageUrl,omitempty"`
 	CreatedAt       string  `json:"createdAt,omitempty"`
+	// Unavailable marks an account X would not render — suspended, deactivated,
+	// or hidden from the reading account. Only ID is populated. The follow edge
+	// is real, so a consumer diffing snapshots must treat it as still followed
+	// and must not overwrite identity it already holds with these blanks.
+	Unavailable bool `json:"unavailable,omitempty"`
 }
 
 // FollowingSnapshot is a deterministic, API-order following-graph walk.
@@ -294,5 +299,6 @@ func convertFollowingUser(user xapi.ListedUser) FollowingUser {
 		Description: user.Description, FollowersCount: user.FollowersCount,
 		FollowingCount: user.FollowingCount, IsBlueVerified: user.IsBlueVerified,
 		ProfileImageURL: user.ProfileImageURL, CreatedAt: user.CreatedAt,
+		Unavailable: user.Unavailable,
 	}
 }

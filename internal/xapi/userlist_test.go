@@ -259,12 +259,117 @@ func TestParseRESTUserListDoesNotConfuseLegacyAndBlueVerification(t *testing.T) 
 	}
 }
 
-func TestParseUserListRejectsUnavailableIdentity(t *testing.T) {
+// unavailableEntry is the shape X actually serves for a following-list member
+// it will not render, captured verbatim from a live Following page. There is no
+// rest_id anywhere in the result — the member's id survives only in entryId.
+const unavailableEntry = `{"content":{"__typename":"TimelineTimelineItem",` +
+	`"clientEventInfo":{"component":"FollowingSgs","element":"user"},` +
+	`"entryType":"TimelineTimelineItem","itemContent":{"__typename":"TimelineUser",` +
+	`"itemType":"TimelineUser","userDisplayType":"User","user_results":{"result":{` +
+	`"__typename":"UserUnavailable","message":"User is not available","reason":"NoReason"}}}},` +
+	`"entryId":"user-241662924","sortIndex":"2087023713902919484"}`
+
+const availableEntry = `{"content":{"itemContent":{"user_results":{"result":{` +
+	`"__typename":"User","rest_id":"5","legacy":{"screen_name":"alive","name":"Alive"}}}}},` +
+	`"entryId":"user-5"}`
+
+// A following list of any size reliably contains a suspended or deactivated
+// account, and X lists it with no renderable profile. Rejecting the entry threw
+// away every other member of the page with it, which is how one dead followee
+// silently stopped follow tracking for a whole account. The membership is real,
+// so it is kept, with the identity X withheld left empty.
+func TestParseUserListKeepsUnavailableMembersAndTheirNeighbours(t *testing.T) {
+	page, err := parseUserList(userListBody(`[` + availableEntry + `,` + unavailableEntry + `]`))
+	if err != nil {
+		t.Fatalf("live unavailable entry rejected the whole page: %v", err)
+	}
+	if len(page.Users) != 2 {
+		t.Fatalf("users = %+v, want the available member and the unavailable one", page.Users)
+	}
+	if page.Users[0].ID != "5" || page.Users[0].Username != "alive" || page.Users[0].Unavailable {
+		t.Fatalf("neighbouring member was damaged: %+v", page.Users[0])
+	}
+	hidden := page.Users[1]
+	if hidden.ID != "241662924" || !hidden.Unavailable {
+		t.Fatalf("unavailable member = %+v, want id recovered from entryId and Unavailable set", hidden)
+	}
+	if hidden.Username != "" || hidden.Name != "" || hidden.FollowersCount != nil || hidden.Description != nil {
+		t.Fatalf("unavailable member invented identity X withheld: %+v", hidden)
+	}
+}
+
+// The id is the only thing that makes an unavailable member safe to keep: a
+// consumer diffing snapshots reads a member it cannot identify as an unfollow.
+// Without a recoverable id the entry still fails closed.
+func TestParseUserListRejectsUnavailableMemberWithNoRecoverableID(t *testing.T) {
 	for _, typeName := range []string{"UserUnavailable", "UserTombstone"} {
-		body := userListBody(`[{"content":{"itemContent":{"user_results":{"result":{"__typename":"` + typeName + `"}}}}}]`)
-		if page, err := parseUserList(body); err == nil || page != nil {
-			t.Fatalf("%s accepted: page=%+v err=%v", typeName, page, err)
+		for _, entryID := range []string{"", `"entryId":"",`, `"entryId":"user-",`, `"entryId":"promoted-9",`, `"entryId":"user-12ab",`} {
+			body := userListBody(`[{` + entryID +
+				`"content":{"itemContent":{"user_results":{"result":{"__typename":"` + typeName + `"}}}}}]`)
+			page, err := parseUserList(body)
+			if err == nil || page != nil {
+				t.Fatalf("%s with entryId %q accepted: page=%+v err=%v", typeName, entryID, page, err)
+			}
 		}
+	}
+}
+
+// A nested module item has no entry key of its own, so borrowing the module's
+// would attribute a sibling's id to the hidden member.
+func TestParseUserListRejectsUnavailableModuleItem(t *testing.T) {
+	body := userListBody(`[{"entryId":"user-241662924","content":{"entryType":"TimelineTimelineModule","items":[
+		{"item":{"itemContent":{"user_results":{"result":{"__typename":"UserUnavailable"}}}}}
+	]}}]`)
+	if page, err := parseUserList(body); err == nil || page != nil {
+		t.Fatalf("module item borrowed the module's entryId: page=%+v err=%v", page, err)
+	}
+}
+
+// X ends a user list with a Bottom cursor whose leading component is "0", not
+// by omitting the cursor. Captured live: @sama's following list served 19 users
+// with "0|2087029644107709401" on its last page, then empty pages with a fresh
+// "0|..." each time. Reading that as a real cursor meant no walk ever reported
+// its end, so no following snapshot could be reconciled.
+func TestParseUserListTreatsZeroBottomCursorAsTheEnd(t *testing.T) {
+	for _, value := range []string{"0|2087029644107709401", "0|1", "0"} {
+		body := userListBody(`[` + availableEntry + `,{"content":{"cursorType":"Bottom","value":"` + value + `"}}]`)
+		page, err := parseUserList(body)
+		if err != nil {
+			t.Fatalf("terminator %q rejected: %v", value, err)
+		}
+		if page.NextCursor != "" {
+			t.Fatalf("terminator %q became a cursor %q; the walk would never end", value, page.NextCursor)
+		}
+		if len(page.Users) != 1 {
+			t.Fatalf("terminator %q dropped the page's users: %+v", value, page.Users)
+		}
+	}
+}
+
+// Only a leading "0" is the sentinel. A real cursor that merely contains a zero
+// must keep paginating, or a walk would stop early and a truncated list would
+// be reconciled as a mass unfollow.
+func TestParseUserListKeepsRealCursorsThatContainZero(t *testing.T) {
+	for _, value := range []string{"1848637603514943368|2087029644107710392", "10|20", "0abc|1", "100|0"} {
+		body := userListBody(`[` + availableEntry + `,{"content":{"cursorType":"Bottom","value":"` + value + `"}}]`)
+		page, err := parseUserList(body)
+		if err != nil {
+			t.Fatalf("cursor %q rejected: %v", value, err)
+		}
+		if page.NextCursor != value {
+			t.Fatalf("cursor %q was read as the end of the list", value)
+		}
+	}
+}
+
+func TestParseUserListKeepsTombstonedMember(t *testing.T) {
+	body := userListBody(`[{"entryId":"user-77","content":{"itemContent":{"user_results":{"result":{"__typename":"UserTombstone"}}}}}]`)
+	page, err := parseUserList(body)
+	if err != nil {
+		t.Fatalf("UserTombstone rejected: %v", err)
+	}
+	if len(page.Users) != 1 || page.Users[0].ID != "77" || !page.Users[0].Unavailable {
+		t.Fatalf("users = %+v, want one unavailable member 77", page.Users)
 	}
 }
 
