@@ -83,3 +83,24 @@ test('renders a read-only shared snapshot without authenticated controls', () =>
   expect(markup.includes('Scan Timeline')).toBe(false);
   expect(markup.includes('Enter invite code')).toBe(false);
 });
+
+test('turns bare X URLs into external links', () => {
+  const markup = renderToStaticMarkup(
+    <MarkdownMessage text="Read x.com/birdy/status/123, then https://x.com/birdy/status/456." />,
+  );
+
+  expect(markup).toContain('href="https://x.com/birdy/status/123"');
+  expect(markup).toContain('>x.com/birdy/status/123</a>,');
+  expect(markup).toContain('href="https://x.com/birdy/status/456"');
+  expect(markup).toContain('>https://x.com/birdy/status/456</a>.');
+  expect(markup.match(/target="_blank"/g)).toHaveLength(2);
+});
+
+test('does not link X-like text inside code or another URL', () => {
+  const markup = renderToStaticMarkup(
+    <MarkdownMessage text={'Run `birdy read x.com/birdy/status/123` or visit example.com/x.com/not-a-link.'} />,
+  );
+
+  expect(markup).not.toContain('<a');
+  expect(markup).toContain('<code');
+});
