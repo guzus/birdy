@@ -427,11 +427,15 @@ function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
 
   while (rest) {
     const patterns: Array<{
-      kind: 'code' | 'link' | 'strong';
+      kind: 'code' | 'link' | 'x-link' | 'strong';
       match: RegExpExecArray | null;
     }> = [
       { kind: 'code', match: /`([^`\n]+)`/.exec(rest) },
       { kind: 'link', match: /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/.exec(rest) },
+      {
+        kind: 'x-link',
+        match: /(?<![\w./-])(?:https?:\/\/)?(?:www\.)?x\.com\/[^\s<>()\[\]{}"'`]*[A-Za-z0-9_/#?=&%-]/i.exec(rest),
+      },
       { kind: 'strong', match: /\*\*([^*][\s\S]*?)\*\*/.exec(rest) },
     ].filter((entry) => entry.match);
 
@@ -464,6 +468,19 @@ function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
           className="text-text underline decoration-text-dim/40 underline-offset-2 break-all"
         >
           {match[1]}
+        </a>,
+      );
+    } else if (next.kind === 'x-link') {
+      const href = /^https?:\/\//i.test(match[0]) ? match[0] : `https://${match[0]}`;
+      nodes.push(
+        <a
+          key={key}
+          href={href}
+          target="_blank"
+          rel="noreferrer"
+          className="text-text underline decoration-text-dim/40 underline-offset-2 break-all"
+        >
+          {match[0]}
         </a>,
       );
     } else {
