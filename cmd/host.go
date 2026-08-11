@@ -117,6 +117,8 @@ func buildHostedMux(inviteCode string, allowedOrigins map[string]struct{}, webDi
 	mux.Handle("/api/chat/models", withHostedSecurityHeaders(handleAPIChatModels(inviteCode)))
 	mux.Handle("/api/chat", withHostedSecurityHeaders(handleAPIChat(inviteCode)))
 	mux.Handle("/api/harness/chat", withHostedSecurityHeaders(newHarnessChatHandlerFromEnv(inviteCode)))
+	mux.Handle("/api/shares", withHostedSecurityHeaders(handleShareCollection(inviteCode)))
+	mux.Handle("/api/shares/", withHostedSecurityHeaders(handleShareItem(inviteCode)))
 	mux.Handle("/", makeHostedWebHandler(webDir))
 	return mux
 }
@@ -624,6 +626,9 @@ func makeHostedWebHandler(webDir string) http.Handler {
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		setHostedSecurityHeaders(w)
+		if strings.HasPrefix(r.URL.Path, "/share/") {
+			setShareResponseHeaders(w)
+		}
 
 		// Only serve GET/HEAD for static assets.
 		switch r.Method {

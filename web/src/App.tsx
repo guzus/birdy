@@ -14,9 +14,42 @@ import {
   parseChatModelCatalog,
 } from './chatModels';
 import type { ChatModel } from './chatModels';
+import {
+  buildShareSnapshot,
+  buildShareURL,
+  decryptShareSnapshot,
+  encryptShareSnapshot,
+  generateShareOwnerRef,
+  isShareOwnerRef,
+  parseSharePath,
+  shareRoutePrefix,
+} from './share';
+import type { ShareEnvelope, ShareSnapshot, SharedCard } from './share';
 
 const inviteCodeKey = 'birdy_host_invite_code';
 const conversationsKey = 'birdy_conversations';
+const shareLinksKey = 'birdy_share_links';
+
+type SavedShare = {
+  id: string;
+  url: string;
+  expiresAt: string;
+};
+
+function loadSavedShares(): Record<string, SavedShare> {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(shareLinksKey) || '{}') as Record<string, SavedShare>;
+    return Object.fromEntries(Object.entries(parsed).filter(([, share]) =>
+      share
+      && typeof share.id === 'string'
+      && typeof share.url === 'string'
+      && typeof share.expiresAt === 'string'
+      && new Date(share.expiresAt).getTime() > Date.now(),
+    ));
+  } catch {
+    return {};
+  }
+}
 
 type CardCategory = 'CRYPTO' | 'AI' | 'TRENDING' | 'SIGNAL' | 'RESEARCH';
 
@@ -42,6 +75,7 @@ type Conversation = {
   createdAt: number;
   updatedAt: number;
   modelId: string;
+  shareOwnerRef: string;
 };
 
 type RunningKind = 'chat' | 'scan';
@@ -57,6 +91,7 @@ function loadConversations(): Conversation[] {
       return (JSON.parse(raw) as Conversation[]).map(c => ({
         ...c,
         modelId: normalizeStoredModelId(c.modelId),
+        shareOwnerRef: isShareOwnerRef(c.shareOwnerRef) ? c.shareOwnerRef : generateShareOwnerRef(),
         cards: c.cards.map(card => ({ ...card, timestamp: new Date(card.timestamp) })),
         chatItems: c.chatItems.map(item => item.loading ? { ...item, loading: false } : item),
       }));
@@ -77,7 +112,7 @@ function loadConversations(): Conversation[] {
         const firstMsg = chatItems.find(i => i.role === 'user');
         return [{
           id: makeConvId(), title: firstMsg?.text.slice(0, 50) ?? 'Imported chat',
-		  chatItems, cards, modelId: defaultChatModelId, createdAt: Date.now(), updatedAt: Date.now(),
+		  chatItems, cards, modelId: defaultChatModelId, shareOwnerRef: generateShareOwnerRef(), createdAt: Date.now(), updatedAt: Date.now(),
         }];
       }
     }
@@ -839,7 +874,131 @@ function ChatBubble({ item }: { item: FeedItem & { kind: 'chat' } }) {
   );
 }
 
+function SharedCardView({ card }: { card: SharedCard }) {
+  const meta = categoryMeta[card.category];
+  return (
+    <article className="border-b border-border py-4 sm:py-5 flex flex-col gap-2">
+      <div className="flex items-center gap-2 text-[11px] text-text-dim">
+        <span className="uppercase tracking-wide font-medium">{meta.label}</span>
+        <span>&middot;</span>
+        <span className="font-mono">{timeAgo(new Date(card.timestamp))}</span>
+      </div>
+      <h2 className="m-0 text-base font-semibold leading-snug text-text">{card.title}</h2>
+      {card.bullets.length > 0 && (
+        <ul className="m-0 pl-4 flex flex-col gap-0.5">
+          {card.bullets.map((bullet, index) => (
+            <li key={index} className="text-[13px] leading-relaxed text-text-muted">{bullet}</li>
+          ))}
+        </ul>
+      )}
+      {card.sources.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {card.sources.map((source, index) => (
+            <span key={`${source}-${index}`} className="font-mono text-[11px] text-text-dim">{source}</span>
+          ))}
+        </div>
+      )}
+    </article>
+  );
+}
+
+type SharedPageState =
+  | { status: 'loading' }
+  | { status: 'error' }
+  | { status: 'ready'; snapshot: ShareSnapshot; expiresAt: string };
+
+export function SharedConversationPage({ shareId }: { shareId: string | null }) {
+  const [state, setState] = useState<SharedPageState>({ status: 'loading' });
+
+  useEffect(() => {
+    if (!shareId) {
+      setState({ status: 'error' });
+      return;
+    }
+    const encodedKey = window.location.hash.slice(1);
+    if (!encodedKey) {
+      setState({ status: 'error' });
+      return;
+    }
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const response = await fetch(`/api/shares/${shareId}`, { signal: controller.signal });
+        if (!response.ok) throw new Error('share unavailable');
+        const payload = await response.json() as { envelope?: ShareEnvelope; expires_at?: string };
+        if (!payload.envelope || !payload.expires_at) throw new Error('invalid share response');
+        const snapshot = await decryptShareSnapshot(payload.envelope, encodedKey);
+        if (!controller.signal.aborted) setState({ status: 'ready', snapshot, expiresAt: payload.expires_at });
+      } catch {
+        if (!controller.signal.aborted) setState({ status: 'error' });
+      }
+    })();
+    return () => controller.abort();
+  }, [shareId]);
+
+  if (state.status !== 'ready') {
+    return (
+      <div className="h-full max-w-[640px] mx-auto grid grid-rows-[auto_minmax(0,1fr)] p-3 sm:p-4">
+        <header className="flex items-center justify-between py-3 border-b border-border"><BirdyWordmark /></header>
+        <main className="flex flex-col items-center justify-center gap-3 text-center px-6">
+          {state.status === 'loading' ? (
+            <p className="text-sm text-text-dim">Opening encrypted snapshot&hellip;</p>
+          ) : (
+            <>
+              <h1 className="m-0 text-lg text-text">This share is unavailable</h1>
+              <p className="m-0 max-w-sm text-sm leading-relaxed text-text-dim">
+                The link may be incomplete, expired, revoked, or have the wrong decryption key.
+              </p>
+            </>
+          )}
+        </main>
+      </div>
+    );
+  }
+
+  return <SharedSnapshotView snapshot={state.snapshot} expiresAt={state.expiresAt} />;
+}
+
+export function SharedSnapshotView({ snapshot, expiresAt }: { snapshot: ShareSnapshot; expiresAt: string }) {
+  return (
+    <div className="min-h-full bg-bg text-text">
+      <div className="mx-auto max-w-[640px] p-3 sm:p-4">
+        <header className="flex items-center justify-between gap-4 py-3 border-b border-border">
+          <BirdyWordmark />
+          <span className="rounded-full border border-border px-2.5 py-1 text-[10px] font-medium uppercase tracking-wide text-text-dim">
+            Read-only snapshot
+          </span>
+        </header>
+        <main>
+          <section className="border-b border-border py-6 sm:py-8">
+            <p className="m-0 text-[11px] uppercase tracking-wide text-text-dim">Shared conversation</p>
+            <h1 className="mt-2 mb-3 text-2xl sm:text-3xl font-semibold leading-tight text-text">{snapshot.title}</h1>
+            <p className="m-0 text-xs leading-relaxed text-text-dim">
+              Snapshot from {new Date(snapshot.conversationCreatedAt).toLocaleString()} &middot; expires {new Date(expiresAt).toLocaleString()}
+            </p>
+          </section>
+          {snapshot.cards.map((card, index) => <SharedCardView key={`${card.title}-${index}`} card={card} />)}
+          {snapshot.messages.map((message, index) => (
+            <ChatBubble
+              key={index}
+              item={{ kind: 'chat', id: String(index), role: message.role, text: message.text, loading: false, modelLabel: message.modelLabel }}
+            />
+          ))}
+          <footer className="py-6 text-center text-xs text-text-dim">Shared privately with birdy &middot; no live access</footer>
+        </main>
+      </div>
+    </div>
+  );
+}
+
 export function App() {
+  if (window.location.pathname.startsWith(shareRoutePrefix)) {
+    return <SharedConversationPage shareId={parseSharePath(window.location.pathname)} />;
+  }
+  return <BirdyApp />;
+}
+
+function BirdyApp() {
   const showTrackerDemo = new URLSearchParams(window.location.search).get('demo') === 'tracker';
   const [inviteCode, setInviteCode] = useState(() => {
     const local = window.localStorage.getItem(inviteCodeKey) || '';
@@ -863,6 +1022,11 @@ export function App() {
   const [chatModels, setChatModels] = useState<ChatModel[]>(fallbackChatModels);
   const [catalogDefaultModelId, setCatalogDefaultModelId] = useState(defaultChatModelId);
   const [modelCatalogStatus, setModelCatalogStatus] = useState('');
+  const [savedShares, setSavedShares] = useState<Record<string, SavedShare>>(loadSavedShares);
+  const [shareDialogOpen, setShareDialogOpen] = useState(false);
+  const [shareBusy, setShareBusy] = useState(false);
+  const [shareError, setShareError] = useState('');
+  const [shareStatus, setShareStatus] = useState('');
 
   const activeConv = conversations.find(c => c.id === activeConvId) ?? null;
   const cards = activeConv?.cards ?? [];
@@ -886,7 +1050,7 @@ export function App() {
     const modelId = newConversationModelId(catalogDefaultModelId);
     const newConv: Conversation = {
       id: makeConvId(), title: 'New chat', chatItems: [], cards: [],
-      modelId, createdAt: Date.now(), updatedAt: Date.now(),
+      modelId, shareOwnerRef: generateShareOwnerRef(), createdAt: Date.now(), updatedAt: Date.now(),
     };
     setConversations(prev => [newConv, ...prev]);
     setActiveConvId(newConv.id);
@@ -895,6 +1059,7 @@ export function App() {
 
   const streamAbortRefs = useRef(new Map<string, AbortController>());
   const didAutoAuthRef = useRef(false);
+  const shareInFlightRef = useRef(false);
   const feedRef = useRef<HTMLDivElement>(null);
   const queuedPromptRef = useRef<{ convId: string; prompt: string; modelId: string } | null>(null);
   const doSendRef = useRef<((ask: string, convId: string, modelId: string) => void) | undefined>(undefined);
@@ -943,6 +1108,10 @@ export function App() {
   useEffect(() => {
     try { localStorage.setItem(conversationsKey, JSON.stringify(conversations)); } catch {}
   }, [conversations]);
+
+  useEffect(() => {
+    try { localStorage.setItem(shareLinksKey, JSON.stringify(savedShares)); } catch {}
+  }, [savedShares]);
 
   const persistInviteCode = useCallback((code: string) => {
     window.localStorage.setItem(inviteCodeKey, code);
@@ -1367,7 +1536,7 @@ export function App() {
   const handleNewChat = useCallback(() => {
     const newConv: Conversation = {
       id: makeConvId(), title: 'New chat', chatItems: [], cards: [],
-      modelId: newConversationModelId(catalogDefaultModelId), createdAt: Date.now(), updatedAt: Date.now(),
+      modelId: newConversationModelId(catalogDefaultModelId), shareOwnerRef: generateShareOwnerRef(), createdAt: Date.now(), updatedAt: Date.now(),
     };
     setConversations(prev => [newConv, ...prev]);
     setActiveConvId(newConv.id);
@@ -1391,6 +1560,14 @@ export function App() {
   }, []);
 
   const deleteConv = useCallback((id: string) => {
+    if (savedShares[id]) {
+      setActiveConvId(id);
+      setSidebarOpen(false);
+      setShareError('Revoke this conversation\'s share link before deleting it.');
+      setShareStatus('');
+      setShareDialogOpen(true);
+      return;
+    }
     abortConvStream(id);
     if (queuedPromptRef.current?.convId === id) queuedPromptRef.current = null;
     setConversations(prev => {
@@ -1400,7 +1577,103 @@ export function App() {
       }
       return next;
     });
-  }, [activeConvId, abortConvStream]);
+  }, [activeConvId, abortConvStream, savedShares]);
+
+  const createShare = useCallback(async () => {
+    if (!activeConv || activeRunning || shareInFlightRef.current) return;
+    shareInFlightRef.current = true;
+    setShareBusy(true);
+    setShareError('');
+    setShareStatus('Encrypting snapshot…');
+    try {
+      const snapshot = buildShareSnapshot(activeConv);
+      const { envelope, key } = await encryptShareSnapshot(snapshot);
+      const response = await fetch('/api/shares', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Invite-Code': inviteCodeRef.current.trim(),
+        },
+        body: JSON.stringify({ owner_ref: activeConv.shareOwnerRef, envelope }),
+      });
+      if (response.status === 401) {
+        setAuthed(false);
+        throw new Error('Your invite code expired.');
+      }
+      if (!response.ok) throw new Error('Could not create the share link.');
+      const payload = await response.json() as { id?: string; path?: string; expires_at?: string };
+      if (!payload.id || !payload.path || !payload.expires_at || parseSharePath(payload.path) !== payload.id) {
+        throw new Error('The server returned an invalid share link.');
+      }
+      const url = buildShareURL(window.location.origin, payload.path, key);
+      const saved = { id: payload.id, url, expiresAt: payload.expires_at };
+      setSavedShares(previous => ({ ...previous, [activeConv.id]: saved }));
+      setShareStatus('Link created. Later messages will not be added to this snapshot.');
+
+      if (navigator.share) {
+        void navigator.share({ title: activeConv.title, text: 'A read-only birdy conversation snapshot', url }).catch(() => {
+          // The URL remains visible for copy when native sharing is cancelled or unavailable.
+        });
+      } else if (navigator.clipboard?.writeText) {
+        try {
+          await navigator.clipboard.writeText(url);
+          setShareStatus('Encrypted snapshot link copied. Later messages will not be added.');
+        } catch {
+          // The URL remains visible and selectable below.
+        }
+      }
+    } catch (error) {
+      setShareError(error instanceof Error ? error.message : 'Could not create the share link.');
+      setShareStatus('');
+    } finally {
+      shareInFlightRef.current = false;
+      setShareBusy(false);
+    }
+  }, [activeConv, activeRunning]);
+
+  const copyActiveShare = useCallback(async () => {
+    if (!activeConv) return;
+    const share = savedShares[activeConv.id];
+    if (!share) return;
+    try {
+      await navigator.clipboard.writeText(share.url);
+      setShareStatus('Link copied.');
+      setShareError('');
+    } catch {
+      setShareError('Copy was blocked. Select the link below and copy it manually.');
+    }
+  }, [activeConv, savedShares]);
+
+  const revokeActiveShare = useCallback(async () => {
+    if (!activeConv) return;
+    const share = savedShares[activeConv.id];
+    if (!share) return;
+    setShareBusy(true);
+    setShareError('');
+    try {
+      const response = await fetch(`/api/shares/${share.id}`, {
+        method: 'DELETE',
+        headers: {
+          'X-Invite-Code': inviteCodeRef.current.trim(),
+          'X-Share-Owner-Ref': activeConv.shareOwnerRef,
+        },
+      });
+      if (!response.ok && response.status !== 404) throw new Error('Could not revoke the share link.');
+      setSavedShares(previous => {
+        const next = { ...previous };
+        delete next[activeConv.id];
+        return next;
+      });
+      setShareStatus('Share link revoked.');
+    } catch (error) {
+      setShareError(error instanceof Error ? error.message : 'Could not revoke the share link.');
+    } finally {
+      setShareBusy(false);
+    }
+  }, [activeConv, savedShares]);
+
+  const activeSavedShare = activeConv ? savedShares[activeConv.id] : undefined;
+  const activeHasShareableContent = Boolean(activeConv && (activeConv.cards.length > 0 || activeConv.chatItems.some(item => !item.loading && item.text.trim())));
 
   if (showTrackerDemo) {
     return <TrackerDemo />;
@@ -1466,6 +1739,79 @@ export function App() {
         <div className="fixed inset-0 z-20 bg-black/20 md:hidden" onClick={() => setSidebarOpen(false)} />
       )}
 
+      {shareDialogOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onMouseDown={() => setShareDialogOpen(false)}>
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="share-dialog-title"
+            className="w-full max-w-md rounded-xl border border-border bg-bg p-5 shadow-xl"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="m-0 text-[10px] font-medium uppercase tracking-wide text-text-dim">Encrypted snapshot</p>
+                <h2 id="share-dialog-title" className="mt-1 mb-0 text-lg font-semibold text-text">Share this conversation</h2>
+              </div>
+              <button
+                type="button"
+                aria-label="Close share dialog"
+                className="border-none bg-transparent p-1 text-xl leading-none text-text-dim cursor-pointer hover:text-text"
+                onClick={() => setShareDialogOpen(false)}
+              >
+                &times;
+              </button>
+            </div>
+            <div className="my-4 rounded-lg border border-border bg-bg-2 p-3 text-xs leading-relaxed text-text-muted">
+              <strong className="text-text">Anyone with this link can view this snapshot.</strong>{' '}
+              It may contain private prompts or X data. The content is encrypted, expires after 7 days, and will not include later messages. Revoking stops new opens but cannot erase saved copies or a view already in flight.
+            </div>
+            {activeSavedShare ? (
+              <div className="flex flex-col gap-3">
+                <label className="text-[11px] font-medium uppercase tracking-wide text-text-dim" htmlFor="share-url">Private link</label>
+                <input
+                  id="share-url"
+                  readOnly
+                  value={activeSavedShare.url}
+                  onFocus={(event) => event.currentTarget.select()}
+                  className="w-full rounded-lg border border-border bg-bg px-3 py-2.5 font-mono text-xs text-text outline-none focus:border-text"
+                />
+                <p className="m-0 text-[11px] text-text-dim">Expires {new Date(activeSavedShare.expiresAt).toLocaleString()}</p>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    disabled={shareBusy}
+                    className="rounded-lg border border-border bg-text px-4 py-2 text-xs font-medium text-bg cursor-pointer disabled:opacity-40"
+                    onClick={() => void copyActiveShare()}
+                  >
+                    Copy link
+                  </button>
+                  <button
+                    type="button"
+                    disabled={shareBusy}
+                    className="rounded-lg border border-border bg-transparent px-4 py-2 text-xs font-medium text-danger cursor-pointer disabled:opacity-40"
+                    onClick={() => void revokeActiveShare()}
+                  >
+                    {shareBusy ? 'Revoking…' : 'Revoke link'}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button
+                type="button"
+                disabled={shareBusy || !activeHasShareableContent || Boolean(activeRunning)}
+                className="rounded-lg border border-border bg-text px-4 py-2.5 text-sm font-medium text-bg cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
+                onClick={() => void createShare()}
+              >
+                {shareBusy ? 'Creating encrypted link…' : 'Create private link'}
+              </button>
+            )}
+            {shareStatus && <p className="mt-3 mb-0 text-xs leading-relaxed text-text-muted" aria-live="polite">{shareStatus}</p>}
+            {shareError && <p className="mt-3 mb-0 text-xs leading-relaxed text-danger" role="alert">{shareError}</p>}
+          </section>
+        </div>
+      )}
+
       {/* Main content */}
       <div className="flex-1 min-w-0 h-full flex flex-col">
         {/* Desktop promo banner */}
@@ -1484,7 +1830,21 @@ export function App() {
             </button>
             <BirdyWordmark />
           </div>
-          <div className="flex items-center gap-4"></div>
+          <div className="flex items-center gap-4">
+            <button
+              type="button"
+              disabled={!activeHasShareableContent || Boolean(activeRunning)}
+              className="rounded-lg border border-border bg-transparent px-3 py-1.5 text-xs font-medium text-text cursor-pointer hover:bg-bg-2 disabled:cursor-not-allowed disabled:opacity-40"
+              onClick={() => {
+                setShareError('');
+                setShareStatus('');
+                setShareDialogOpen(true);
+              }}
+              title={activeRunning ? 'Wait for the current response to finish' : 'Share a read-only encrypted snapshot'}
+            >
+              Share
+            </button>
+          </div>
         </header>
 
         <main className="min-h-0 overflow-y-auto flex flex-col py-1 hide-scrollbar" ref={feedRef}>

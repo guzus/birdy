@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { Composer, MarkdownMessage } from './App';
+import { Composer, MarkdownMessage, SharedSnapshotView } from './App';
 
 test('renders a responsive semantic table with inline formatting', () => {
   const markup = renderToStaticMarkup(
@@ -52,4 +52,34 @@ test('renders a responsive model picker with unavailable choices and status', ()
   expect(markup).toContain('sm:max-w-[360px]');
   expect(markup).toContain('aria-live="polite"');
   expect(markup).toContain('Birdy tools enabled');
+});
+
+test('renders a read-only shared snapshot without authenticated controls', () => {
+  const markup = renderToStaticMarkup(
+    <SharedSnapshotView
+      snapshot={{
+        version: 1,
+        title: 'Signals worth sharing',
+        conversationCreatedAt: '2026-08-01T00:00:00.000Z',
+        cards: [{
+          category: 'AI', title: 'A useful signal', bullets: ['First point'], sources: ['@source'],
+          timestamp: '2026-08-01T01:00:00.000Z',
+        }],
+        messages: [
+          { role: 'user', text: 'What happened?' },
+          { role: 'assistant', text: '**Answer** with context.', modelLabel: 'Sonnet' },
+        ],
+      }}
+      expiresAt="2026-08-08T00:00:00.000Z"
+    />,
+  );
+
+  expect(markup).toContain('Read-only snapshot');
+  expect(markup).toContain('Signals worth sharing');
+  expect(markup).toContain('A useful signal');
+  expect(markup).toContain('<strong class="font-semibold text-text">Answer</strong>');
+  expect(markup.includes('Ask anything')).toBe(false);
+  expect(markup.includes('Deep dive')).toBe(false);
+  expect(markup.includes('Scan Timeline')).toBe(false);
+  expect(markup.includes('Enter invite code')).toBe(false);
 });
