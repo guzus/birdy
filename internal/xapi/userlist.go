@@ -320,6 +320,9 @@ func parseUserList(body []byte) (*UserListPage, error) {
 				if entry.Content.Value == "" {
 					return nil, &APIError{Message: "malformed user-list Bottom cursor: empty value"}
 				}
+				if isTerminalUserListCursor(entry.Content.Value) {
+					continue
+				}
 				if page.NextCursor != "" && page.NextCursor != entry.Content.Value {
 					return nil, &APIError{Message: "conflicting user-list Bottom cursors"}
 				}
@@ -452,6 +455,25 @@ func mapUserEntry(entry userEntry) (ListedUser, bool, error) {
 		return ListedUser{}, false, &APIError{Message: fmt.Sprintf("malformed user-list entry for id %q", raw.RestID)}
 	}
 	return user, true, nil
+}
+
+// isTerminalUserListCursor reports X's end-of-list sentinel. The v1.1 REST
+// listing says "there is nothing after this page" with next_cursor_str "0"; the
+// GraphQL listing says the same thing with a Bottom cursor whose leading
+// component is "0", as in "0|2087029644107709401".
+//
+// Following that value does not fail — X answers with an empty page and another
+// "0|" cursor whose suffix has changed, so the walk's repeat and no-advance
+// guards never fire. Reading it as a real cursor meant a user list never
+// reported its end: the walk only stopped at its page cap, which a caller must
+// treat as an incomplete snapshot, so a full following list could never be
+// reconciled no matter how small the account.
+func isTerminalUserListCursor(value string) bool {
+	leading, _, separated := strings.Cut(value, "|")
+	if !separated {
+		return value == "0"
+	}
+	return leading == "0"
 }
 
 // userIDFromEntryID recovers the numeric id X puts in a user-list entry key

@@ -592,6 +592,42 @@ func followingBodyRaw(entries string) string {
 	return `{"data":{"user":{"result":{"timeline":{"timeline":{"instructions":[{"entries":[` + entries + `]}]}}}}}}`
 }
 
+// X does not end a following list by omitting the Bottom cursor. It sends one
+// whose leading component is "0", answers it with an empty page and another
+// "0|" cursor with a changed suffix, and does that forever. Neither the repeat
+// guard nor the no-advance guard fires on a suffix that keeps changing, so the
+// walk ran to its page cap and reported Complete=false — and a caller must
+// refuse to reconcile an incomplete snapshot, so no following list of any size
+// could be reconciled at all.
+func TestFollowingCompletesOnTheZeroTerminatorCursor(t *testing.T) {
+	var pages int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pages++
+		var variables map[string]any
+		_ = json.Unmarshal([]byte(r.URL.Query().Get("variables")), &variables)
+		if cursor, _ := variables["cursor"].(string); cursor == "" {
+			_, _ = w.Write([]byte(followingBody([][2]string{{"1", "first"}}, "C1")))
+			return
+		}
+		// The real terminal page still carries users, and the suffix moves on
+		// every request so a repeat check cannot catch it.
+		_, _ = w.Write([]byte(followingBody([][2]string{{"2", "second"}},
+			fmt.Sprintf("0|20870296441077094%02d", 99-pages))))
+	}))
+	defer server.Close()
+
+	got, err := monitoringClient(t, server.URL).Following(t.Context(), "42", FollowingOptions{MaxPages: 50})
+	if err != nil {
+		t.Fatalf("Following: %v", err)
+	}
+	if !got.Complete {
+		t.Fatalf("terminator was followed as a cursor: %+v", got)
+	}
+	if got.Pages != 2 || got.NextCursor != "" || len(got.Users) != 2 {
+		t.Fatalf("snapshot = %+v, want a two-page walk that stopped at the terminator", got)
+	}
+}
+
 // A live following list of a few hundred accounts reliably contains one X will
 // not render. Because the walk aborts on the first page error, that single
 // entry used to discard every page already collected and fail the whole
