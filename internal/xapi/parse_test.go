@@ -21,11 +21,13 @@ const conversationFixture = `{
           "rest_id": "9001",
           "legacy": { "screen_name": "SpaceX", "name": "SpaceX" }
         } } },
+        "views": { "count": "1200000" },
         "legacy": {
           "full_text": "Falcon 9 has landed https://t.co/abc",
           "created_at": "Wed Aug 05 07:59:09 +0000 2026",
           "conversation_id_str": "100",
           "reply_count": 429, "retweet_count": 899, "favorite_count": 8658,
+          "quote_count": 80, "bookmark_count": 12, "lang": "en",
           "extended_entities": { "media": [ {
             "type": "video",
             "media_url_https": "https://pbs.twimg.com/amplify_video_thumb/1/img/x.jpg",
@@ -145,6 +147,9 @@ func TestParseConversation(t *testing.T) {
 		}
 		if root.LikeCount != 8658 || root.ReplyCount != 429 {
 			t.Errorf("engagement counts = %d likes / %d replies, want 8658 / 429", root.LikeCount, root.ReplyCount)
+		}
+		if m := root.Metrics(); m.QuoteCount != 80 || m.BookmarkCount != 12 || m.ViewCount != 1_200_000 || m.Lang != "en" {
+			t.Errorf("metrics = %+v, want quote 80 bookmark 12 views 1200000 lang en", m)
 		}
 		if root.IsReply() {
 			t.Error("IsReply() = true for the conversation root")

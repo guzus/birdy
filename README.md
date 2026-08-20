@@ -525,6 +525,39 @@ birdy status
 birdy account list
 ```
 
+## Scrape
+
+`birdy scrape` collects tweets from profiles, lists, searches, and tweet URLs
+in one command. It accepts mixed targets, structured search filters,
+Latest+Top ranking, and JSON, flat, or CSV export. Results are deduplicated
+before output.
+
+```bash
+# Profile, search, and tweet URLs in one run
+birdy scrape https://x.com/nasa https://x.com/search?q=moon --max-items 50
+
+# Bulk handles
+birdy scrape --handle elonmusk --handle nasa -n 100
+
+# Structured filters compile to X advanced-search syntax
+birdy scrape --from nasa --since 2026-01-01 --min-likes 100 --filter media
+
+# Combined Latest + Top search, spreadsheet output
+birdy scrape --search "AI lang:en" --sort both --output csv
+
+# Engagement modes
+birdy scrape --mode replies https://x.com/nasa/status/1846987139428634858
+birdy scrape --mode quotes --id 1846987139428634858
+```
+
+`--mode` accepts `auto` (default), `tweet`, `search`, `profile`,
+`profile-replies`, `profile-media`, `profile-likes`, `list`, `replies`,
+`quotes`, `thread`, `retweeters`, and `favoriters`. `--output` is `json`
+(default), `flat` (nested JSON plus spreadsheet columns), or `csv`.
+
+Bare words are search terms (`birdy scrape AI`). Use `--handle nasa` or
+`@nasa` when the target is a profile.
+
 ## Following Overlap
 
 Find accounts followed by at least N accounts from a seed set:

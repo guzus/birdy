@@ -74,6 +74,31 @@ type Tweet struct {
 	// X carries it as legacy.retweeted_status_result; keeping the relation
 	// explicit avoids inferring reposts from localized display text.
 	RepostedTweet *Tweet `json:"repostedTweet,omitempty"`
+
+	// Extra public-web metrics bird's JSON contract never emitted. They stay
+	// unexported so --json remains byte-identical; scrape reads them via Metrics.
+	quoteCount    int
+	viewCount     int
+	bookmarkCount int
+	lang          string
+}
+
+// TweetMetrics are engagement and language fields X reports but bird omits.
+type TweetMetrics struct {
+	QuoteCount    int
+	ViewCount     int
+	BookmarkCount int
+	Lang          string
+}
+
+// Metrics returns the extra counts captured from the GraphQL payload.
+func (t Tweet) Metrics() TweetMetrics {
+	return TweetMetrics{
+		QuoteCount:    t.quoteCount,
+		ViewCount:     t.viewCount,
+		BookmarkCount: t.bookmarkCount,
+		Lang:          t.lang,
+	}
 }
 
 // --- Raw response shapes -----------------------------------------------------
@@ -193,9 +218,12 @@ type tweetResult struct {
 	Legacy *struct {
 		FullText            string `json:"full_text"`
 		CreatedAt           string `json:"created_at"`
+		Lang                string `json:"lang"`
 		ReplyCount          int    `json:"reply_count"`
 		RetweetCount        int    `json:"retweet_count"`
 		FavoriteCount       int    `json:"favorite_count"`
+		QuoteCount          int    `json:"quote_count"`
+		BookmarkCount       int    `json:"bookmark_count"`
 		ConversationIDStr   string `json:"conversation_id_str"`
 		InReplyToStatusIDSt string `json:"in_reply_to_status_id_str"`
 		ExtendedEntities    *struct {
@@ -208,6 +236,10 @@ type tweetResult struct {
 			Result *tweetResult `json:"result"`
 		} `json:"retweeted_status_result"`
 	} `json:"legacy"`
+
+	Views *struct {
+		Count string `json:"count"`
+	} `json:"views"`
 
 	// NoteTweet carries long-form post text, which is truncated in
 	// legacy.full_text. This is X's "long post" feature and is NOT the same
@@ -289,14 +321,7 @@ func mapTweet(raw *tweetResult) (Tweet, bool) {
 		Article:  extractArticleMetadata(raw),
 	}
 
-	if raw.Legacy != nil {
-		t.CreatedAt = raw.Legacy.CreatedAt
-		t.ReplyCount = raw.Legacy.ReplyCount
-		t.RetweetCount = raw.Legacy.RetweetCount
-		t.LikeCount = raw.Legacy.FavoriteCount
-		t.ConversationID = raw.Legacy.ConversationIDStr
-		t.InReplyToStatusID = raw.Legacy.InReplyToStatusIDSt
-	}
+	applyTweetMetrics(&t, raw)
 
 	// A quote carries the tweet it quotes. Roughly a third of a live timeline
 	// has one, and dropping it silently strips the context that makes the
@@ -341,14 +366,7 @@ func mapTweetWithoutRepost(raw *tweetResult) (Tweet, bool) {
 		Author: Author{Username: username, Name: name},
 		Media:  extractMedia(raw), Article: extractArticleMetadata(raw),
 	}
-	if raw.Legacy != nil {
-		t.CreatedAt = raw.Legacy.CreatedAt
-		t.ReplyCount = raw.Legacy.ReplyCount
-		t.RetweetCount = raw.Legacy.RetweetCount
-		t.LikeCount = raw.Legacy.FavoriteCount
-		t.ConversationID = raw.Legacy.ConversationIDStr
-		t.InReplyToStatusID = raw.Legacy.InReplyToStatusIDSt
-	}
+	applyTweetMetrics(&t, raw)
 	if depth := quoteDepth(); depth > 0 {
 		t.QuotedTweet = mapQuoted(raw, depth)
 	}
@@ -453,14 +471,7 @@ func mapQuoted(raw *tweetResult, depth int) *Tweet {
 		Media:    extractMedia(inner),
 		Article:  extractArticleMetadata(inner),
 	}
-	if inner.Legacy != nil {
-		quoted.CreatedAt = inner.Legacy.CreatedAt
-		quoted.ReplyCount = inner.Legacy.ReplyCount
-		quoted.RetweetCount = inner.Legacy.RetweetCount
-		quoted.LikeCount = inner.Legacy.FavoriteCount
-		quoted.ConversationID = inner.Legacy.ConversationIDStr
-		quoted.InReplyToStatusID = inner.Legacy.InReplyToStatusIDSt
-	}
+	applyTweetMetrics(&quoted, inner)
 	quoted.QuotedTweet = mapQuoted(inner, depth-1)
 	return &quoted
 }
@@ -502,6 +513,28 @@ func mapAuthor(raw *tweetResult) (username, name, authorID string) {
 		name = username
 	}
 	return username, name, authorID
+}
+
+func applyTweetMetrics(t *Tweet, raw *tweetResult) {
+	if t == nil || raw == nil {
+		return
+	}
+	if raw.Legacy != nil {
+		t.CreatedAt = raw.Legacy.CreatedAt
+		t.ReplyCount = raw.Legacy.ReplyCount
+		t.RetweetCount = raw.Legacy.RetweetCount
+		t.LikeCount = raw.Legacy.FavoriteCount
+		t.ConversationID = raw.Legacy.ConversationIDStr
+		t.InReplyToStatusID = raw.Legacy.InReplyToStatusIDSt
+		t.quoteCount = raw.Legacy.QuoteCount
+		t.bookmarkCount = raw.Legacy.BookmarkCount
+		t.lang = raw.Legacy.Lang
+	}
+	if raw.Views != nil {
+		if n, err := strconv.Atoi(strings.TrimSpace(raw.Views.Count)); err == nil && n >= 0 {
+			t.viewCount = n
+		}
+	}
 }
 
 // extractText is bird's extractTweetText precedence: an X Article's rendered
