@@ -93,6 +93,7 @@ Reading & Browsing:
   %[1]s read <tweet-id>         Read a tweet by ID or URL
   %[1]s thread <tweet-id>       Read a tweet thread
   %[1]s search "<query>"        Search for tweets
+  %[1]s scrape [targets...]     Batch-scrape tweets, profiles, lists, or searches
   %[1]s home                    Get your home timeline
   %[1]s mentions                Get your mentions
   %[1]s bookmarks               Get your bookmarked tweets

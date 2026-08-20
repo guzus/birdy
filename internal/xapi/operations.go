@@ -68,9 +68,35 @@ var (
 	}
 )
 
+// SearchProduct selects X's Latest or Top search ranking.
+type SearchProduct string
+
+const (
+	SearchLatest SearchProduct = "Latest"
+	SearchTop    SearchProduct = "Top"
+)
+
+// NormalizeSearchProduct maps aliases onto Latest or Top. Empty defaults to Latest.
+func NormalizeSearchProduct(product SearchProduct) SearchProduct {
+	switch strings.ToLower(strings.TrimSpace(string(product))) {
+	case "", "latest", "live", "recency":
+		return SearchLatest
+	case "top", "popular", "relevance":
+		return SearchTop
+	default:
+		return SearchLatest
+	}
+}
+
 // Search returns tweets matching a query, most recent first.
 func (c *Client) Search(ctx context.Context, query string, count int) ([]Tweet, error) {
-	tweets, _, err := c.searchFrom(ctx, query, count, "", 0, false)
+	tweets, _, err := c.searchFrom(ctx, query, count, "", 0, false, SearchLatest)
+	return tweets, err
+}
+
+// SearchWith returns tweets matching a query using Latest or Top ranking.
+func (c *Client) SearchWith(ctx context.Context, query string, count int, product SearchProduct) ([]Tweet, error) {
+	tweets, _, err := c.searchFrom(ctx, query, count, "", 0, false, product)
 	return tweets, err
 }
 
@@ -80,14 +106,15 @@ func (c *Client) SearchPageAlignedFrom(ctx context.Context, query string, count 
 	if maxPages <= 0 {
 		maxPages = timelinePageBudget(count)
 	}
-	return c.searchFrom(ctx, query, count, cursor, maxPages, true)
+	return c.searchFrom(ctx, query, count, cursor, maxPages, true, SearchLatest)
 }
 
-func (c *Client) searchFrom(ctx context.Context, query string, count int, cursor string, maxPages int, fullPages bool) ([]Tweet, string, error) {
+func (c *Client) searchFrom(ctx context.Context, query string, count int, cursor string, maxPages int, fullPages bool, product SearchProduct) ([]Tweet, string, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return nil, "", fmt.Errorf("x api: empty search query")
 	}
+	product = NormalizeSearchProduct(product)
 	return c.pagedTimeline(ctx, opSearch, pagedOptions{
 		limit: count, cursor: strings.TrimSpace(cursor), maxPages: maxPages, fullPages: fullPages,
 		variables: func(pageCount int, cursor string) map[string]any {
@@ -95,7 +122,7 @@ func (c *Client) searchFrom(ctx context.Context, query string, count int, cursor
 				"rawQuery":    query,
 				"count":       pageCount,
 				"querySource": "typed_query",
-				"product":     "Latest",
+				"product":     string(product),
 			}, cursor)
 		},
 	})
