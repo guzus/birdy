@@ -261,6 +261,22 @@ func TestSearchPageSizeCapsAt20(t *testing.T) {
 	wantCounts(t, ps.timelineRequests(), 20, 20, 5)
 }
 
+func TestSearchWithSendsTopProduct(t *testing.T) {
+	ps := newPagingServer(t, []string{"search_by_raw_query", "search_timeline", "timeline", "instructions"}, []pageSpec{
+		{tweetIDs: []string{"1"}},
+	})
+	if _, err := ps.client(t).SearchWith(context.Background(), "AI", 1, SearchTop); err != nil {
+		t.Fatal(err)
+	}
+	reqs := ps.timelineRequests()
+	if len(reqs) != 1 {
+		t.Fatalf("got %d search requests, want 1", len(reqs))
+	}
+	if got := reqs[0].variables["product"]; got != "Top" {
+		t.Fatalf("product = %v, want Top", got)
+	}
+}
+
 func TestPageAlignedSearchDoesNotLoseOverdeliveredEntries(t *testing.T) {
 	ps := newPagingServer(t, []string{"search_by_raw_query", "search_timeline", "timeline", "instructions"}, []pageSpec{
 		{tweetIDs: []string{"1", "2", "3"}, cursor: "C1"},

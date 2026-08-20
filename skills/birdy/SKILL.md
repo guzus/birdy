@@ -72,6 +72,7 @@ Node engine instead, which requires installing bird separately.
 # Auto-rotate accounts
 birdy home
 birdy search "golang"
+birdy scrape --handle nasa --search "moon" -n 50
 birdy read 1234567890
 
 # Show which account was used
