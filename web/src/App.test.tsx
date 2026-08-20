@@ -93,7 +93,7 @@ test('turns bare X URLs into external links', () => {
   expect(markup).toContain('>x.com/birdy/status/123</a>,');
   expect(markup).toContain('href="https://x.com/birdy/status/456"');
   expect(markup).toContain('>https://x.com/birdy/status/456</a>.');
-  expect(markup.match(/target="_blank"/g)).toHaveLength(2);
+  expect((markup.match(/target="_blank"/g) || []).length).toBe(2);
 });
 
 test('does not link X-like text inside code or another URL', () => {
@@ -101,6 +101,6 @@ test('does not link X-like text inside code or another URL', () => {
     <MarkdownMessage text={'Run `birdy read x.com/birdy/status/123` or visit example.com/x.com/not-a-link.'} />,
   );
 
-  expect(markup).not.toContain('<a');
+  expect(markup.includes('<a')).toBe(false);
   expect(markup).toContain('<code');
 });
