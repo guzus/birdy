@@ -17,12 +17,12 @@ type Row struct {
 	ID             string   `json:"id,omitempty"`
 	Text           string   `json:"text,omitempty"`
 	CreatedAt      string   `json:"createdAt,omitempty"`
-	LikeCount      int      `json:"likeCount,omitempty"`
-	RetweetCount   int      `json:"retweetCount,omitempty"`
-	ReplyCount     int      `json:"replyCount,omitempty"`
-	QuoteCount     int      `json:"quoteCount,omitempty"`
-	ViewCount      int      `json:"viewCount,omitempty"`
-	BookmarkCount  int      `json:"bookmarkCount,omitempty"`
+	LikeCount      int      `json:"likeCount"`
+	RetweetCount   int      `json:"retweetCount"`
+	ReplyCount     int      `json:"replyCount"`
+	QuoteCount     int      `json:"quoteCount"`
+	ViewCount      int      `json:"viewCount"`
+	BookmarkCount  int      `json:"bookmarkCount"`
 	Lang           string   `json:"lang,omitempty"`
 	URL            string   `json:"url,omitempty"`
 	TweetURL       string   `json:"tweetUrl,omitempty"`

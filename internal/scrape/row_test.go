@@ -42,6 +42,25 @@ func TestTweetRowAndCSV(t *testing.T) {
 	}
 }
 
+func TestWriteJSONKeepsZeroCounts(t *testing.T) {
+	row := TweetRow(xapi.Tweet{
+		ID:        "1",
+		Text:      "zero",
+		LikeCount: 0,
+		Author:    xapi.Author{Username: "nasa"},
+	}, "profile", "", false)
+	var buf bytes.Buffer
+	if err := WriteJSON(&buf, []Row{row}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), `"likeCount": 0`) {
+		t.Fatalf("zero likeCount omitted: %s", buf.String())
+	}
+	if !strings.Contains(buf.String(), `"quoteCount": 0`) {
+		t.Fatalf("zero quoteCount omitted: %s", buf.String())
+	}
+}
+
 func TestWriteJSONEmptyDataset(t *testing.T) {
 	var buf bytes.Buffer
 	if err := WriteJSON(&buf, nil); err != nil {

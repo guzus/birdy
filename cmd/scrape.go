@@ -52,8 +52,8 @@ Examples:
   birdy scrape --handle elonmusk --handle nasa -n 100
   birdy scrape --search "AI lang:en" --sort both --output csv
   birdy scrape --from nasa --since 2026-01-01 --min-likes 100 --filter media
-  birdy scrape --mode replies https://x.com/nasa/status/1846987139428634858
-  birdy scrape --id 1846987139428634858 --id 1858743654778892784 --output flat`,
+  birdy scrape --mode replies https://x.com/nasa/status/2090197889947451524
+  birdy scrape --id 2090197889947451524 --id 1858743654778892784 --output flat`,
 		RunE: runScrape,
 	}
 	cmd.Flags().StringArrayVar(&scrapeOpts.handles, "handle", nil, "profile handle to scrape (repeatable)")
@@ -61,7 +61,7 @@ Examples:
 	cmd.Flags().StringArrayVar(&scrapeOpts.tweetIDs, "id", nil, "tweet id or URL (repeatable)")
 	cmd.Flags().StringArrayVar(&scrapeOpts.listIDs, "list", nil, "list id or URL (repeatable)")
 	cmd.Flags().StringVar(&scrapeOpts.mode, "mode", scrape.ModeAuto, "auto, tweet, search, profile, profile-replies, profile-media, profile-likes, list, replies, quotes, thread, retweeters, favoriters")
-	cmd.Flags().StringVar(&scrapeOpts.sort, "sort", scrape.SortLatest, "latest, top, or both")
+	cmd.Flags().StringVar(&scrapeOpts.sort, "sort", "", "latest, top, or both (default latest)")
 	cmd.Flags().StringVar(&scrapeOpts.from, "from", "", "only tweets by this handle")
 	cmd.Flags().StringVar(&scrapeOpts.to, "to", "", "only replies to this handle")
 	cmd.Flags().StringVar(&scrapeOpts.since, "since", "", "inclusive lower bound (YYYY-MM-DD)")
@@ -311,7 +311,7 @@ func collectScrapeRows(ctx context.Context, client scrapeFetcher, jobs []scrape.
 		case scrape.KindProfileLikes:
 			tweets, err := client.Likes(ctx, job.Value, job.Limit)
 			if err != nil {
-				runErr = err
+				runErr = fmt.Errorf("profile likes for @%s are often hidden from other accounts: %w", job.Value, err)
 				continue
 			}
 			for _, t := range tweets {
@@ -330,7 +330,6 @@ func collectScrapeRows(ctx context.Context, client scrapeFetcher, jobs []scrape.
 			tweets, err := searchJob(ctx, client, job)
 			if err != nil {
 				runErr = err
-				continue
 			}
 			for _, t := range tweets {
 				addTweet(t, job)

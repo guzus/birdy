@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -131,6 +132,42 @@ func TestCollectScrapeRowsDirectRepliesOnly(t *testing.T) {
 	if len(rows) != 1 || rows[0].ID != "101" {
 		t.Fatalf("rows = %+v, want only the direct reply", rows)
 	}
+}
+
+func TestCollectScrapeRowsKeepsLatestWhenTopFails(t *testing.T) {
+	fake := &searchErrAfterFirst{
+		fakeScrapeFetcher: &fakeScrapeFetcher{
+			queries: map[string][]xapi.Tweet{
+				"AI": {{ID: "10", Text: "latest", Author: xapi.Author{Username: "a"}}},
+			},
+		},
+		failOn: 2,
+		err:    errors.New("top failed"),
+	}
+	rows, err := collectScrapeRows(context.Background(), fake, []scrape.Job{{
+		Kind: scrape.KindSearch, Query: "AI", Sort: scrape.SortBoth, Limit: 10,
+	}}, scrape.Request{MaxItems: 10})
+	if err == nil {
+		t.Fatal("expected top error")
+	}
+	if len(rows) != 1 || rows[0].ID != "10" {
+		t.Fatalf("latest rows discarded on top error: rows=%+v err=%v", rows, err)
+	}
+}
+
+type searchErrAfterFirst struct {
+	*fakeScrapeFetcher
+	n      int
+	failOn int
+	err    error
+}
+
+func (f *searchErrAfterFirst) SearchWith(ctx context.Context, query string, count int, product xapi.SearchProduct) ([]xapi.Tweet, error) {
+	f.n++
+	if f.n == f.failOn {
+		return nil, f.err
+	}
+	return f.fakeScrapeFetcher.SearchWith(ctx, query, count, product)
 }
 
 func TestWriteScrapeOutputJSON(t *testing.T) {

@@ -99,6 +99,7 @@ func (f Filters) Compile() (string, error) {
 // HasConstraints reports whether filters would change a profile fetch into search.
 func (f Filters) HasConstraints() bool {
 	return strings.TrimSpace(f.Content) != "" ||
+		strings.TrimSpace(f.From) != "" ||
 		strings.TrimSpace(f.To) != "" ||
 		strings.TrimSpace(f.Since) != "" ||
 		strings.TrimSpace(f.Until) != "" ||

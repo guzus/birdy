@@ -90,3 +90,73 @@ func TestPlanModeRepliesRequiresTweet(t *testing.T) {
 		t.Fatal("expected mode replies to reject a handle")
 	}
 }
+
+func TestPlanListFlagParsesURL(t *testing.T) {
+	jobs, err := (Request{
+		ListIDs: []string{"https://x.com/i/lists/1748648376080666720"},
+	}).Plan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 1 || jobs[0].Kind != KindList || jobs[0].Value != "1748648376080666720" {
+		t.Fatalf("got %+v", jobs)
+	}
+}
+
+func TestPlanHandlePlusFromConflict(t *testing.T) {
+	_, err := (Request{
+		Handles: []string{"nasa"},
+		Filters: Filters{From: "elonmusk"},
+	}).Plan()
+	if err == nil {
+		t.Fatal("expected --handle + conflicting --from to fail")
+	}
+}
+
+func TestPlanHandlePlusMatchingFrom(t *testing.T) {
+	jobs, err := (Request{
+		Handles: []string{"nasa"},
+		Filters: Filters{From: "NASA", Since: "2026-01-01"},
+	}).Plan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 1 || jobs[0].Kind != KindSearch {
+		t.Fatalf("got %+v", jobs)
+	}
+	if jobs[0].Query != "from:NASA since:2026-01-01" {
+		t.Fatalf("query = %q", jobs[0].Query)
+	}
+}
+
+func TestPlanModeLikesIsNotFavoriters(t *testing.T) {
+	_, err := (Request{Handles: []string{"nasa"}, Mode: "likes"}).Plan()
+	if err == nil {
+		t.Fatal("expected --mode likes to be rejected")
+	}
+}
+
+func TestPlanExplicitSortOverridesSearchURL(t *testing.T) {
+	jobs, err := (Request{
+		Positionals: []string{"https://x.com/search?q=moon&f=live"},
+		Sort:        SortTop,
+	}).Plan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 1 || jobs[0].Sort != SortTop {
+		t.Fatalf("explicit --sort should win: %+v", jobs)
+	}
+}
+
+func TestPlanSearchURLSortFillsDefault(t *testing.T) {
+	jobs, err := (Request{
+		Positionals: []string{"https://x.com/search?q=moon&f=live"},
+	}).Plan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 1 || jobs[0].Sort != SortLatest {
+		t.Fatalf("URL f=live should fill default sort: %+v", jobs)
+	}
+}

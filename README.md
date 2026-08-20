@@ -546,8 +546,8 @@ birdy scrape --from nasa --since 2026-01-01 --min-likes 100 --filter media
 birdy scrape --search "AI lang:en" --sort both --output csv
 
 # Engagement modes
-birdy scrape --mode replies https://x.com/nasa/status/1846987139428634858
-birdy scrape --mode quotes --id 1846987139428634858
+birdy scrape --mode replies https://x.com/nasa/status/2090197889947451524
+birdy scrape --mode quotes --id 2090197889947451524
 ```
 
 `--mode` accepts `auto` (default), `tweet`, `search`, `profile`,

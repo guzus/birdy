@@ -67,6 +67,7 @@ func (r Request) Plan() ([]Job, error) {
 	if err != nil {
 		return nil, err
 	}
+	sortExplicit := strings.TrimSpace(r.Sort) != ""
 	sort, err := normalizeSort(r.Sort)
 	if err != nil {
 		return nil, err
@@ -125,11 +126,11 @@ func (r Request) Plan() ([]Job, error) {
 		targets = append(targets, target)
 	}
 	for _, id := range r.ListIDs {
-		id = strings.TrimSpace(strings.TrimPrefix(id, "list:"))
-		if id == "" {
-			return nil, fmt.Errorf("empty list id")
+		target, err := listTarget(id)
+		if err != nil {
+			return nil, err
 		}
-		targets = append(targets, Target{Kind: KindList, Value: id, Source: id})
+		targets = append(targets, target)
 	}
 
 	if compiled != "" && len(targets) == 0 {
@@ -141,7 +142,7 @@ func (r Request) Plan() ([]Job, error) {
 
 	jobs := make([]Job, 0, len(targets))
 	for _, target := range targets {
-		job, err := jobFor(target, mode, sort, r.Filters, compiled, perTarget)
+		job, err := jobFor(target, mode, sort, sortExplicit, r.Filters, compiled, perTarget)
 		if err != nil {
 			return nil, err
 		}
@@ -158,7 +159,7 @@ const (
 	KindActorsJob  Kind = "actors"
 )
 
-func jobFor(target Target, mode, sort string, filters Filters, compiled string, limit int) (Job, error) {
+func jobFor(target Target, mode, sort string, sortExplicit bool, filters Filters, compiled string, limit int) (Job, error) {
 	kind := target.Kind
 	if mode != ModeAuto {
 		forced, err := applyMode(target, mode)
@@ -173,8 +174,11 @@ func jobFor(target Target, mode, sort string, filters Filters, compiled string, 
 		Value:  target.Value,
 		Source: target.Source,
 		Limit:  limit,
-		Sort:   firstNonEmpty(target.Sort, sort),
+		Sort:   sort,
 		Mode:   mode,
+	}
+	if !sortExplicit {
+		job.Sort = firstNonEmpty(target.Sort, sort)
 	}
 
 	switch kind {
@@ -182,7 +186,11 @@ func jobFor(target Target, mode, sort string, filters Filters, compiled string, 
 		query := compiled
 		switch target.Kind {
 		case KindProfile, KindProfileReplies, KindProfileMedia, KindProfileLikes:
-			query = strings.TrimSpace("from:" + target.Value + " " + compiled)
+			var err error
+			query, err = ensureFromHandle(compiled, target.Value, filters)
+			if err != nil {
+				return Job{}, err
+			}
 		case KindSearch:
 			if compiled == "" || target.Value == compiled {
 				query = target.Value
@@ -196,8 +204,10 @@ func jobFor(target Target, mode, sort string, filters Filters, compiled string, 
 				query = strings.TrimSpace(target.Value + " " + compiled)
 			}
 		}
-		if filters.From != "" && !strings.Contains(query, "from:") {
-			query = strings.TrimSpace(query + " from:" + trimAt(filters.From))
+		if target.Kind != KindProfile && target.Kind != KindProfileReplies && target.Kind != KindProfileMedia && target.Kind != KindProfileLikes {
+			if filters.From != "" && !queryHasFrom(query, trimAt(filters.From)) {
+				query = strings.TrimSpace(query + " from:" + trimAt(filters.From))
+			}
 		}
 		job.Query = strings.TrimSpace(query)
 		if job.Query == "" {
@@ -205,23 +215,76 @@ func jobFor(target Target, mode, sort string, filters Filters, compiled string, 
 		}
 	case KindProfile:
 		if filters.HasConstraints() || compiled != "" {
-			query := compiled
-			if !strings.Contains(query, "from:") {
-				query = strings.TrimSpace("from:" + target.Value + " " + query)
+			query, err := ensureFromHandle(compiled, target.Value, filters)
+			if err != nil {
+				return Job{}, err
 			}
 			job.Kind = KindSearch
-			job.Query = strings.TrimSpace(query)
+			job.Query = query
 		}
 	case KindProfileReplies:
+		query, err := ensureFromHandle("filter:replies "+compiled, target.Value, filters)
+		if err != nil {
+			return Job{}, err
+		}
 		job.Kind = KindSearch
-		job.Query = strings.TrimSpace("from:" + target.Value + " filter:replies " + compiled)
+		job.Query = query
 	case KindProfileMedia:
+		query, err := ensureFromHandle("filter:media "+compiled, target.Value, filters)
+		if err != nil {
+			return Job{}, err
+		}
 		job.Kind = KindSearch
-		job.Query = strings.TrimSpace("from:" + target.Value + " filter:media " + compiled)
+		job.Query = query
 	case KindQuotesJob:
 		job.Query = "quoted_tweet_id:" + target.Value
 	}
 	return job, nil
+}
+
+func listTarget(raw string) (Target, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return Target{}, fmt.Errorf("empty list id")
+	}
+	if target, err := Classify(raw); err == nil && target.Kind == KindList {
+		return target, nil
+	}
+	id := strings.TrimSpace(strings.TrimPrefix(raw, "list:"))
+	if looksLikeURL(raw) {
+		return Target{}, fmt.Errorf("%q is not a list id or URL", raw)
+	}
+	if id == "" {
+		return Target{}, fmt.Errorf("empty list id")
+	}
+	return Target{Kind: KindList, Value: id, Source: raw}, nil
+}
+
+func ensureFromHandle(query, handle string, filters Filters) (string, error) {
+	if from := strings.TrimSpace(filters.From); from != "" && !strings.EqualFold(trimAt(from), handle) {
+		return "", fmt.Errorf("--from %s conflicts with handle %s", trimAt(from), handle)
+	}
+	if !queryHasFrom(query, handle) {
+		query = strings.TrimSpace("from:" + handle + " " + query)
+	}
+	return strings.TrimSpace(query), nil
+}
+
+func queryHasFrom(query, handle string) bool {
+	want := strings.ToLower(trimAt(handle))
+	if want == "" {
+		return false
+	}
+	for _, part := range strings.Fields(query) {
+		if !strings.HasPrefix(strings.ToLower(part), "from:") {
+			continue
+		}
+		got := strings.ToLower(trimAt(part[len("from:"):]))
+		if got == want {
+			return true
+		}
+	}
+	return false
 }
 
 func applyMode(target Target, mode string) (Kind, error) {
@@ -318,8 +381,10 @@ func normalizeMode(raw string) (string, error) {
 		return ModeThread, nil
 	case ModeRetweeters:
 		return ModeRetweeters, nil
-	case ModeFavoriters, "likes":
+	case ModeFavoriters:
 		return ModeFavoriters, nil
+	case "likes":
+		return "", fmt.Errorf("unknown mode %q (want profile-likes or favoriters)", raw)
 	default:
 		return "", fmt.Errorf("unknown mode %q", raw)
 	}
