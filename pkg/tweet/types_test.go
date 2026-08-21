@@ -145,6 +145,18 @@ func TestPublicFieldOrderIsFrozen(t *testing.T) {
 			"ID", "Username", "Name", "Description", "Followers", "Following",
 			"Tweets", "Verified", "CreatedAt",
 		},
+		"NewsItem": {
+			"ID", "Headline", "Category", "TimeAgo", "Description", "URL",
+		},
+		"AboutProfile": {
+			"AccountBasedIn", "Source", "CreatedCountryAccurate", "LocationAccurate", "LearnMoreURL",
+		},
+		"Viewer": {"ID", "Username", "Name"},
+		"List": {
+			"ID", "Name", "Description", "MemberCount", "SubscriberCount",
+			"IsPrivate", "CreatedAt", "Owner",
+		},
+		"ListOwner": {"ID", "Username", "Name"},
 	}
 	types := map[string]reflect.Type{
 		"Tweet":               reflect.TypeOf(Tweet{}),
@@ -160,6 +172,11 @@ func TestPublicFieldOrderIsFrozen(t *testing.T) {
 		"FollowingUser":       reflect.TypeOf(FollowingUser{}),
 		"FollowingSnapshot":   reflect.TypeOf(FollowingSnapshot{}),
 		"UserProfile":         reflect.TypeOf(UserProfile{}),
+		"NewsItem":            reflect.TypeOf(NewsItem{}),
+		"AboutProfile":        reflect.TypeOf(AboutProfile{}),
+		"Viewer":              reflect.TypeOf(Viewer{}),
+		"List":                reflect.TypeOf(List{}),
+		"ListOwner":           reflect.TypeOf(ListOwner{}),
 	}
 
 	for name, want := range frozen {
@@ -230,6 +247,29 @@ func TestMonitoringStructContractsAreFrozen(t *testing.T) {
 			{"Description", "string", "description,omitempty"}, {"Followers", "*int", "followers,omitempty"},
 			{"Following", "*int", "following,omitempty"}, {"Tweets", "*int", "tweets,omitempty"},
 			{"Verified", "bool", "verified"}, {"CreatedAt", "string", "createdAt,omitempty"},
+		}},
+		"NewsItem": {reflect.TypeOf(NewsItem{}), []frozenField{
+			{"ID", "string", "id,omitempty"}, {"Headline", "string", "headline"},
+			{"Category", "string", "category,omitempty"}, {"TimeAgo", "string", "timeAgo,omitempty"},
+			{"Description", "string", "description,omitempty"}, {"URL", "string", "url,omitempty"},
+		}},
+		"AboutProfile": {reflect.TypeOf(AboutProfile{}), []frozenField{
+			{"AccountBasedIn", "string", "accountBasedIn,omitempty"}, {"Source", "string", "source,omitempty"},
+			{"CreatedCountryAccurate", "*bool", "createdCountryAccurate,omitempty"},
+			{"LocationAccurate", "*bool", "locationAccurate,omitempty"},
+			{"LearnMoreURL", "string", "learnMoreUrl,omitempty"},
+		}},
+		"Viewer": {reflect.TypeOf(Viewer{}), []frozenField{
+			{"ID", "string", "id"}, {"Username", "string", "username"}, {"Name", "string", "name"},
+		}},
+		"List": {reflect.TypeOf(List{}), []frozenField{
+			{"ID", "string", "id"}, {"Name", "string", "name"},
+			{"Description", "*string", "description,omitempty"}, {"MemberCount", "*int", "memberCount,omitempty"},
+			{"SubscriberCount", "*int", "subscriberCount,omitempty"}, {"IsPrivate", "bool", "isPrivate"},
+			{"CreatedAt", "int64", "createdAt,omitempty"}, {"Owner", "*ListOwner", "owner,omitempty"},
+		}},
+		"ListOwner": {reflect.TypeOf(ListOwner{}), []frozenField{
+			{"ID", "string", "id"}, {"Username", "string", "username"}, {"Name", "string", "name"},
 		}},
 	}
 	for name, tc := range cases {

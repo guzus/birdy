@@ -164,6 +164,31 @@ func TestFollowingReportsCompletenessAndResumeCursor(t *testing.T) {
 	})
 }
 
+func TestFollowersHitsFollowersOperation(t *testing.T) {
+	var ops []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		op := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+		ops = append(ops, op)
+		_, _ = w.Write([]byte(followingBody([][2]string{{"1", "first"}}, "")))
+	}))
+	defer server.Close()
+
+	got, err := monitoringClient(t, server.URL).Followers(t.Context(), "42", FollowingOptions{MaxPages: 1})
+	if err != nil {
+		t.Fatalf("Followers: %v", err)
+	}
+	if len(got.Users) != 1 || got.Users[0].ID != "1" {
+		t.Fatalf("snapshot = %+v", got)
+	}
+	joined := strings.Join(ops, ",")
+	if !strings.Contains(joined, "Followers") {
+		t.Fatalf("operations = %q, want Followers", joined)
+	}
+	if strings.Contains(joined, "Following") {
+		t.Fatalf("Followers walked Following: %q", joined)
+	}
+}
+
 func followingBody(users [][2]string, cursor string) string {
 	entries := make([]string, 0, len(users)+1)
 	for _, user := range users {

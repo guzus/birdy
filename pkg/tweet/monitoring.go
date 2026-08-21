@@ -230,17 +230,36 @@ type FollowingSnapshot struct {
 	Pages      int             `json:"pages"`
 }
 
+type userListPageFn func(ctx context.Context, api *xapi.Client, userID string, pageSize int, cursor string) (*xapi.UserListPage, error)
+
 // Following walks accounts followed by userID using one selected Birdy
 // account for the entire cursor chain. Complete is true only when the walk
 // started at the newest page and X reported the end. A page cap returns a
 // usable incomplete result rather than pretending omitted users were absent.
+//
+// userID may be a numeric rest id or a @handle; a handle is resolved once
+// against the same account that walks the list.
 func (c *Client) Following(ctx context.Context, userID string, opts FollowingOptions) (FollowingSnapshot, error) {
-	userID = strings.TrimSpace(userID)
+	return c.walkUserList(ctx, userID, opts, "following", func(ctx context.Context, api *xapi.Client, id string, pageSize int, cursor string) (*xapi.UserListPage, error) {
+		return api.Following(ctx, id, pageSize, cursor)
+	})
+}
+
+// Followers walks accounts that follow userID with the same completeness
+// contract as Following.
+func (c *Client) Followers(ctx context.Context, userID string, opts FollowingOptions) (FollowingSnapshot, error) {
+	return c.walkUserList(ctx, userID, opts, "followers", func(ctx context.Context, api *xapi.Client, id string, pageSize int, cursor string) (*xapi.UserListPage, error) {
+		return api.Followers(ctx, id, pageSize, cursor)
+	})
+}
+
+func (c *Client) walkUserList(ctx context.Context, userID string, opts FollowingOptions, kind string, fetch userListPageFn) (FollowingSnapshot, error) {
+	userID = strings.TrimSpace(strings.TrimPrefix(userID, "@"))
 	if userID == "" {
-		return FollowingSnapshot{}, fmt.Errorf("following user id is required")
+		return FollowingSnapshot{}, fmt.Errorf("%s user id is required", kind)
 	}
 	if opts.MaxPages < 0 {
-		return FollowingSnapshot{}, fmt.Errorf("following MaxPages must not be negative")
+		return FollowingSnapshot{}, fmt.Errorf("%s MaxPages must not be negative", kind)
 	}
 	pageSize := opts.PageSize
 	if pageSize <= 0 {
@@ -250,11 +269,19 @@ func (c *Client) Following(ctx context.Context, userID string, opts FollowingOpt
 
 	var result FollowingSnapshot
 	err := c.withAccount(ctx, func(ctx context.Context, api *xapi.Client) error {
+		id := userID
+		if !allDigits(id) {
+			u, err := api.UserByScreenName(ctx, id)
+			if err != nil {
+				return err
+			}
+			id = u.ID
+		}
 		cursor := startCursor
 		seenUsers := make(map[string]struct{})
 		seenCursors := make(map[string]struct{})
 		for {
-			page, err := api.Following(ctx, userID, pageSize, cursor)
+			page, err := fetch(ctx, api, id, pageSize, cursor)
 			if err != nil {
 				return err
 			}
@@ -274,10 +301,10 @@ func (c *Client) Following(ctx context.Context, userID string, opts FollowingOpt
 				return nil
 			}
 			if next == cursor {
-				return fmt.Errorf("following cursor did not advance after page %d", result.Pages)
+				return fmt.Errorf("%s cursor did not advance after page %d", kind, result.Pages)
 			}
 			if _, repeated := seenCursors[next]; repeated {
-				return fmt.Errorf("following cursor repeated after page %d", result.Pages)
+				return fmt.Errorf("%s cursor repeated after page %d", kind, result.Pages)
 			}
 			seenCursors[next] = struct{}{}
 			result.NextCursor = next

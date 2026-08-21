@@ -155,6 +155,122 @@ func (c *Client) ListTimeline(ctx context.Context, listID string, count int) ([]
 	return result, err
 }
 
+// Mentions returns tweets that mention handle. An empty handle uses the
+// authenticated viewer. This is a Latest Search for "@handle", matching the
+// CLI: X has no public mentions-timeline GraphQL operation here.
+func (c *Client) Mentions(ctx context.Context, handle string, count int) ([]Tweet, error) {
+	count = defaultCount(count, 10)
+	handle = strings.TrimSpace(strings.TrimPrefix(handle, "@"))
+	var result []Tweet
+	err := c.withAccount(ctx, func(ctx context.Context, api *xapi.Client) error {
+		target := handle
+		if target == "" {
+			viewer, err := api.CurrentUser(ctx)
+			if err != nil {
+				return fmt.Errorf("could not determine current user (%w); pass a handle", err)
+			}
+			target = viewer.Username
+		}
+		normalized, ok := xapi.ValidHandle(target)
+		if !ok {
+			return fmt.Errorf("invalid handle %q", target)
+		}
+		tweets, err := api.Search(ctx, "@"+normalized, count)
+		if err != nil {
+			return err
+		}
+		result = convertTweets(tweets)
+		return nil
+	})
+	return result, err
+}
+
+// Viewer is the authenticated account a Client's cookies belong to.
+type Viewer struct {
+	ID       string `json:"id"`
+	Username string `json:"username"`
+	Name     string `json:"name"`
+}
+
+// Whoami resolves the authenticated account for the selected credentials.
+func (c *Client) Whoami(ctx context.Context) (*Viewer, error) {
+	var result *Viewer
+	err := c.withAccount(ctx, func(ctx context.Context, api *xapi.Client) error {
+		v, err := api.CurrentUser(ctx)
+		if err != nil {
+			return err
+		}
+		if v == nil {
+			return fmt.Errorf("current user is empty")
+		}
+		result = &Viewer{ID: v.ID, Username: v.Username, Name: v.Name}
+		return nil
+	})
+	return result, err
+}
+
+// List is an X list the authenticated account owns or belongs to.
+type List struct {
+	ID              string     `json:"id"`
+	Name            string     `json:"name"`
+	Description     *string    `json:"description,omitempty"`
+	MemberCount     *int       `json:"memberCount,omitempty"`
+	SubscriberCount *int       `json:"subscriberCount,omitempty"`
+	IsPrivate       bool       `json:"isPrivate"`
+	CreatedAt       int64      `json:"createdAt,omitempty"`
+	Owner           *ListOwner `json:"owner,omitempty"`
+}
+
+// ListOwner is the account a list belongs to.
+type ListOwner struct {
+	ID       string `json:"id"`
+	Username string `json:"username"`
+	Name     string `json:"name"`
+}
+
+// Lists returns lists the authenticated account owns, or memberships when
+// memberOf is true. count defaults to 100, matching the CLI.
+func (c *Client) Lists(ctx context.Context, memberOf bool, count int) ([]List, error) {
+	count = defaultCount(count, 100)
+	var result []List
+	err := c.withAccount(ctx, func(ctx context.Context, api *xapi.Client) error {
+		var (
+			raw []xapi.List
+			err error
+		)
+		if memberOf {
+			raw, err = api.ListMemberships(ctx, count)
+		} else {
+			raw, err = api.OwnedLists(ctx, count)
+		}
+		if err != nil {
+			return err
+		}
+		result = convertLists(raw)
+		return nil
+	})
+	return result, err
+}
+
+func convertLists(in []xapi.List) []List {
+	if in == nil {
+		return nil
+	}
+	out := make([]List, 0, len(in))
+	for _, l := range in {
+		item := List{
+			ID: l.ID, Name: l.Name, Description: l.Description,
+			MemberCount: l.MemberCount, SubscriberCount: l.SubscriberCount,
+			IsPrivate: l.IsPrivate, CreatedAt: l.CreatedAt,
+		}
+		if l.Owner != nil {
+			item.Owner = &ListOwner{ID: l.Owner.ID, Username: l.Owner.Username, Name: l.Owner.Name}
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
 // About returns X's "About this account" panel for a handle.
 func (c *Client) About(ctx context.Context, handle string) (*AboutProfile, error) {
 	var result *AboutProfile
