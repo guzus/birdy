@@ -552,6 +552,30 @@ func TestMultiFetchRateLimitDelayStillRetries(t *testing.T) {
 	}
 }
 
+// X handles may begin with an underscore (@_cpatonn). Reserving the whole
+// "_" prefix rejected a real 127-op production manifest on 2026-09-06; only
+// multi-fetch's own report basename is off limits.
+func TestMultiFetchAcceptsUnderscorePrefixedHandleIDs(t *testing.T) {
+	setupMultiFetchTest(t, "alpha")
+	multiFetchRun = func(context.Context, *store.Account, []string) (runner.Result, string, string, error) {
+		return runner.Result{}, "[]", "", nil
+	}
+	if err := validateMultiFetchID("_cpatonn"); err != nil {
+		t.Fatalf("_cpatonn must be a valid op id: %v", err)
+	}
+	if err := validateMultiFetchID("_report"); err == nil {
+		t.Fatal("_report must stay reserved")
+	}
+	outDir := t.TempDir()
+	manifest := writeMultiFetchManifest(t, MultiFetchOperation{ID: "_cpatonn", Args: []string{"user-tweets", "@_cpatonn", "--json"}})
+	if _, _, err := runMultiFetchCmd(t, "--manifest", manifest, "--output-dir", outDir); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "_cpatonn.json")); err != nil {
+		t.Fatalf("op file for an underscore handle must be written: %v", err)
+	}
+}
+
 func TestMultiFetchRejectsReservedAndUnsafeIDs(t *testing.T) {
 	setupMultiFetchTest(t, "alpha")
 	multiFetchRun = func(context.Context, *store.Account, []string) (runner.Result, string, string, error) {

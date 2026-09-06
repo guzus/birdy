@@ -177,8 +177,12 @@ func init() {
 // validateMultiFetchID rejects ids that could escape the output directory or
 // collide with multi-fetch's own files.
 func validateMultiFetchID(id string) error {
-	if strings.HasPrefix(id, "_") {
-		return fmt.Errorf("invalid id %q: ids starting with \"_\" are reserved for multi-fetch's own files (%s)", id, multiFetchReportFile)
+	// Only the exact basename multi-fetch writes itself is reserved. A
+	// leading "_" alone is NOT: X handles may start with an underscore
+	// (@_cpatonn), and callers use the handle as the op id — reserving the
+	// prefix rejected a real production manifest (2026-09-06).
+	if id+".json" == multiFetchReportFile {
+		return fmt.Errorf("invalid id %q: reserved for multi-fetch's own files (%s)", id, multiFetchReportFile)
 	}
 	if id == "." || id == ".." || strings.ContainsAny(id, `/\`) {
 		return fmt.Errorf("invalid id %q: must not be \".\"/\"..\" or contain path separators", id)
