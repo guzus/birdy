@@ -27,7 +27,7 @@ import (
 //	birdy --account=alt4 user-tweets @handle       # equals-form
 //	birdy user-tweets -- --account weird           # after --, flags pass through
 func makeBirdCmd(use, short string) *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:                use,
 		Short:              short,
 		GroupID:            "bird",
@@ -35,6 +35,12 @@ func makeBirdCmd(use, short string) *cobra.Command {
 		SilenceUsage:       true,
 		SilenceErrors:      true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// DisableFlagParsing means cobra never sees --help here. Answer it
+			// in-process, before any account is picked or any process spawned:
+			// help must work on a runner with no accounts and no bird.
+			if helpRequested(args) {
+				return cmd.Help()
+			}
 			cleaned, err := applyBirdyGlobalFlags(args)
 			if err != nil {
 				return err
@@ -43,6 +49,9 @@ func makeBirdCmd(use, short string) *cobra.Command {
 			return forwardToBird(cmd, append([]string{cmd.Name()}, cleaned...))
 		},
 	}
+	// `birdy help <cmd>` goes through cobra's help command and lands here too.
+	cmd.SetHelpFunc(nativeHelpFunc)
+	return cmd
 }
 
 // applyBirdyGlobalFlags scans args for birdy's global flags (--account/-a,
@@ -181,7 +190,7 @@ func parseBoolFlag(s string) (bool, bool) {
 
 func init() {
 	rootCmd.AddGroup(
-		&cobra.Group{ID: "bird", Title: "X Commands:"},
+		&cobra.Group{ID: "bird", Title: "X Commands (native Go engine; `birdy <command> --help` lists its flags):"},
 		&cobra.Group{ID: "birdy", Title: "Birdy Commands:"},
 	)
 
@@ -205,7 +214,7 @@ func init() {
 		{"reply", "Reply to a tweet"},
 		{"search", "Search for tweets"},
 		{"thread", "Read a tweet thread"},
-		{"trending", "Get trending topics"},
+		{"trending", "Get trending topics (bird CLI only: needs --bird and a separate bird install)"},
 		{"tweet", "Post a new tweet"},
 		{"unbookmark", "Remove a tweet from bookmarks"},
 		{"unfollow", "Unfollow a user"},

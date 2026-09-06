@@ -106,9 +106,13 @@ This is deliberately structured so it does not require a major bump:
     deterministic key order there where JavaScript uses insertion order. Every
     article shape observed live matches; this is a documented tail risk.
   - `query-ids` describes birdy's resolver rather than bird's cache (below).
-- **Unimplemented flags fall back rather than lie.** A command carrying a flag
-  the native path lacks (`--all`, `--max-pages`, `--cursor`, …) runs through
-  bird instead of silently ignoring it.
+- **Unimplemented flags fail rather than lie.** A command carrying a flag
+  the native path lacks (`--all`, `--max-pages`, `--cursor`, …) is routed to
+  bird instead of silently ignoring it. Since birdy no longer ships bird, that
+  means it runs through bird when bird is installed separately and otherwise
+  fails with `bird CLI not found`. `birdy <command> --help` lists exactly the
+  flags the native path accepts; it is rendered from the parser's own flag
+  table and is answered in-process, never by bird.
 - **`--bird` / `BIRDY_USE_BIRD=1` is the escape hatch** while both engines exist.
 
 What *will* eventually be a breaking change, and will wait for a major bump:

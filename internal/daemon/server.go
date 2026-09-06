@@ -27,6 +27,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/guzus/birdy/internal/rotation"
 	"github.com/guzus/birdy/internal/runner"
 	"github.com/guzus/birdy/internal/store"
 )
@@ -52,6 +53,13 @@ type Config struct {
 	// AccountCount returns the current number of configured accounts (used
 	// only for /health reporting). Required.
 	AccountCount func() int
+	// Accounts returns the current account list so /health can report
+	// per-account rate-limit state (which accounts are inside the
+	// rotation.QuotaCooldown window after a 429). Optional: when nil, /health
+	// reports every account as ready and an empty accounts_detail, because it
+	// has no evidence either way. Only names and timestamps are ever
+	// published from it — never tokens or cookies.
+	Accounts func() []store.Account
 	// Concurrency caps in-flight /run requests. Must be >= 1.
 	Concurrency int
 	// CacheTTL enables the in-memory cache when > 0. Zero disables cache.
@@ -66,6 +74,8 @@ type Server struct {
 	sem       chan struct{}
 	cache     *ttlCache // nil when CacheTTL <= 0
 	startedAt time.Time
+	// now is the clock /health uses for cooldown math; tests pin it.
+	now func() time.Time
 
 	// Atomic counters for /health.
 	served    atomic.Int64
@@ -93,6 +103,7 @@ func NewServer(cfg Config) (*Server, error) {
 		mux:       http.NewServeMux(),
 		sem:       make(chan struct{}, cfg.Concurrency),
 		startedAt: time.Now(),
+		now:       time.Now,
 	}
 	if cfg.CacheTTL > 0 {
 		s.cache = newTTLCache(cfg.CacheTTL)
@@ -163,6 +174,12 @@ type runResponse struct {
 }
 
 // healthResponse is the JSON body returned from GET /health.
+//
+// The first six fields are the original contract and stay byte-compatible.
+// The rate-limit fields were appended so a wrapper polling /health can tell
+// "3 of 4 accounts cooling" apart from "all healthy" without shelling out to
+// `birdy budget`. `ok` is a liveness bit — the daemon answered — and stays
+// true even when every account is cooling; `degraded` carries that signal.
 type healthResponse struct {
 	OK            bool  `json:"ok"`
 	Accounts      int   `json:"accounts"`
@@ -170,6 +187,39 @@ type healthResponse struct {
 	Served        int64 `json:"served"`
 	CacheHits     int64 `json:"cache_hits"`
 	CacheSize     int   `json:"cache_size"`
+
+	// AccountsCooling counts accounts whose last 429 is inside the cooldown
+	// window; AccountsReady counts enabled accounts that are not cooling.
+	// Disabled accounts are in neither bucket, so the two need not sum to
+	// Accounts.
+	AccountsCooling int `json:"accounts_cooling"`
+	AccountsReady   int `json:"accounts_ready"`
+	// CooldownSeconds is rotation.QuotaCooldown, the window an account is
+	// avoided for after a 429.
+	CooldownSeconds int `json:"cooldown_seconds"`
+	// Degraded is true when no account is ready to serve: every enabled
+	// account is cooling (or every account is disabled). The daemon is still
+	// alive, which is why OK does not flip.
+	Degraded bool `json:"degraded"`
+	// AccountsDetail is never null: an empty list when Config.Accounts is
+	// unset or the store is empty.
+	AccountsDetail []healthAccount `json:"accounts_detail"`
+}
+
+// healthAccount is one account's rate-limit state in /health. It carries the
+// name and timestamps only — credentials never leave the store.
+type healthAccount struct {
+	Name    string `json:"name"`
+	Cooling bool   `json:"cooling"`
+	// CooldownRemainingSeconds is how long until the account leaves the
+	// window, rounded up; 0 when not cooling.
+	CooldownRemainingSeconds int `json:"cooldown_remaining_seconds"`
+	// LastRateLimitedAt is RFC 3339 in UTC, or "" if the account has never
+	// been rate limited.
+	LastRateLimitedAt string `json:"last_rate_limited_at"`
+	// Disabled accounts are out of rotation and count as neither cooling nor
+	// ready.
+	Disabled bool `json:"disabled,omitempty"`
 }
 
 // errorResponse is the standard JSON error body.
@@ -289,14 +339,45 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if s.cache != nil {
 		cacheSize = s.cache.size()
 	}
-	writeJSON(w, http.StatusOK, healthResponse{
-		OK:            true,
-		Accounts:      s.cfg.AccountCount(),
-		UptimeSeconds: int64(time.Since(s.startedAt).Seconds()),
-		Served:        s.served.Load(),
-		CacheHits:     s.cacheHits.Load(),
-		CacheSize:     cacheSize,
-	})
+	resp := healthResponse{
+		OK:              true,
+		Accounts:        s.cfg.AccountCount(),
+		UptimeSeconds:   int64(time.Since(s.startedAt).Seconds()),
+		Served:          s.served.Load(),
+		CacheHits:       s.cacheHits.Load(),
+		CacheSize:       cacheSize,
+		CooldownSeconds: int(rotation.QuotaCooldown / time.Second),
+		AccountsDetail:  []healthAccount{},
+	}
+	if s.cfg.Accounts == nil {
+		// No account list to inspect: nothing is known to be cooling.
+		resp.AccountsReady = resp.Accounts
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
+	now := s.now()
+	for _, a := range s.cfg.Accounts() {
+		detail := healthAccount{Name: a.Name, Disabled: a.Disabled}
+		if !a.LastRateLimitedAt.IsZero() {
+			detail.LastRateLimitedAt = a.LastRateLimitedAt.UTC().Format(time.RFC3339)
+			if remaining := rotation.QuotaCooldown - now.Sub(a.LastRateLimitedAt); remaining > 0 {
+				detail.Cooling = true
+				detail.CooldownRemainingSeconds = int((remaining + time.Second - 1) / time.Second)
+			}
+		}
+		switch {
+		case a.Disabled:
+			// Out of rotation: neither bucket.
+		case detail.Cooling:
+			resp.AccountsCooling++
+		default:
+			resp.AccountsReady++
+		}
+		resp.AccountsDetail = append(resp.AccountsDetail, detail)
+	}
+	resp.Degraded = resp.Accounts > 0 && resp.AccountsReady == 0
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // DefaultRunner returns a RunFunc backed by runner.RunCapture that also
@@ -318,4 +399,3 @@ func DefaultRunner(st *store.Store) RunFunc {
 		return res.ExitCode, stdout, stderr, err
 	}
 }
-
