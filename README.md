@@ -558,6 +558,69 @@ birdy scrape --mode quotes --id 2090197889947451524
 Bare words are search terms (`birdy scrape AI`). Use `--handle nasa` or
 `@nasa` when the target is a profile.
 
+## Multi-fetch
+
+`birdy multi-fetch` runs a manifest of read operations concurrently across
+the account pool and writes one file per op — the shape a scheduled
+pipeline wants (one CLI call, N handles + searches + news):
+
+```bash
+birdy multi-fetch --manifest m.json --output-dir /tmp/bird --aggregate /tmp/bird.json
+```
+
+```json
+{
+  "operations": [
+    {"id": "OpenAI",    "args": ["user-tweets", "@OpenAI", "-n", "20", "--json", "--plain"]},
+    {"id": "search-ai", "args": ["search", "AI announcement", "-n", "50", "--json", "--plain"]},
+    {"id": "news",      "args": ["news", "--ai-only", "-n", "40", "--json", "--plain"]}
+  ],
+  "concurrency": 8
+}
+```
+
+Ops are served by the native Go engine in-process (the bird CLI only under
+`--bird`). Ids must be unique, contain no path separators, and must not
+start with `_` — that prefix is reserved for multi-fetch's own files.
+
+**Rate limits.** Accounts are pre-assigned by the rotation strategy, and a
+long manifest can exhaust one account's quota before its tail is reached. A
+rate-limited op (HTTP 429) therefore records the 429 against its account and
+is retried once on a different account that is not inside its 15-minute 429
+cooldown (`--retry-rate-limited N`, default 1; `--rate-limit-delay 2s` to
+pause first). The 429 stamps are saved, so with `--strategy quota-aware` the
+*next* run's first picks avoid accounts that are still cooling. A
+`BIRDY_ACCOUNTS`-only store is ephemeral, so there the stamps only inform the
+current run's retries.
+
+**Report.** `<output-dir>/_report.json` (or `--report <path>`) is always
+written, even when ops fail, so a consumer can tell a quiet handle from a
+rate-limited one instead of reading `[]` for both:
+
+```json
+{
+  "ops": [{"id": "OpenAI", "status": "ok", "ok": true, "account": "alt2", "engine": "native",
+           "attempts": 2, "duration_ms": 812, "bytes": 18342}],
+  "summary": {"total": 127, "ok": 113, "failed": 14, "rate_limited": 12, "not_found": 1,
+              "timeout": 0, "error": 1, "retried": 2, "wall_ms": 16712, "concurrency": 8}
+}
+```
+
+`status` is one of `ok | rate_limited | not_found | timeout | error`
+(`timeout` needs `--op-timeout`). The closing log line breaks the same counts
+out — `multi-fetch: 127 ops, 113 ok, 14 failed (12 rate_limited, 1 not_found,
+1 error), 2 retried, 16712ms wall (concurrency=8)` — and keeps
+`multi-fetch: N ops, N ok, N failed` as its prefix. On failure the per-op file
+still gets `[]` unless `--empty-on-fail=false`, which also fails the command.
+
+**Aggregate.** `--aggregate <file>` joins every successful op into one
+document, bucketed by command: `user-tweets` → `accounts.<id>`, `search` →
+`searches.<id>`, `news` → `news` (elements concatenated), anything else →
+`other.<id>`. `meta` carries `generated_at` (RFC 3339 UTC), the report
+summary as `ops`, `failed_ops` (`[{id, status}]`, including ok ops whose
+output was not valid JSON), and `rate_limited_ops`. Map keys are sorted, so
+the shape is stable.
+
 ## Following Overlap
 
 Find accounts followed by at least N accounts from a seed set:
