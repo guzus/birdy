@@ -85,6 +85,9 @@ type Client struct {
 	// first. bird's getUserTweetsPaged defaults it to 1000ms and it is the only
 	// command with one. Overridable so tests do not sleep.
 	userTweetsPageDelay time.Duration
+	// skipUnreadablePosts is strictParseOptions.skipUnreadablePosts for every
+	// strict page this client parses. Off by default (monitoring contract).
+	skipUnreadablePosts bool
 
 	// friendshipEndpoints overrides the v1.1 follow/unfollow URLs. Tests only.
 	friendshipEndpoints []string
@@ -145,6 +148,15 @@ func (c *Client) SetSettingsPages(pages []string) {
 // SetUserTweetsPageDelay overrides the wait between user-tweets pages.
 // Intended for tests; production callers should leave bird's 1s default in
 // place, because it is what keeps a 10-page walk from looking like a burst.
+// SetSkipUnreadablePosts makes strict page reads drop a tweet-typed entry
+// whose post cannot be read (no author, no text), reporting it through
+// MalformedEntryHook, instead of failing the whole page. Malformed
+// quote/repost relations still fail closed. Bulk CLI reads turn this on;
+// monitoring callers should leave it off.
+func (c *Client) SetSkipUnreadablePosts(skip bool) {
+	c.skipUnreadablePosts = skip
+}
+
 func (c *Client) SetUserTweetsPageDelay(d time.Duration) {
 	c.userTweetsPageDelay = d
 }

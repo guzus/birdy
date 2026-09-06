@@ -362,7 +362,7 @@ func (c *Client) timelinePageFor(ctx context.Context, op timelineOp, variables m
 		return timelinePage{}, err
 	}
 	if strict {
-		return parseTimelinePageStrict(body, op.roots)
+		return parseTimelinePageStrictWith(body, op.roots, strictParseOptions{skipUnreadablePosts: c.skipUnreadablePosts})
 	}
 	return parseTimelinePage(body, op.roots)
 }
@@ -718,6 +718,23 @@ func parseTimelinePage(body []byte, roots [][]string) (timelinePage, error) {
 // it treats ambiguity as failure: monitors persist cursors and classify
 // relations, so silently accepting a partially understood page loses events.
 func parseTimelinePageStrict(body []byte, roots [][]string) (timelinePage, error) {
+	return parseTimelinePageStrictWith(body, roots, strictParseOptions{})
+}
+
+// strictParseOptions relaxes exactly one strict-parser rule, and only when a
+// caller asks for it. The zero value is the monitoring contract.
+type strictParseOptions struct {
+	// skipUnreadablePosts drops a tweet-typed entry whose POST cannot be read
+	// (no author, no text) and reports it via MalformedEntryHook, instead of
+	// failing the page. Malformed quote/repost RELATIONS still fail closed.
+	// The CLI's bulk reads opt in (one such entry cost whole accounts per
+	// production multi-fetch run on 2026-09-06); library monitoring reads
+	// keep the default, where a malformed item must never become an empty
+	// successful page.
+	skipUnreadablePosts bool
+}
+
+func parseTimelinePageStrictWith(body []byte, roots [][]string, opts strictParseOptions) (timelinePage, error) {
 	var envelope struct {
 		Data   json.RawMessage `json:"data"`
 		Errors []struct {
@@ -746,7 +763,7 @@ func parseTimelinePageStrict(body []byte, roots [][]string) (timelinePage, error
 		if string(raw) == "null" {
 			return timelinePage{}, &APIError{Message: "malformed timeline root: instructions is null"}
 		}
-		return parseStrictTimelineInstructions(raw)
+		return parseStrictTimelineInstructionsWith(raw, opts)
 	}
 	return timelinePage{}, &APIError{Message: "unrecognized timeline response shape: no known instructions root"}
 }
@@ -774,6 +791,10 @@ func navigateStrict(raw json.RawMessage, path []string) (json.RawMessage, bool, 
 }
 
 func parseStrictTimelineInstructions(raw json.RawMessage) (timelinePage, error) {
+	return parseStrictTimelineInstructionsWith(raw, strictParseOptions{})
+}
+
+func parseStrictTimelineInstructionsWith(raw json.RawMessage, opts strictParseOptions) (timelinePage, error) {
 	var instructions []json.RawMessage
 	if err := json.Unmarshal(raw, &instructions); err != nil {
 		return timelinePage{}, &APIError{Message: "malformed timeline instructions: " + err.Error()}
@@ -809,7 +830,7 @@ func parseStrictTimelineInstructions(raw json.RawMessage) (timelinePage, error) 
 				return timelinePage{}, &APIError{Message: fmt.Sprintf("malformed timeline instruction %d entries", index)}
 			}
 			for _, rawEntry := range entries {
-				entryTweets, entryCursor, err := parseStrictTimelineEntry(rawEntry)
+				entryTweets, entryCursor, err := parseStrictTimelineEntryWith(rawEntry, opts)
 				if err != nil {
 					return timelinePage{}, err
 				}
@@ -832,7 +853,7 @@ func parseStrictTimelineInstructions(raw json.RawMessage) (timelinePage, error) 
 			if (typeName != "TimelineReplaceEntry" && typeName != "TimelinePinEntry") || string(entryRaw) == "null" {
 				return timelinePage{}, &APIError{Message: fmt.Sprintf("unsupported singular timeline instruction %q", typeName)}
 			}
-			entryTweets, entryCursor, err := parseStrictTimelineEntry(entryRaw)
+			entryTweets, entryCursor, err := parseStrictTimelineEntryWith(entryRaw, opts)
 			if err != nil {
 				return timelinePage{}, err
 			}
@@ -861,6 +882,10 @@ func parseStrictTimelineInstructions(raw json.RawMessage) (timelinePage, error) 
 }
 
 func parseStrictTimelineEntry(raw json.RawMessage) ([]Tweet, string, error) {
+	return parseStrictTimelineEntryWith(raw, strictParseOptions{})
+}
+
+func parseStrictTimelineEntryWith(raw json.RawMessage, opts strictParseOptions) ([]Tweet, string, error) {
 	var object map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &object); err != nil || object == nil {
 		return nil, "", &APIError{Message: "malformed timeline entry"}
@@ -911,14 +936,13 @@ func parseStrictTimelineEntry(raw json.RawMessage) ([]Tweet, string, error) {
 		}
 		post, err := mapMonitoringTweet(node)
 		if err != nil {
-			// A malformed RELATION (quote/repost) keeps failing closed: the
-			// monitoring contract must never degrade one into a plain post.
-			// A post that is itself unreadable (no author, no text) is a
-			// different case — it was failing whole accounts per production
-			// multi-fetch run (2026-09-06) — so skip it and report it.
-			if _, ok := mapTweetWithoutRepost(node.unwrap()); !ok {
-				reportMalformedEntry(node.unwrap().RestID)
-				continue
+			// Opt-in only (see strictParseOptions): an unreadable POST is
+			// skipped and reported; a malformed RELATION always fails closed.
+			if opts.skipUnreadablePosts {
+				if _, ok := mapTweetWithoutRepost(node.unwrap()); !ok {
+					reportMalformedEntry(node.unwrap().RestID)
+					continue
+				}
 			}
 			return nil, "", err
 		}

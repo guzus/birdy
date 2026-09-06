@@ -474,6 +474,10 @@ func runNative(ctx context.Context, account *store.Account, command string, args
 	if err != nil {
 		return err
 	}
+	// Bulk CLI reads: one unreadable post must not cost the whole page
+	// (it cost whole accounts per production multi-fetch run, 2026-09-06).
+	// The skipped id is reported via MalformedEntryHook (see init above).
+	client.SetSkipUnreadablePosts(true)
 
 	// --vpn routes this invocation through the configured SOCKS5 exit.
 	//

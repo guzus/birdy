@@ -734,12 +734,25 @@ func TestMalformedTimelineEntryIsSkippedNotFatal(t *testing.T) {
 	MalformedEntryHook = func(id string) { skipped = append(skipped, id) }
 	t.Cleanup(func() { MalformedEntryHook = prev })
 
-	ps := newPagingServer(t, root, []pageSpec{
-		{tweetIDs: []string{"1", "2"}, malformed: 1},
-	})
-	tweets, _, err := ps.client(t).SearchPageAlignedFrom(context.Background(), "q", 5, "", 1)
+	// Two identical scripted pages: the strict-default call consumes the
+	// first, the opted-in call the second.
+	page := pageSpec{tweetIDs: []string{"1", "2"}, malformed: 1}
+	ps := newPagingServer(t, root, []pageSpec{page, page})
+	// Default (monitoring contract): the page fails closed and nothing is
+	// reported, so a malformed item can never become an empty success.
+	if _, _, err := ps.client(t).SearchPageAlignedFrom(context.Background(), "q", 5, "", 1); err == nil {
+		t.Fatal("strict default must reject the page")
+	}
+	if len(skipped) != 0 {
+		t.Fatalf("strict default must not report skips, got %v", skipped)
+	}
+
+	// Opt-in (CLI bulk reads): the readable posts survive, the bad one is reported.
+	c := ps.client(t)
+	c.SetSkipUnreadablePosts(true)
+	tweets, _, err := c.SearchPageAlignedFrom(context.Background(), "q", 5, "", 1)
 	if err != nil {
-		t.Fatalf("a single malformed entry must not fail the page: %v", err)
+		t.Fatalf("a single malformed entry must not fail the page when opted in: %v", err)
 	}
 	wantIDs(t, tweets, "1", "2")
 	if len(skipped) != 1 || skipped[0] != "900" {
