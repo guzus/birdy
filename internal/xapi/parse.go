@@ -895,10 +895,15 @@ func tweetsFromInstructions(instructions []instruction, allowTweetDetailCursors 
 			for _, node := range nodes {
 				t, ok := mapTweet(node)
 				if !ok {
-					if isKnownNonTweetResult(node) {
-						continue
+					if !isKnownNonTweetResult(node) {
+						// One entry X served in a shape mapTweet cannot read
+						// (no author, no text). Failing the whole page here
+						// cost two full accounts per production multi-fetch
+						// run (2026-09-06); the other entries are fine, so
+						// skip this one and let the CLI say so.
+						reportMalformedEntry(node.unwrap().RestID)
 					}
-					return nil, &APIError{Message: fmt.Sprintf("malformed tweet timeline entry for id %q", node.unwrap().RestID)}
+					continue
 				}
 				if seen[t.ID] {
 					continue
@@ -909,6 +914,19 @@ func tweetsFromInstructions(instructions []instruction, allowTweetDetailCursors 
 		}
 	}
 	return tweets, nil
+}
+
+// MalformedEntryHook, when set, is called with the rest_id of every timeline
+// entry that carried a tweet-like result mapTweet could not read. The CLI
+// installs a stderr warning; library callers may count or collect them. It
+// must be safe to call from concurrent goroutines (multi-fetch runs pages in
+// parallel in-process).
+var MalformedEntryHook func(id string)
+
+func reportMalformedEntry(id string) {
+	if MalformedEntryHook != nil {
+		MalformedEntryHook(id)
+	}
 }
 
 func isKnownNonTweetResult(raw *tweetResult) bool {

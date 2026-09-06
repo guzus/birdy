@@ -33,7 +33,8 @@ type pageSpec struct {
 	// cursor is the Bottom cursor entry; empty means no cursor entry at all.
 	cursor string
 	// status, when non-zero, is served instead of a body.
-	status int
+	status    int
+	malformed int // tweet-typed entries mapTweet cannot read
 }
 
 // recordedRequest is what the client actually sent.
@@ -130,6 +131,12 @@ func timelinePageBody(root []string, page pageSpec) string {
 			`{"entryId":"tweet-%s","content":{"itemContent":{"tweet_results":{"result":{`+
 				`"rest_id":"%s","core":{"user_results":{"result":{"rest_id":"9","legacy":{"screen_name":"u","name":"U"}}}},`+
 				`"legacy":{"full_text":"tweet %s"}}}}}}`, id, id, id))
+	}
+	for i := 0; i < page.malformed; i++ {
+		// A tweet-typed result with an id but neither author nor text: the
+		// shape that failed whole accounts in production on 2026-09-06.
+		entries = append(entries, fmt.Sprintf(
+			`{"entryId":"tweet-bad-%d","content":{"itemContent":{"tweet_results":{"result":{"__typename":"Tweet","rest_id":"90%d"}}}}}`, i, i))
 	}
 	for i := 0; i < page.tombstones; i++ {
 		// The exact shape X serves for a deleted or withheld tweet.
@@ -717,5 +724,25 @@ func TestParseTimelineUnchangedAfterRefactor(t *testing.T) {
 
 	if _, err := parseTimeline([]byte(`{"errors":[{"message":"Rate limit exceeded"}],"data":{}}`), opSearch.roots); err == nil {
 		t.Error("X's error must still surface when no root matches")
+	}
+}
+
+func TestMalformedTimelineEntryIsSkippedNotFatal(t *testing.T) {
+	root := []string{"search_by_raw_query", "search_timeline", "timeline", "instructions"}
+	var skipped []string
+	prev := MalformedEntryHook
+	MalformedEntryHook = func(id string) { skipped = append(skipped, id) }
+	t.Cleanup(func() { MalformedEntryHook = prev })
+
+	ps := newPagingServer(t, root, []pageSpec{
+		{tweetIDs: []string{"1", "2"}, malformed: 1},
+	})
+	tweets, _, err := ps.client(t).SearchPageAlignedFrom(context.Background(), "q", 5, "", 1)
+	if err != nil {
+		t.Fatalf("a single malformed entry must not fail the page: %v", err)
+	}
+	wantIDs(t, tweets, "1", "2")
+	if len(skipped) != 1 || skipped[0] != "900" {
+		t.Fatalf("hook should have seen the malformed id once, got %v", skipped)
 	}
 }

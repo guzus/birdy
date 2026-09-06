@@ -911,6 +911,15 @@ func parseStrictTimelineEntry(raw json.RawMessage) ([]Tweet, string, error) {
 		}
 		post, err := mapMonitoringTweet(node)
 		if err != nil {
+			// A malformed RELATION (quote/repost) keeps failing closed: the
+			// monitoring contract must never degrade one into a plain post.
+			// A post that is itself unreadable (no author, no text) is a
+			// different case — it was failing whole accounts per production
+			// multi-fetch run (2026-09-06) — so skip it and report it.
+			if _, ok := mapTweetWithoutRepost(node.unwrap()); !ok {
+				reportMalformedEntry(node.unwrap().RestID)
+				continue
+			}
 			return nil, "", err
 		}
 		tweets = append(tweets, post)

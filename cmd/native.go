@@ -453,6 +453,14 @@ func nativeAcceptsFlags(command string, args []string) bool {
 
 // runNative executes a command against X directly. The account has already been
 // selected by the caller, so no rotation happens here.
+func init() {
+	// Surface entries the native parser skipped so a thinner-than-expected
+	// page is explainable from the log, without failing the command.
+	xapi.MalformedEntryHook = func(id string) {
+		fmt.Fprintf(os.Stderr, "[birdy] warning: skipped malformed timeline entry %s\n", id)
+	}
+}
+
 func runNative(ctx context.Context, account *store.Account, command string, args []string, out io.Writer) error {
 	handler, ok := nativeCommands[command]
 	if !ok {
