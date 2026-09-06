@@ -48,9 +48,21 @@ Endpoints:
                    "stdout": "...", "stderr": "...", "duration_ms": 142,
                    "cached": false}
 
-  GET  /health  daemon health + counters. Response:
+  GET  /health  daemon liveness, counters, and per-account rate-limit
+                state. Response:
                   {"ok": true, "accounts": N, "uptime_seconds": ...,
-                   "served": ..., "cache_hits": ..., "cache_size": ...}
+                   "served": ..., "cache_hits": ..., "cache_size": ...,
+                   "accounts_cooling": 1, "accounts_ready": 3,
+                   "cooldown_seconds": 900, "degraded": false,
+                   "accounts_detail": [
+                     {"name": "main", "cooling": true,
+                      "cooldown_remaining_seconds": 412,
+                      "last_rate_limited_at": "2026-09-06T09:41:07Z"},
+                     ...]}
+                "ok" is liveness and stays true; "degraded" flips when no
+                account is ready (every enabled account is inside the
+                429 cooldown window — the same view as "birdy budget").
+                Names and timestamps only; credentials are never exposed.
 
 Account rotation reuses the same store, strategies, and read-only filters
 as the passthrough commands. Pass --strategy or --account to override the
@@ -176,6 +188,7 @@ func runDaemon(cmd *cobra.Command, _ []string) error {
 		Run:          daemon.DefaultRunner(st),
 		PickAccount:  pickAccount,
 		AccountCount: st.Len,
+		Accounts:     st.List,
 		Concurrency:  daemonConcurrencyFlag,
 		CacheTTL:     daemonCacheTTLFlag,
 	})

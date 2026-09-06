@@ -281,7 +281,9 @@ func runRootPassthrough(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if len(cleaned) == 0 {
+	if len(cleaned) == 0 || helpRequested(cleaned) {
+		// --help never reaches a subprocess, even on the fallback path
+		// (`birdy <unknown> --help`, `birdy <tweet-id> --help`).
 		return cmd.Help()
 	}
 	if injected := birdProgramFlagArgs(); len(injected) > 0 {

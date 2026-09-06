@@ -574,6 +574,34 @@ The default output is tab-separated:
 
 Use `--json` for scripts, `--max-pages N` for a bounded sample, and `--page-size N` to tune pagination. By default, birdy fetches all following pages for each seed account and rotates through configured birdy accounts just like normal forwarded bird commands.
 
+## Daemon (`birdy daemon`)
+
+`birdy daemon` keeps auth and rotation state warm in a long-lived HTTP
+server so an agent loop that issues many follow-up queries skips process
+start-up on every call. `POST /run` takes `{"args": [...]}` and returns the
+command's exit code and output; `birdy daemon --help` has the full contract.
+
+`GET /health` is the liveness and quota view a wrapper should poll:
+
+```json
+{"ok": true, "accounts": 4, "uptime_seconds": 918, "served": 37,
+ "cache_hits": 12, "cache_size": 5,
+ "accounts_cooling": 1, "accounts_ready": 3, "cooldown_seconds": 900,
+ "degraded": false,
+ "accounts_detail": [
+   {"name": "main", "cooling": true, "cooldown_remaining_seconds": 412,
+    "last_rate_limited_at": "2026-09-06T09:41:07Z"},
+   {"name": "alt1", "cooling": false, "cooldown_remaining_seconds": 0,
+    "last_rate_limited_at": ""}]}
+```
+
+`ok` is liveness only and stays `true` while the daemon answers. An account is
+`cooling` for `cooldown_seconds` (the 15-minute `QuotaCooldown`) after its
+last 429; `degraded` is `true` when no account is ready — every enabled
+account is cooling, the same state `birdy budget` prints as `hot`. Disabled
+accounts are listed with `"disabled": true` and count as neither ready nor
+cooling. Names and timestamps only; credentials never appear.
+
 ## Account management
 
 ```bash
@@ -653,11 +681,21 @@ birdy --bird read <id>       # this invocation
 BIRDY_USE_BIRD=1 birdy home  # everything in this shell
 ```
 
-A command carrying a flag the native path does not implement yet (`--all`,
-`--max-pages`, `--cursor`, `--json-full`, …) automatically falls back to bird
-rather than silently ignoring the flag.
+`birdy <command> --help` (or `birdy help <command>`) prints the flags the
+native engine accepts for that command, birdy's global flags, and examples.
+The list is derived from the same table the native parser uses, so a flag that
+appears there is one the engine serves; a flag that does not is not. Help is
+answered in-process and never forwarded — it works on a runner with no
+accounts configured and no bird installed.
+
+A command carrying a flag the native path does not implement (`--all`,
+`--max-pages`, `--cursor`, `--json-full`, …) is never silently ignored. It is
+routed to the bird CLI instead: with bird installed it runs there; without
+bird the command fails with `bird CLI not found` rather than returning an
+answer to a different question.
 
 ```bash
+birdy search --help      # the flags the native engine takes for search
 birdy -v search golang   # prints which engine served the command
 ```
 

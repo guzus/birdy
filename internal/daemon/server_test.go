@@ -226,8 +226,8 @@ func TestConcurrencyCap(t *testing.T) {
 		cap_ = 4
 	)
 	var (
-		mu        sync.Mutex
-		inFlight  int
+		mu          sync.Mutex
+		inFlight    int
 		maxInFlight int
 	)
 	// release blocks each runner call until the test signals.
@@ -525,7 +525,7 @@ func TestNewServerValidatesConfig(t *testing.T) {
 		{
 			name: "missing Run",
 			cfg: Config{
-				PickAccount: func(_ []string) (*store.Account, error) { return stubAccount(), nil },
+				PickAccount:  func(_ []string) (*store.Account, error) { return stubAccount(), nil },
 				AccountCount: func() int { return 0 },
 			},
 			want: "Run",
