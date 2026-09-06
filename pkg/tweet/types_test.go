@@ -60,6 +60,9 @@ func TestPublicTypesCoverParserFields(t *testing.T) {
 		{"Media", reflect.TypeOf(Media{}), reflect.TypeOf(xapi.Media{})},
 		{"Author", reflect.TypeOf(Author{}), reflect.TypeOf(xapi.Author{})},
 		{"Article", reflect.TypeOf(Article{}), reflect.TypeOf(xapi.Article{})},
+		// FullTweet mirrors the parser's enriched view field for field, so
+		// `--json-full` and the Go API cannot drift apart.
+		{"FullTweet", reflect.TypeOf(FullTweet{}), reflect.TypeOf(xapi.FullTweet{})},
 	}
 
 	for _, tc := range cases {
@@ -130,7 +133,17 @@ func TestPublicFieldOrderIsFrozen(t *testing.T) {
 		"UserTimelineOptions": {"Limit", "Cursor", "MaxPages"},
 		"TimelinePage":        {"Tweets", "NextCursor"},
 		"TimelineTweet":       {"Tweet", "RepostedTweet"},
-		"FollowingOptions":    {"PageSize", "MaxPages", "Cursor"},
+		// FullTweet's prefix is Tweet's order verbatim — that is what makes
+		// --json-full a strict superset of --json — followed by the extras.
+		"FullTweet": {
+			"ID", "Text", "CreatedAt", "ReplyCount", "RetweetCount", "LikeCount",
+			"ConversationID", "InReplyToStatusID", "Author", "AuthorID",
+			"QuotedTweet", "Media", "Article", "RepostedTweet",
+			"URL", "CreatedAtISO", "ViewCount", "QuoteCount", "BookmarkCount",
+			"Lang", "IsRepost", "IsReply", "IsQuote",
+		},
+		"FullTimelinePage": {"Tweets", "NextCursor"},
+		"FollowingOptions": {"PageSize", "MaxPages", "Cursor"},
 		// Unavailable was appended after v1.1. Every earlier field keeps its
 		// name, type, and position, so keyed literals and the JSON contract are
 		// unchanged; only an unkeyed literal of this struct would break, and
@@ -168,6 +181,8 @@ func TestPublicFieldOrderIsFrozen(t *testing.T) {
 		"UserTimelineOptions": reflect.TypeOf(UserTimelineOptions{}),
 		"TimelinePage":        reflect.TypeOf(TimelinePage{}),
 		"TimelineTweet":       reflect.TypeOf(TimelineTweet{}),
+		"FullTweet":           reflect.TypeOf(FullTweet{}),
+		"FullTimelinePage":    reflect.TypeOf(FullTimelinePage{}),
 		"FollowingOptions":    reflect.TypeOf(FollowingOptions{}),
 		"FollowingUser":       reflect.TypeOf(FollowingUser{}),
 		"FollowingSnapshot":   reflect.TypeOf(FollowingSnapshot{}),

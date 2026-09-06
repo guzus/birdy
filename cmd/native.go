@@ -86,6 +86,20 @@ type nativeArgs struct {
 	positionals []string
 	count       int
 	json        bool
+	// jsonFull selects the enriched `--json-full` view: the exact `--json`
+	// object followed by url, createdAtIso, the extra metrics, and the
+	// relation flags. It implies json.
+	jsonFull bool
+	// Engagement/time filters. They apply after the fetch and before
+	// rendering, in text and JSON modes alike, and change nothing when unset.
+	minLikes    int
+	minRetweets int
+	minViews    int
+	since       time.Time
+	sinceSet    bool
+	// filterErr carries a rejected filter value so the command fails instead
+	// of silently running unfiltered.
+	filterErr error
 	// plain and emoji mirror bird's output switches so rendering matches.
 	plain bool
 	emoji bool
@@ -127,6 +141,18 @@ func parseNativeArgs(args []string) nativeArgs {
 		switch {
 		case arg == "--json":
 			parsed.json = true
+		case arg == "--json-full":
+			parsed.json = true
+			parsed.jsonFull = true
+		case filterFlags[flagName(arg)]:
+			name, value, inline := splitFlag(arg)
+			if !inline && i+1 < len(args) {
+				value = args[i+1]
+				i++
+			}
+			if err := parsed.applyFilter(name, value); err != nil && parsed.filterErr == nil {
+				parsed.filterErr = err
+			}
 		case arg == "--plain":
 			parsed.plain = true
 			parsed.emoji = false
@@ -188,6 +214,148 @@ func parseCount(raw string) (int, bool, error) {
 	return n, true, nil
 }
 
+// flagName strips an inline `=value` so `--since=24h` and `--since 24h` are
+// the same flag.
+func flagName(arg string) string {
+	if eq := strings.IndexByte(arg, '='); eq > 0 {
+		return arg[:eq]
+	}
+	return arg
+}
+
+// splitFlag separates `--flag=value` into its parts. inline reports whether the
+// value was attached, so the caller knows whether to consume the next argument.
+func splitFlag(arg string) (name, value string, inline bool) {
+	if eq := strings.IndexByte(arg, '='); eq > 0 {
+		return arg[:eq], arg[eq+1:], true
+	}
+	return arg, "", false
+}
+
+// filterFlags are the post-fetch engagement/time filters. They take a value.
+var filterFlags = map[string]bool{
+	"--min-likes": true, "--min-retweets": true, "--min-views": true, "--since": true,
+}
+
+// applyFilter records one filter flag. Values are validated here rather than
+// at use, so a typo fails the command the way a bad --count does.
+func (a *nativeArgs) applyFilter(name, value string) error {
+	switch name {
+	case "--since":
+		since, err := parseSince(value, nativeNow())
+		if err != nil {
+			return err
+		}
+		a.since, a.sinceSet = since, true
+		return nil
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || n < 0 {
+		return fmt.Errorf("Invalid %s. Expected a non-negative integer.", name)
+	}
+	switch name {
+	case "--min-likes":
+		a.minLikes = n
+	case "--min-retweets":
+		a.minRetweets = n
+	case "--min-views":
+		a.minViews = n
+	}
+	return nil
+}
+
+// hasFilter reports whether any post-fetch filter was requested.
+func (a nativeArgs) hasFilter() bool {
+	return a.minLikes > 0 || a.minRetweets > 0 || a.minViews > 0 || a.sinceSet
+}
+
+// nativeNow is the clock --since durations are relative to. Indirected so
+// tests can pin it.
+var nativeNow = func() time.Time { return time.Now().UTC() }
+
+// parseSince accepts a duration (`24h`, `90m`, plus `7d`/`2w`, which Go's
+// ParseDuration lacks and which are what people actually type), an RFC 3339
+// timestamp, or a `YYYY-MM-DD` date read as UTC midnight.
+func parseSince(value string, now time.Time) (time.Time, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, fmt.Errorf("Invalid --since. Expected a duration (24h, 7d), an RFC 3339 timestamp, or YYYY-MM-DD.")
+	}
+	if n := len(value); n > 1 && (value[n-1] == 'd' || value[n-1] == 'w') {
+		if units, err := strconv.Atoi(value[:n-1]); err == nil && units >= 0 {
+			days := units
+			if value[n-1] == 'w' {
+				days *= 7
+			}
+			return now.Add(-time.Duration(days) * 24 * time.Hour), nil
+		}
+	}
+	if d, err := time.ParseDuration(value); err == nil {
+		if d < 0 {
+			return time.Time{}, fmt.Errorf("Invalid --since. A duration must not be negative.")
+		}
+		return now.Add(-d), nil
+	}
+	if ts, err := time.Parse(time.RFC3339Nano, value); err == nil {
+		return ts, nil
+	}
+	if ts, err := time.Parse("2006-01-02", value); err == nil {
+		return ts, nil
+	}
+	return time.Time{}, fmt.Errorf("Invalid --since. Expected a duration (24h, 7d), an RFC 3339 timestamp, or YYYY-MM-DD.")
+}
+
+// filterTweets applies the engagement/time filters. With none set it returns
+// the input untouched — including its nil-ness, which the JSON path turns into
+// `[]` exactly as before.
+//
+// --since DROPS a tweet whose createdAt is missing or unparsable. A filter
+// that quietly keeps what it cannot judge is not a filter, and X omits
+// created_at only on shapes (tombstones, some promoted entries) a time-bounded
+// query does not want anyway. Likewise a view count X did not report counts
+// as 0 against --min-views.
+func filterTweets(tweets []xapi.Tweet, args nativeArgs) []xapi.Tweet {
+	if !args.hasFilter() {
+		return tweets
+	}
+	kept := make([]xapi.Tweet, 0, len(tweets))
+	for _, t := range tweets {
+		if t.LikeCount < args.minLikes || t.RetweetCount < args.minRetweets {
+			continue
+		}
+		if args.minViews > 0 && t.Metrics().ViewCount < args.minViews {
+			continue
+		}
+		if args.sinceSet {
+			created, ok := xapi.ParseCreatedAt(t.CreatedAt)
+			if !ok || created.Before(args.since) {
+				continue
+			}
+		}
+		kept = append(kept, t)
+	}
+	return kept
+}
+
+// tweetListCommands render through renderTweets and therefore accept the
+// post-fetch filters and --json-full. `read` returns one tweet, so it gets the
+// enriched view but no filters; `activity` has its own JSON report shape and
+// gets neither, rather than answering --json-full with an unenriched report.
+var tweetListCommands = map[string]bool{
+	"thread": true, "replies": true, "search": true, "home": true,
+	"user-tweets": true, "bookmarks": true, "list-timeline": true,
+	"likes": true, "mentions": true,
+}
+
+// tweetFlagAccepted widens the common set with the flags that only make sense
+// where a tweet is the unit of output.
+func tweetFlagAccepted(command, name string) bool {
+	if name == "--json-full" {
+		return command == "read" || tweetListCommands[command]
+	}
+	return filterFlags[name] && tweetListCommands[command]
+}
+
 // nativeSupportedFlags are the flags the native path understands. A command
 // carrying anything else is handed to bird, so a flag birdy has not implemented
 // yet keeps working instead of being quietly dropped.
@@ -220,7 +388,8 @@ var commandExtraFlags = map[string]map[string]bool{
 // mistaken for a flag in its own right.
 var flagsTakingValue = map[string]bool{
 	"-n": true, "--count": true, "--limit": true, "--user": true, "-u": true,
-	"--types": true,
+	"--types":     true,
+	"--min-likes": true, "--min-retweets": true, "--min-views": true, "--since": true,
 }
 
 // commandUnsupportedFlags narrows nativeSupportedFlags for commands that accept
@@ -269,7 +438,7 @@ func nativeAcceptsFlags(command string, args []string) bool {
 		if eq := strings.IndexByte(arg, '='); eq > 0 {
 			name = arg[:eq]
 		}
-		if !nativeSupportedFlags[name] && !extra[name] {
+		if !nativeSupportedFlags[name] && !extra[name] && !tweetFlagAccepted(command, name) {
 			return false
 		}
 		if unsupported[name] {
@@ -317,6 +486,9 @@ func runNative(ctx context.Context, account *store.Account, command string, args
 	if parsed.countErr != nil {
 		return parsed.countErr
 	}
+	if parsed.filterErr != nil {
+		return parsed.filterErr
+	}
 	parsed.command = command
 	parsed.authToken = account.AuthToken
 	parsed.ct0 = account.CT0
@@ -359,6 +531,9 @@ func nativeRead(ctx context.Context, c *xapi.Client, args nativeArgs, out io.Wri
 	found, err := c.Tweet(ctx, id)
 	if err != nil {
 		return err
+	}
+	if args.jsonFull {
+		return writeNativeJSON(out, found.Full())
 	}
 	if args.json {
 		return writeNativeJSON(out, found)
@@ -430,6 +605,9 @@ func nativeUserTweets(ctx context.Context, c *xapi.Client, args nativeArgs, out 
 	if err != nil {
 		return err
 	}
+	// Filters narrow what was fetched; they do not fetch more. The cursor still
+	// points past the last fetched page, so a resume stays exact.
+	tweets = filterTweets(tweets, args)
 
 	if args.json && args.count > userTweetsPageSize {
 		if tweets == nil {
@@ -438,6 +616,9 @@ func nativeUserTweets(ctx context.Context, c *xapi.Client, args nativeArgs, out 
 		var cursor *string
 		if nextCursor != "" {
 			cursor = &nextCursor
+		}
+		if args.jsonFull {
+			return writeNativeJSON(out, fullTweetsEnvelope{Tweets: xapi.FullTweets(tweets), NextCursor: cursor})
 		}
 		return writeNativeJSON(out, tweetsEnvelope{Tweets: tweets, NextCursor: cursor})
 	}
@@ -465,6 +646,12 @@ const (
 type tweetsEnvelope struct {
 	Tweets     []xapi.Tweet `json:"tweets"`
 	NextCursor *string      `json:"nextCursor"`
+}
+
+// fullTweetsEnvelope is the same envelope under --json-full.
+type fullTweetsEnvelope struct {
+	Tweets     []xapi.FullTweet `json:"tweets"`
+	NextCursor *string          `json:"nextCursor"`
 }
 
 // nativeStderr is where the native commands write bird's stderr-only notes.
@@ -612,9 +799,14 @@ func emptyMessageFor(command string) string {
 }
 
 func renderTweets(out io.Writer, tweets []xapi.Tweet, args nativeArgs) error {
+	tweets = filterTweets(tweets, args)
+
 	if args.json {
 		if tweets == nil {
 			tweets = []xapi.Tweet{}
+		}
+		if args.jsonFull {
+			return writeNativeJSON(out, xapi.FullTweets(tweets))
 		}
 		return writeNativeJSON(out, tweets)
 	}
@@ -804,10 +996,7 @@ func threadView(tweets []xapi.Tweet, rootID string) []xapi.Tweet {
 // parseTweetTime reads X's created_at format. An unparseable value sorts first,
 // matching bird's treatment of a missing timestamp as zero.
 func parseTweetTime(value string) time.Time {
-	t, err := time.Parse(time.RubyDate, value)
-	if err != nil {
-		return time.Time{}
-	}
+	t, _ := xapi.ParseCreatedAt(value)
 	return t
 }
 

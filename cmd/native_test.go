@@ -68,6 +68,9 @@ func TestNativeAcceptsFlags(t *testing.T) {
 		{"-n", "5"},
 		{"--count=5", "--plain"},
 		{"golang", "--no-emoji", "--no-color"},
+		{"--json-full"},
+		{"golang", "--min-likes", "10", "--since", "24h"},
+		{"golang", "--min-retweets=5", "--min-views=1000", "--since=2026-09-01"},
 	}
 	for _, args := range accepted {
 		if !nativeAcceptsFlags("search", args) {
@@ -75,11 +78,13 @@ func TestNativeAcceptsFlags(t *testing.T) {
 		}
 	}
 
+	// --json-full used to be in this list: it was a bird-only flag that forced
+	// passthrough. bird is gone, so it now has a native meaning (the enriched
+	// view) and belongs in `accepted` above — see TestTweetFlagsAcceptedPerCommand.
 	rejected := [][]string{
 		{"--max-pages", "3"},
 		{"--all"},
 		{"--cursor", "abc"},
-		{"--json-full"},
 		{"SpaceX", "--delay", "1000"},
 	}
 	for _, args := range rejected {
