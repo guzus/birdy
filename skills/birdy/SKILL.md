@@ -64,9 +64,17 @@ Stored by default:
 ### 3. Run X Commands Through Birdy
 
 birdy serves every command natively using the selected account. A flag birdy
-does not implement (`--all`, `--max-pages`, `--cursor`, `--json-full`,
-`--media`) is refused rather than ignored; add `--bird` to run the original
-Node engine instead, which requires installing bird separately.
+does not implement (`--all`, `--max-pages`, `--cursor`, `--media`) is refused
+rather than ignored; add `--bird` to run the original Node engine instead,
+which requires installing bird separately.
+
+`--json` never changes shape. `--json-full` appends `url`, `createdAtIso`
+(RFC 3339 UTC), `viewCount`, `quoteCount`, `bookmarkCount`, `lang`, and
+`isRepost`/`isReply`/`isQuote` after the `--json` keys, so prefer it over
+rebuilding permalinks or parsing `createdAt` by hand. List commands also take
+`--min-likes`, `--min-retweets`, `--min-views <n>` and `--since <24h|7d|RFC3339|YYYY-MM-DD>`;
+filters apply after the fetch (raise `-n` to widen the pool) and `--since`
+drops tweets with no parsable date.
 
 ```bash
 # Auto-rotate accounts

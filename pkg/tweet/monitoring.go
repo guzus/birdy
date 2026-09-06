@@ -65,35 +65,46 @@ func (c *Client) ReadPost(ctx context.Context, ref string) (*TimelineTweet, erro
 // The terminal response page is never truncated, so Tweets may exceed Limit
 // and NextCursor always resumes after every returned entry.
 func (c *Client) UserTimeline(ctx context.Context, handle string, opts UserTimelineOptions) (TimelinePage, error) {
-	limit, err := timelineLimit(opts)
+	tweets, cursor, err := c.userTimelineRaw(ctx, handle, opts)
 	if err != nil {
 		return TimelinePage{}, err
 	}
+	return TimelinePage{Tweets: convertTimelineTweets(tweets), NextCursor: cursor}, nil
+}
+
+// userTimelineRaw is the fetch behind UserTimeline and UserTimelineFull: the
+// same limits, paging, and author check, before either public shape is built.
+func (c *Client) userTimelineRaw(ctx context.Context, handle string, opts UserTimelineOptions) ([]xapi.Tweet, string, error) {
+	limit, err := timelineLimit(opts)
+	if err != nil {
+		return nil, "", err
+	}
 	normalized, ok := xapi.ValidHandle(handle)
 	if !ok {
-		return TimelinePage{}, fmt.Errorf("invalid timeline author handle %q", handle)
+		return nil, "", fmt.Errorf("invalid timeline author handle %q", handle)
 	}
 
-	var result TimelinePage
+	var (
+		tweets []xapi.Tweet
+		cursor string
+	)
 	err = c.withAccount(ctx, func(ctx context.Context, api *xapi.Client) error {
-		var (
-			tweets []xapi.Tweet
-			cursor string
-			err    error
-		)
-		tweets, cursor, err = api.UserTweetsPageAlignedFrom(ctx, handle, limit, strings.TrimSpace(opts.Cursor), opts.MaxPages)
+		page, next, err := api.UserTweetsPageAlignedFrom(ctx, handle, limit, strings.TrimSpace(opts.Cursor), opts.MaxPages)
 		if err != nil {
 			return err
 		}
-		for _, post := range tweets {
+		for _, post := range page {
 			if !strings.EqualFold(post.Author.Username, normalized) {
 				return fmt.Errorf("user timeline returned tweet %s by @%s while tracking @%s", post.ID, post.Author.Username, normalized)
 			}
 		}
-		result = TimelinePage{Tweets: convertTimelineTweets(tweets), NextCursor: cursor}
+		tweets, cursor = page, next
 		return nil
 	})
-	return result, err
+	if err != nil {
+		return nil, "", err
+	}
+	return tweets, cursor, nil
 }
 
 func timelineLimit(opts UserTimelineOptions) (int, error) {

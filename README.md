@@ -752,7 +752,7 @@ answered in-process and never forwarded — it works on a runner with no
 accounts configured and no bird installed.
 
 A command carrying a flag the native path does not implement (`--all`,
-`--max-pages`, `--cursor`, `--json-full`, …) is never silently ignored. It is
+`--max-pages`, `--cursor`, …) is never silently ignored. It is
 routed to the bird CLI instead: with bird installed it runs there; without
 bird the command fails with `bird CLI not found` rather than returning an
 answer to a different question.
@@ -761,6 +761,50 @@ answer to a different question.
 birdy search --help      # the flags the native engine takes for search
 birdy -v search golang   # prints which engine served the command
 ```
+
+### Richer JSON (`--json-full`) and post-fetch filters
+
+`--json` is a byte-for-byte contract with bird and never changes. When you
+need more than bird emitted, `--json-full` prints the exact `--json` object
+with extra keys **appended after** the existing ones — a `--json` consumer that
+ignores unknown keys reads it unchanged, and the shared key prefix keeps its
+order. Nested `quotedTweet` / `repostedTweet` objects are enriched the same way.
+
+| Key | Meaning |
+|---|---|
+| `url` | `https://x.com/<handle>/status/<id>` — stop rebuilding it downstream |
+| `createdAtIso` | `createdAt` re-expressed as RFC 3339 UTC; omitted when the legacy date is missing or unparsable |
+| `viewCount`, `quoteCount`, `bookmarkCount` | X's extra counters; always present, `0` when X omitted the value |
+| `lang` | X's language tag; omitted when absent |
+| `isRepost`, `isReply`, `isQuote` | relation flags |
+
+It is accepted by `read`, `thread`, `replies`, `search`, `home`, `user-tweets`,
+`bookmarks`, `list-timeline`, `likes` and `mentions`. `user-tweets` keeps its
+`{tweets, nextCursor}` envelope above one page.
+
+The list commands (everything above except `read`) also take engagement and
+time filters. They apply **after** the fetch and before rendering, in text and
+JSON modes alike, and never fetch more to make up the difference — `-n` still
+bounds what is requested from X.
+
+```bash
+birdy search "golang" -n 50 --min-likes 100 --since 24h --json-full
+birdy user-tweets naval --min-retweets 10 --since 2026-09-01
+birdy home --min-views 10000 --since 2026-09-05T00:00:00Z
+```
+
+- `--min-likes`, `--min-retweets`, `--min-views <n>` — non-negative integers.
+  A view count X did not report counts as `0`.
+- `--since <value>` — a duration relative to now (`24h`, `90m`, `7d`, `2w`),
+  an RFC 3339 timestamp, or `YYYY-MM-DD` (UTC midnight). A tweet whose
+  `createdAt` is missing or unparsable is **dropped** when `--since` is set: a
+  filter that quietly keeps what it cannot judge is not a filter.
+
+A bad value (`--min-likes ten`, `--since yesterday`) fails the command rather
+than running unfiltered.
+
+The same view is available to Go callers as `tweet.FullTweet` via
+`ReadFull`, `SearchFull` and `UserTimelineFull` (see below).
 
 ## Go library (`pkg/tweet`)
 
@@ -876,6 +920,12 @@ Notes:
 - `ReadPost` returns that same monitoring shape for one exact tweet and fails
   closed when a present quote or repost relation is malformed. Legacy `Read`
   retains its existing return type and behavior.
+- `ReadFull`, `SearchFull` and `UserTimelineFull` return `FullTweet` — the
+  `--json-full` view: `Tweet`'s fields in `Tweet`'s order, then `URL`,
+  `CreatedAtISO`, `ViewCount`, `QuoteCount`, `BookmarkCount`, `Lang`,
+  `IsRepost`, `IsReply`, `IsQuote`. It is a new type, not fields on `Tweet`,
+  because `Tweet` and `TimelineTweet` are frozen; `FullTweet.Tweet()` projects
+  back to the frozen shape.
 - A timeline `Limit` is a target capped at 200, not a truncation boundary. The
   full terminal response page is returned, so the slice may exceed `Limit` but
   `NextCursor` never skips entries X over-delivered on that page.

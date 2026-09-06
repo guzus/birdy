@@ -72,11 +72,18 @@ var flagDocs = []flagSpec{
 		doc: "the Entertainment tab"},
 	{names: []string{"--trending-only"},
 		doc: "the Trending tab"},
-	// Documented ahead of the parser: this entry is inert until native.go's
-	// flag tables accept --json-full, at which point it appears in help
-	// without a second edit.
 	{names: []string{"--json-full"},
-		doc: "emit the full JSON payload rather than the trimmed shape"},
+		doc: "the --json object plus url, createdAtIso, viewCount/quoteCount/bookmarkCount, lang, isRepost/isReply/isQuote"},
+	// Post-fetch filters: applied after the page is fetched, before rendering,
+	// to text and JSON alike. Unset means no filtering.
+	{names: []string{"--min-likes"}, arg: "N",
+		doc: "drop tweets with fewer than N likes"},
+	{names: []string{"--min-retweets"}, arg: "N",
+		doc: "drop tweets with fewer than N reposts"},
+	{names: []string{"--min-views"}, arg: "N",
+		doc: "drop tweets with fewer than N views (tweets X reports no view count for are dropped)"},
+	{names: []string{"--since"}, arg: "24h|7d|2w|RFC3339|YYYY-MM-DD",
+		doc: "keep only tweets created at or after this time (durations are relative to now, UTC); tweets whose date cannot be parsed are dropped"},
 }
 
 // globalFlagNames are birdy's own flags, listed under every X command. Their
