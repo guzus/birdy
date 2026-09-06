@@ -174,3 +174,72 @@ func TestRunCaptureDoesNotMatchHTTP429InStdout(t *testing.T) {
 		t.Fatalf("expected RateLimited=false when 429 is only on stdout")
 	}
 }
+
+func TestRunCaptureDetectsNotFound(t *testing.T) {
+	birdPath := filepath.Join(t.TempDir(), "bird")
+	// The native engine's wording for a missing user (internal/xapi/user.go),
+	// as it appears on stderr when birdy itself is the subprocess.
+	script := strings.Join([]string{
+		"#!/bin/sh",
+		"echo 'Error: x api: user \"CohereAI\" not found' 1>&2",
+		"exit 1",
+	}, "\n")
+	if err := os.WriteFile(birdPath, []byte(script), 0755); err != nil {
+		t.Fatalf("write fake bird: %v", err)
+	}
+	t.Setenv("BIRDY_BIRD_PATH", birdPath)
+	account := &store.Account{Name: "alpha", AuthToken: "t", CT0: "c"}
+
+	res, _, stderr, err := RunCapture(account, []string{"user-tweets", "@CohereAI"})
+	if err != nil {
+		t.Fatalf("RunCapture returned error: %v", err)
+	}
+	if !res.NotFound {
+		t.Fatalf("expected NotFound=true, stderr=%q", stderr)
+	}
+	if res.RateLimited {
+		t.Fatalf("expected RateLimited=false on a not-found error")
+	}
+	if res.ExitCode != 1 {
+		t.Fatalf("expected exit code 1, got %d", res.ExitCode)
+	}
+}
+
+func TestRunCaptureDoesNotMatchNotFoundInStdout(t *testing.T) {
+	birdPath := filepath.Join(t.TempDir(), "bird")
+	script := strings.Join([]string{
+		"#!/bin/sh",
+		"echo '[{\"text\":\"page not found lol\"}]'",
+		"exit 0",
+	}, "\n")
+	if err := os.WriteFile(birdPath, []byte(script), 0755); err != nil {
+		t.Fatalf("write fake bird: %v", err)
+	}
+	t.Setenv("BIRDY_BIRD_PATH", birdPath)
+	account := &store.Account{Name: "alpha", AuthToken: "t", CT0: "c"}
+
+	res, _, _, err := RunCapture(account, []string{"search", "x"})
+	if err != nil {
+		t.Fatalf("RunCapture returned error: %v", err)
+	}
+	if res.NotFound {
+		t.Fatalf("expected NotFound=false when the marker is only on stdout")
+	}
+}
+
+func TestIsNotFoundMessage(t *testing.T) {
+	cases := map[string]bool{
+		`x api: user "CohereAI" not found`:                      true,
+		"Tweet not found":                                       true,
+		"User not found":                                        true,
+		"HTTP 429: rate limit exceeded":                         false,
+		"bird CLI not found, and --bird requires it.":           false,
+		"Error: bird CLI not found\nbirdy no longer ships bird": false,
+		"": false,
+	}
+	for msg, want := range cases {
+		if got := IsNotFoundMessage([]byte(msg)); got != want {
+			t.Errorf("IsNotFoundMessage(%q) = %v, want %v", msg, got, want)
+		}
+	}
+}

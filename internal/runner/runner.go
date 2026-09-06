@@ -19,6 +19,10 @@ import (
 type Result struct {
 	ExitCode    int
 	RateLimited bool // bird's stderr contained an HTTP 429 marker
+	// NotFound reports that stderr carried the engine's not-found wording:
+	// the target user/tweet does not exist (or is suspended), so the same
+	// request fails on every account and must not be retried elsewhere.
+	NotFound bool
 }
 
 // Options carries optional knobs for a bird invocation. Mutually-
@@ -69,19 +73,45 @@ func RunCaptureContext(ctx context.Context, account *store.Account, args []strin
 // formats failed HTTP responses as "HTTP 429: ..." on stderr after its
 // internal retry budget is exhausted (see
 // bird/dist/lib/twitter-client-timelines.js).
+//
+// It also sniffs the not-found marker. The native engine reports a missing
+// user as `user "<handle>" not found` (internal/xapi/user.go) and a missing
+// tweet as `Tweet not found` / `tweet <id> not found in the conversation
+// response`; bird prints `User not found`. All share the lowercase
+// "not found" substring, which is what IsNotFoundMessage checks.
 type rateLimitScanner struct {
-	dst     io.Writer
-	matched bool
+	dst      io.Writer
+	matched  bool
+	notFound bool
 }
 
 func (s *rateLimitScanner) Write(p []byte) (int, error) {
 	if !s.matched && bytes.Contains(p, []byte("HTTP 429")) {
 		s.matched = true
 	}
+	if !s.notFound && IsNotFoundMessage(p) {
+		s.notFound = true
+	}
 	if s.dst == nil {
 		return len(p), nil
 	}
 	return s.dst.Write(p)
+}
+
+var (
+	notFoundMarker = []byte("not found")
+	// birdMissingMarker is birdy's own "bird CLI not found" error: a
+	// missing-binary condition, not a missing-resource one, so it must never
+	// classify an op as not_found.
+	birdMissingMarker = []byte("bird CLI not found")
+)
+
+// IsNotFoundMessage reports whether an error message carries the engine's
+// not-found wording (see rateLimitScanner). Shared by the subprocess scanner
+// and by callers that classify in-process native errors, so both engines are
+// judged by one rule.
+func IsNotFoundMessage(p []byte) bool {
+	return bytes.Contains(p, notFoundMarker) && !bytes.Contains(p, birdMissingMarker)
 }
 
 func adaptWriter(w any) io.Writer {
@@ -129,14 +159,14 @@ func runWithIOContext(ctx context.Context, account *store.Account, args []string
 		// A cancelled context surfaces as a kill signal; report the context
 		// error so callers can distinguish it from a genuine bird failure.
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return Result{ExitCode: 1, RateLimited: scan.matched}, fmt.Errorf("running bird: %w", ctxErr)
+			return Result{ExitCode: 1, RateLimited: scan.matched, NotFound: scan.notFound}, fmt.Errorf("running bird: %w", ctxErr)
 		}
 		if exitErr, ok := err.(*exec.ExitError); ok {
-			return Result{ExitCode: exitErr.ExitCode(), RateLimited: scan.matched}, nil
+			return Result{ExitCode: exitErr.ExitCode(), RateLimited: scan.matched, NotFound: scan.notFound}, nil
 		}
-		return Result{ExitCode: 1, RateLimited: scan.matched}, fmt.Errorf("running bird: %w", err)
+		return Result{ExitCode: 1, RateLimited: scan.matched, NotFound: scan.notFound}, fmt.Errorf("running bird: %w", err)
 	}
-	return Result{ExitCode: 0, RateLimited: scan.matched}, nil
+	return Result{ExitCode: 0, RateLimited: scan.matched, NotFound: scan.notFound}, nil
 }
 
 // findBird locates the bird binary.
