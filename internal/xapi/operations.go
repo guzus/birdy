@@ -782,10 +782,11 @@ func parseTimelinePageStrict(body []byte, roots [][]string) (timelinePage, error
 type strictParseOptions struct {
 	// skipUnreadablePosts drops a tweet-typed entry whose post cannot be read
 	// and returns it in timelinePage.skipped, instead of failing the page:
-	// X served the post, or the post it quotes or reposts, only as a preview,
-	// or the post itself has no readable author or text. Every other malformed
-	// quote/repost RELATION still fails closed, and so does a post with no id:
-	// there would be nothing to report it by. Callers opt in per client
+	// X served the post, or the post it quotes or reposts, only as a preview;
+	// the post quotes or reposts a post X will not show; or the post itself
+	// has no readable author or text. Every other malformed quote/repost
+	// RELATION still fails closed, and so does a post with no id: there would
+	// be nothing to report it by. Callers opt in per client
 	// (SetSkipUnreadablePosts) or per call (UserTweetsPageAlignedSkipping);
 	// the default stays strict, where a malformed item must never become an
 	// empty successful page. One such entry cost whole accounts per
@@ -815,6 +816,14 @@ const (
 	SkipQuotesPreviewOnly SkipReason = "quotes-preview-only"
 	// SkipRepostsPreviewOnly: the same for a repost of a preview-only post.
 	SkipRepostsPreviewOnly SkipReason = "reposts-preview-only"
+	// SkipQuotesUnavailable: the post is readable but quotes a post X will
+	// not show (deleted, suspended or protected author), served as a typed
+	// tombstone or as an empty quoted_status_result for the id the quote
+	// names. Ordinary X, not drift.
+	SkipQuotesUnavailable SkipReason = "quotes-unavailable"
+	// SkipRepostsUnavailable: the same for a repost, whose target X serves
+	// as a typed tombstone or unavailable marker.
+	SkipRepostsUnavailable SkipReason = "reposts-unavailable"
 	// SkipUnreadable: a tweet-typed result with no readable author or text in
 	// any shape birdy recognizes. Unlike the preview reasons this can mean X
 	// changed its payload, so it deserves a look, not just a log line.
@@ -835,6 +844,16 @@ func skippablePost(node *tweetResult, err error) (SkippedPost, bool) {
 			return SkippedPost{ID: preview.postID, Reason: SkipQuotesPreviewOnly}, preview.postID != ""
 		case "repost":
 			return SkippedPost{ID: preview.postID, Reason: SkipRepostsPreviewOnly}, preview.postID != ""
+		}
+		return SkippedPost{}, false
+	}
+	var unavailable *relationUnavailableError
+	if errors.As(err, &unavailable) {
+		switch unavailable.via {
+		case "quote":
+			return SkippedPost{ID: unavailable.postID, Reason: SkipQuotesUnavailable}, unavailable.postID != ""
+		case "repost":
+			return SkippedPost{ID: unavailable.postID, Reason: SkipRepostsUnavailable}, unavailable.postID != ""
 		}
 		return SkippedPost{}, false
 	}

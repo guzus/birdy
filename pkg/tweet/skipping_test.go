@@ -160,6 +160,31 @@ func TestUserTimelineSkipsPostsPromotingAPreview(t *testing.T) {
 	}
 }
 
+// A quote of a post X withholds arrives as an empty quoted_status_result
+// while the quote still names its target (live on 2026-10-21). It is skipped
+// as quotes-unavailable rather than darkening the profile.
+func TestUserTimelineSkipsPostsQuotingAPostXWillNotShow(t *testing.T) {
+	withheld := fmt.Sprintf(`{"content":{"itemContent":{"tweet_results":{"result":{"rest_id":"24001",`+
+		`"core":{"user_results":{"result":{"rest_id":"42","legacy":{"screen_name":"target","name":"N"}}}},`+
+		`"legacy":{"full_text":"look at this","is_quote_status":true,"quoted_status_id_str":"%s"},"quoted_status_result":{}}}}}}`, "24901")
+	server := timelineServer(t, map[string]string{
+		"target": userTweetsBody("NEXT", withheld, readableEntry("24002", "target")),
+	})
+	c := monitoringClient(t, server.URL)
+
+	if _, err := c.UserTimeline(t.Context(), "target", UserTimelineOptions{Limit: 20}); err == nil || !strings.Contains(err.Error(), `quotes tweet "24901" that X will not show`) {
+		t.Fatalf("strict UserTimeline err = %v", err)
+	}
+	page, err := c.UserTimelineSkippingUnreadable(t.Context(), "target", UserTimelineOptions{Limit: 20})
+	if err != nil {
+		t.Fatalf("UserTimelineSkippingUnreadable: %v", err)
+	}
+	want := []SkippedPost{{ID: "24001", Reason: SkipQuotesUnavailable}}
+	if len(page.Tweets) != 1 || page.Tweets[0].ID != "24002" || !reflect.DeepEqual(page.Skipped, want) {
+		t.Fatalf("tweets = %+v skipped = %+v, want 24002 and %+v", page.Tweets, page.Skipped, want)
+	}
+}
+
 // TestMalformedTweetItemsCannotBecomeSuccessfulEmptyPages, for the opt-in:
 // each malformed item either still fails the read or is named in Skipped.
 // None may come back as a silent empty success.
@@ -251,6 +276,8 @@ func TestSkipReasonsMirrorParser(t *testing.T) {
 		xapi.SkipPreviewOnly:        SkipPreviewOnly,
 		xapi.SkipQuotesPreviewOnly:  SkipQuotesPreviewOnly,
 		xapi.SkipRepostsPreviewOnly: SkipRepostsPreviewOnly,
+		xapi.SkipQuotesUnavailable:  SkipQuotesUnavailable,
+		xapi.SkipRepostsUnavailable: SkipRepostsUnavailable,
 		xapi.SkipUnreadable:         SkipUnreadable,
 	}
 	for parser, public := range pairs {

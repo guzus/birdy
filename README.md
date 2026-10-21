@@ -927,9 +927,11 @@ Notes:
   `UserTimelineFullSkippingUnreadable`) opt in per call: such a post, or one
   that quotes or reposts it, is left out of `Tweets` and listed in `Skipped`
   with a reason (`preview-only`, `quotes-preview-only`,
-  `reposts-preview-only`, or `unreadable` for any other shape birdy cannot
-  read). `NextCursor` resumes after skipped posts too, so record them. Any
-  other malformed quote or repost relation still fails the read.
+  `reposts-preview-only`; `quotes-unavailable` or `reposts-unavailable` for a
+  quote or repost of a post X will not show, such as a deleted one; or
+  `unreadable` for any other shape birdy cannot read). `NextCursor` resumes
+  after skipped posts too, so record them. Any other malformed quote or
+  repost relation still fails the read.
 - `ReadFull`, `SearchFull` and `UserTimelineFull` return `FullTweet` — the
   `--json-full` view: `Tweet`'s fields in `Tweet`'s order, then `URL`,
   `CreatedAtISO`, `ViewCount`, `QuoteCount`, `BookmarkCount`, `Lang`,

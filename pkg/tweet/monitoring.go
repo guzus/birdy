@@ -96,6 +96,12 @@ const (
 	SkipQuotesPreviewOnly SkipReason = "quotes-preview-only"
 	// SkipRepostsPreviewOnly is SkipQuotesPreviewOnly for a repost.
 	SkipRepostsPreviewOnly SkipReason = "reposts-preview-only"
+	// SkipQuotesUnavailable means the post is readable but quotes a post X
+	// will not show: deleted, or by a suspended or protected author. That is
+	// ordinary X, not a payload change.
+	SkipQuotesUnavailable SkipReason = "quotes-unavailable"
+	// SkipRepostsUnavailable is SkipQuotesUnavailable for a repost.
+	SkipRepostsUnavailable SkipReason = "reposts-unavailable"
 	// SkipUnreadable means the post had no readable author or text in any
 	// shape birdy recognizes. Unlike the preview reasons this can mean X
 	// changed its payload, so it deserves a look rather than just a log line.
@@ -118,10 +124,10 @@ type SkippingTimelinePage struct {
 // UserTimelineSkippingUnreadable is UserTimeline for a caller that would
 // rather lose a post than the whole read. A post X serves in a form the
 // reading account cannot read in full — most often a subscriber-only post,
-// which X replaces with a preview, or a post quoting or reposting one — is
-// left out of Tweets and listed in Skipped instead of failing the call. Under
-// UserTimeline one such post pinned to a profile fails every read of that
-// profile.
+// which X replaces with a preview, or a post quoting or reposting one or a
+// post X will not show — is left out of Tweets and listed in Skipped instead
+// of failing the call. Under UserTimeline one such post pinned to a profile
+// fails every read of that profile.
 //
 // Everything else matches UserTimeline: Limit counts readable tweets only,
 // the page budget is the same, NextCursor resumes after skipped and returned

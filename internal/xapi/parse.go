@@ -1,6 +1,7 @@
 package xapi
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -196,9 +197,7 @@ type tweetResult struct {
 	RestID   string       `json:"rest_id"`
 	Tweet    *tweetResult `json:"tweet"`
 
-	QuotedStatusResult *struct {
-		Result *tweetResult `json:"result"`
-	} `json:"quoted_status_result"`
+	QuotedStatusResult *relationResult `json:"quoted_status_result"`
 
 	Core *struct {
 		UserResults struct {
@@ -227,15 +226,16 @@ type tweetResult struct {
 		BookmarkCount       int    `json:"bookmark_count"`
 		ConversationIDStr   string `json:"conversation_id_str"`
 		InReplyToStatusIDSt string `json:"in_reply_to_status_id_str"`
-		ExtendedEntities    *struct {
+		// QuotedStatusIDStr is the post a quote declares it quotes, present
+		// even when X withholds quoted_status_result's content.
+		QuotedStatusIDStr string `json:"quoted_status_id_str"`
+		ExtendedEntities  *struct {
 			Media []rawMedia `json:"media"`
 		} `json:"extended_entities"`
 		Entities *struct {
 			Media []rawMedia `json:"media"`
 		} `json:"entities"`
-		RetweetedStatusResult *struct {
-			Result *tweetResult `json:"result"`
-		} `json:"retweeted_status_result"`
+		RetweetedStatusResult *relationResult `json:"retweeted_status_result"`
 	} `json:"legacy"`
 
 	Views *struct {
@@ -257,6 +257,28 @@ type tweetResult struct {
 	// responses give title + preview_text only; TweetDetail additionally gives
 	// plain_text and the Draft.js content_state. See article.go.
 	Article *articleNode `json:"article"`
+}
+
+// relationResult is a quoted_status_result or retweeted_status_result.
+// empty records an object with no keys at all, which is how X withholds a
+// quoted post the quote still declares (seen live on 2026-10-21); any other
+// object without a result stays indistinguishable from a moved field.
+type relationResult struct {
+	Result *tweetResult `json:"result"`
+	empty  bool
+}
+
+func (r *relationResult) UnmarshalJSON(data []byte) error {
+	var decoded struct {
+		Result *tweetResult `json:"result"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	r.Result = decoded.Result
+	trimmed := bytes.TrimSpace(data)
+	r.empty = len(trimmed) >= 2 && trimmed[0] == '{' && len(bytes.TrimSpace(trimmed[1:len(trimmed)-1])) == 0
+	return nil
 }
 
 type rawMedia struct {
@@ -407,27 +429,75 @@ func mapMonitoringTweetDepth(raw *tweetResult, depth int) (Tweet, error) {
 	// mapTweetWithoutRepost follows the legacy quote-depth environment. Clear
 	// that result and rebuild the monitoring relation deterministically.
 	post.QuotedTweet = nil
-	if raw.QuotedStatusResult != nil {
-		if depth <= 0 || raw.QuotedStatusResult.Result == nil {
+	if relation := raw.QuotedStatusResult; relation != nil {
+		target := relation.Result
+		switch {
+		case depth <= 0:
 			return Tweet{}, &APIError{Message: fmt.Sprintf("tweet %q has malformed quoted_status_result", raw.RestID)}
+		case target == nil && relation.empty && declaredQuoteID(raw) != "":
+			// X withholds the quoted post (deleted, protected, blocked) but
+			// the quote still names it. Without that name an empty relation
+			// is ambiguous and fails below.
+			return Tweet{}, &relationUnavailableError{postID: raw.RestID, via: "quote", targetID: declaredQuoteID(raw), shape: "empty quoted_status_result"}
+		case target == nil:
+			return Tweet{}, &APIError{Message: fmt.Sprintf("tweet %q has malformed quoted_status_result", raw.RestID)}
+		case isKnownNonTweetResult(target):
+			return Tweet{}, &relationUnavailableError{postID: raw.RestID, via: "quote", targetID: declaredQuoteID(raw), shape: target.unwrap().TypeName}
 		}
-		quoted, err := mapMonitoringTweetDepth(raw.QuotedStatusResult.Result, depth-1)
+		quoted, err := mapMonitoringTweetDepth(target, depth-1)
 		if err != nil {
 			return Tweet{}, throughRelation(err, "quote", raw.RestID)
 		}
 		post.QuotedTweet = &quoted
 	}
 	if raw.Legacy != nil && raw.Legacy.RetweetedStatusResult != nil {
-		if depth <= 0 || raw.Legacy.RetweetedStatusResult.Result == nil {
+		// A repost declares no target id, so an empty relation here has
+		// nothing to corroborate it and stays malformed.
+		target := raw.Legacy.RetweetedStatusResult.Result
+		if depth <= 0 || target == nil {
 			return Tweet{}, &APIError{Message: fmt.Sprintf("tweet %q has malformed retweeted_status_result", raw.RestID)}
 		}
-		reposted, err := mapMonitoringTweetDepth(raw.Legacy.RetweetedStatusResult.Result, depth-1)
+		if isKnownNonTweetResult(target) {
+			return Tweet{}, &relationUnavailableError{postID: raw.RestID, via: "repost", shape: target.unwrap().TypeName}
+		}
+		reposted, err := mapMonitoringTweetDepth(target, depth-1)
 		if err != nil {
 			return Tweet{}, throughRelation(err, "repost", raw.RestID)
 		}
 		post.RepostedTweet = &reposted
 	}
 	return post, nil
+}
+
+// declaredQuoteID is the post a quote names in legacy.quoted_status_id_str,
+// or "" when it names none.
+func declaredQuoteID(raw *tweetResult) string {
+	if raw.Legacy == nil || !monitoringTweetIDPattern.MatchString(raw.Legacy.QuotedStatusIDStr) {
+		return ""
+	}
+	return raw.Legacy.QuotedStatusIDStr
+}
+
+// relationUnavailableError means a post quotes or reposts a post X will not
+// show: a typed tombstone or unavailable marker (deleted post, suspended or
+// protected author), or an empty quoted_status_result for a quoted post the
+// quote still names. That is ordinary X, not drift, but the relation cannot
+// be represented, and returning the post without it would pass the post off
+// as an ordinary one. postID and via name the outermost hop, as for
+// previewOnlyError.
+type relationUnavailableError struct {
+	postID   string
+	via      string
+	targetID string
+	shape    string
+}
+
+func (e *relationUnavailableError) Error() string {
+	target := "a post"
+	if e.targetID != "" {
+		target = fmt.Sprintf("tweet %q", e.targetID)
+	}
+	return fmt.Sprintf("x api: tweet %q %ss %s that X will not show (%s)", e.postID, e.via, target, e.shape)
 }
 
 // previewOnlyError means X served a post only as a locked preview
@@ -462,15 +532,19 @@ func previewTeaser(node *tweetResult) (teaser *tweetResult, ok bool) {
 	return node.Tweet, true
 }
 
-// throughRelation names postID and its hop on a preview found below that
-// post's quote or repost. Every other error passes through unchanged, so a
-// malformed relation keeps failing closed.
+// throughRelation names postID and its hop on a preview or unavailable post
+// found below that post's quote or repost. Every other error passes through
+// unchanged, so a malformed relation keeps failing closed.
 func throughRelation(err error, via, postID string) error {
 	var preview *previewOnlyError
-	if !errors.As(err, &preview) {
-		return err
+	if errors.As(err, &preview) {
+		return &previewOnlyError{previewID: preview.previewID, postID: postID, via: via}
 	}
-	return &previewOnlyError{previewID: preview.previewID, postID: postID, via: via}
+	var unavailable *relationUnavailableError
+	if errors.As(err, &unavailable) {
+		return &relationUnavailableError{postID: postID, via: via, targetID: unavailable.targetID, shape: unavailable.shape}
+	}
+	return err
 }
 
 func validateMonitoringTweetIDs(post *Tweet) error {
