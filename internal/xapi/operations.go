@@ -3,6 +3,7 @@ package xapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -183,11 +184,11 @@ func (c *Client) UserTweetsPageAlignedFrom(ctx context.Context, handle string, c
 
 // UserTweetsPageAlignedSkipping is UserTweetsPageAlignedFrom for a caller that
 // would rather lose one post than the whole page. For this call only, a post
-// that cannot itself be read is left out instead of failing its page, and
-// every post left out is returned with the reason (see SkippedPost). Skipped
+// that cannot be read in full (see SkipReason) is left out instead of failing
+// its page, and every post left out is returned with the reason. Skipped
 // posts do not count toward count, the page budget is unchanged, and the
-// returned cursor resumes after them. Malformed relations, and unreadable
-// posts without an id, still fail the call.
+// returned cursor resumes after them. Other malformed relations, and posts
+// without an id, still fail the call.
 func (c *Client) UserTweetsPageAlignedSkipping(ctx context.Context, handle string, count int, cursor string, maxPages int) ([]Tweet, string, []SkippedPost, error) {
 	var skipped []SkippedPost
 	tweets, next, err := c.userTimelineFrom(ctx, opUserTweets, handle, count, cursor, maxPages, true, &skipped)
@@ -779,19 +780,21 @@ func parseTimelinePageStrict(body []byte, roots [][]string) (timelinePage, error
 // strictParseOptions relaxes exactly one strict-parser rule, and only when a
 // caller asks for it. The zero value is the monitoring contract.
 type strictParseOptions struct {
-	// skipUnreadablePosts drops a tweet-typed entry whose POST cannot be read
-	// (no author, no text) and returns it in timelinePage.skipped, instead of
-	// failing the page. Malformed quote/repost RELATIONS still fail closed,
-	// and so does an unreadable post with no id: there would be nothing to
-	// report it by. Callers opt in per client (SetSkipUnreadablePosts) or per
-	// call (UserTweetsPageAlignedSkipping); the default stays strict, where a
-	// malformed item must never become an empty successful page. One such
-	// entry cost whole accounts per production multi-fetch run on 2026-09-06.
+	// skipUnreadablePosts drops a tweet-typed entry whose post cannot be read
+	// and returns it in timelinePage.skipped, instead of failing the page:
+	// X served the post, or the post it quotes or reposts, only as a preview,
+	// or the post itself has no readable author or text. Every other malformed
+	// quote/repost RELATION still fails closed, and so does a post with no id:
+	// there would be nothing to report it by. Callers opt in per client
+	// (SetSkipUnreadablePosts) or per call (UserTweetsPageAlignedSkipping);
+	// the default stays strict, where a malformed item must never become an
+	// empty successful page. One such entry cost whole accounts per
+	// production multi-fetch run on 2026-09-06.
 	skipUnreadablePosts bool
 }
 
 // SkippedPost is a post a skipping read left out of its page, instead of
-// failing the page, because the post itself could not be read.
+// failing the page, because the post could not be read in full.
 type SkippedPost struct {
 	ID     string
 	Reason SkipReason
@@ -806,23 +809,45 @@ const (
 	// subscriber-only post the reading account has not unlocked. Its teaser
 	// is not the post, so it is never returned as one.
 	SkipPreviewOnly SkipReason = "preview-only"
+	// SkipQuotesPreviewOnly: the post is readable but quotes a post X serves
+	// only as a preview, directly or further along the quote's own
+	// relations. Returning it without its quote would misrepresent it.
+	SkipQuotesPreviewOnly SkipReason = "quotes-preview-only"
+	// SkipRepostsPreviewOnly: the same for a repost of a preview-only post.
+	SkipRepostsPreviewOnly SkipReason = "reposts-preview-only"
 	// SkipUnreadable: a tweet-typed result with no readable author or text in
-	// any shape birdy recognizes. Unlike SkipPreviewOnly this can mean X
-	// changed its payload, so many of them at once deserve a look.
+	// any shape birdy recognizes. Unlike the preview reasons this can mean X
+	// changed its payload, so it deserves a look, not just a log line.
 	SkipUnreadable SkipReason = "unreadable"
 )
 
-// isPreviewOnly reports X's locked-preview wrapper. It has to be read before
-// unwrap, which peels it away to the inner teaser tweet.
-func isPreviewOnly(node *tweetResult) bool {
-	return node != nil && node.TypeName == "TweetPreviewDisplay"
-}
-
-func skipReasonFor(node *tweetResult) SkipReason {
-	if isPreviewOnly(node) {
-		return SkipPreviewOnly
+// skippablePost decides whether a skipping read may leave node out instead
+// of failing its page, and under which id and reason. err is what
+// mapMonitoringTweet returned for node; previews are recognized by type,
+// never by message.
+func skippablePost(node *tweetResult, err error) (SkippedPost, bool) {
+	var preview *previewOnlyError
+	if errors.As(err, &preview) {
+		switch preview.via {
+		case "":
+			return SkippedPost{ID: preview.previewID, Reason: SkipPreviewOnly}, preview.previewID != ""
+		case "quote":
+			return SkippedPost{ID: preview.postID, Reason: SkipQuotesPreviewOnly}, preview.postID != ""
+		case "repost":
+			return SkippedPost{ID: preview.postID, Reason: SkipRepostsPreviewOnly}, preview.postID != ""
+		}
+		return SkippedPost{}, false
 	}
-	return SkipUnreadable
+	// A readable post that failed anyway has a malformed relation: that keeps
+	// failing closed. isKnownNonTweetResult has already ruled out a nil unwrap.
+	raw := node.unwrap()
+	if raw.RestID == "" {
+		return SkippedPost{}, false
+	}
+	if _, readable := mapTweetWithoutRepost(raw); readable {
+		return SkippedPost{}, false
+	}
+	return SkippedPost{ID: raw.RestID, Reason: SkipUnreadable}, true
 }
 
 func parseTimelinePageStrictWith(body []byte, roots [][]string, opts strictParseOptions) (timelinePage, error) {
@@ -1032,13 +1057,10 @@ func parseStrictTimelineEntryWith(raw json.RawMessage, opts strictParseOptions) 
 		}
 		post, err := mapMonitoringTweet(node)
 		if err != nil {
-			// Opt-in only (see strictParseOptions): an unreadable POST that
-			// has an id is skipped and returned; a malformed RELATION on a
-			// readable post, or a post with no id, always fails closed.
-			// isKnownNonTweetResult has already ruled out a nil unwrap.
-			if raw := node.unwrap(); opts.skipUnreadablePosts && raw.RestID != "" {
-				if _, readable := mapTweetWithoutRepost(raw); !readable {
-					skipped = append(skipped, SkippedPost{ID: raw.RestID, Reason: skipReasonFor(node)})
+			// Opt-in only (see strictParseOptions and skippablePost).
+			if opts.skipUnreadablePosts {
+				if s, ok := skippablePost(node, err); ok {
+					skipped = append(skipped, s)
 					continue
 				}
 			}

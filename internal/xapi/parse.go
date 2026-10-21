@@ -2,6 +2,7 @@ package xapi
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -385,18 +386,22 @@ func mapMonitoringTweet(raw *tweetResult) (Tweet, error) {
 }
 
 func mapMonitoringTweetDepth(raw *tweetResult, depth int) (Tweet, error) {
-	previewOnly := isPreviewOnly(raw)
+	// Decide on X's wrapper before reading what is inside it. A teaser that
+	// happens to carry a body is still not the post, and returning it under
+	// the real post's id would mark that post seen before it was ever read.
+	if teaser, ok := previewTeaser(raw); ok {
+		id := ""
+		if teaser != nil {
+			id = teaser.RestID
+		}
+		return Tweet{}, &previewOnlyError{previewID: id}
+	}
 	raw = raw.unwrap()
 	if raw == nil {
 		return Tweet{}, &APIError{Message: "malformed monitoring tweet"}
 	}
 	post, ok := mapTweetWithoutRepost(raw)
 	if !ok {
-		if previewOnly {
-			// Not malformed: X deliberately withholds the body. Saying so
-			// keeps a locked post from being debugged as a parser bug.
-			return Tweet{}, &APIError{Message: fmt.Sprintf("tweet %q is a preview-only post (TweetPreviewDisplay, e.g. subscriber-only) this account cannot read", raw.RestID)}
-		}
 		return Tweet{}, &APIError{Message: fmt.Sprintf("malformed tweet timeline entry for id %q", raw.RestID)}
 	}
 	// mapTweetWithoutRepost follows the legacy quote-depth environment. Clear
@@ -408,7 +413,7 @@ func mapMonitoringTweetDepth(raw *tweetResult, depth int) (Tweet, error) {
 		}
 		quoted, err := mapMonitoringTweetDepth(raw.QuotedStatusResult.Result, depth-1)
 		if err != nil {
-			return Tweet{}, err
+			return Tweet{}, throughRelation(err, "quote", raw.RestID)
 		}
 		post.QuotedTweet = &quoted
 	}
@@ -418,11 +423,54 @@ func mapMonitoringTweetDepth(raw *tweetResult, depth int) (Tweet, error) {
 		}
 		reposted, err := mapMonitoringTweetDepth(raw.Legacy.RetweetedStatusResult.Result, depth-1)
 		if err != nil {
-			return Tweet{}, err
+			return Tweet{}, throughRelation(err, "repost", raw.RestID)
 		}
 		post.RepostedTweet = &reposted
 	}
 	return post, nil
+}
+
+// previewOnlyError means X served a post only as a locked preview
+// (TweetPreviewDisplay, "Subscribe to unlock"), as it does for a
+// subscriber-only post the reading account has not unlocked. via is empty
+// when the post itself is the preview; otherwise it is "quote" or "repost",
+// the hop by which postID reached the preview (the outermost hop wins).
+type previewOnlyError struct {
+	previewID string
+	postID    string
+	via       string
+}
+
+func (e *previewOnlyError) Error() string {
+	const preview = "a preview-only post (TweetPreviewDisplay, e.g. subscriber-only) this account cannot read"
+	if e.via == "" {
+		return fmt.Sprintf("x api: tweet %q is %s", e.previewID, preview)
+	}
+	return fmt.Sprintf("x api: tweet %q %ss tweet %q, %s", e.postID, e.via, e.previewID, preview)
+}
+
+// previewTeaser returns the teaser tweet inside X's locked-preview wrapper,
+// looking through one TweetWithVisibilityResults envelope. ok is false when
+// node is not a preview; the teaser itself may be nil or lack an id.
+func previewTeaser(node *tweetResult) (teaser *tweetResult, ok bool) {
+	if node != nil && node.TypeName == "TweetWithVisibilityResults" {
+		node = node.Tweet
+	}
+	if node == nil || node.TypeName != "TweetPreviewDisplay" {
+		return nil, false
+	}
+	return node.Tweet, true
+}
+
+// throughRelation names postID and its hop on a preview found below that
+// post's quote or repost. Every other error passes through unchanged, so a
+// malformed relation keeps failing closed.
+func throughRelation(err error, via, postID string) error {
+	var preview *previewOnlyError
+	if !errors.As(err, &preview) {
+		return err
+	}
+	return &previewOnlyError{previewID: preview.previewID, postID: postID, via: via}
 }
 
 func validateMonitoringTweetIDs(post *Tweet) error {

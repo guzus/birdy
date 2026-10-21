@@ -47,10 +47,11 @@ read: reply, quote, and repost relations are preserved, while a present but
 malformed relation returns an error. Legacy `Read` retains its existing shape
 and permissive relation behavior. `UserTimelineSkippingUnreadable` and
 `UserTimelineFullSkippingUnreadable` are the only timeline reads that leave a
-post out: a post whose own author or text cannot be read (for example a
-subscriber-only preview) is listed in `Skipped` with its reason instead of
-failing the read, and `NextCursor` resumes past it. Their result types embed
-the frozen pages rather than adding fields to them.
+post out: a subscriber-only preview, a post that quotes or reposts one, or a
+post whose own author or text cannot be read is listed in `Skipped` with its
+reason instead of failing the read, and `NextCursor` resumes past it. Their
+result types embed the frozen pages rather than adding fields to them. A
+preview is never returned as a post, even if its teaser carries text.
 
 `pkg/tweet`'s structs are declared in `pkg/tweet/types.go` as their own types
 rather than aliases into `internal/xapi`, precisely so that a parser change

@@ -924,10 +924,12 @@ Notes:
   The usual cause is a subscriber-only post, which X serves only as a
   `TweetPreviewDisplay` teaser; if that post is pinned, every read of the
   profile fails. `UserTimelineSkippingUnreadable` (and
-  `UserTimelineFullSkippingUnreadable`) opt in per call: such a post is left
-  out of `Tweets` and listed in `Skipped` with a reason (`preview-only` or
-  `unreadable`). `NextCursor` resumes after skipped posts too, so record them.
-  A malformed quote or repost relation still fails the read.
+  `UserTimelineFullSkippingUnreadable`) opt in per call: such a post, or one
+  that quotes or reposts it, is left out of `Tweets` and listed in `Skipped`
+  with a reason (`preview-only`, `quotes-preview-only`,
+  `reposts-preview-only`, or `unreadable` for any other shape birdy cannot
+  read). `NextCursor` resumes after skipped posts too, so record them. Any
+  other malformed quote or repost relation still fails the read.
 - `ReadFull`, `SearchFull` and `UserTimelineFull` return `FullTweet` — the
   `--json-full` view: `Tweet`'s fields in `Tweet`'s order, then `URL`,
   `CreatedAtISO`, `ViewCount`, `QuoteCount`, `BookmarkCount`, `Lang`,

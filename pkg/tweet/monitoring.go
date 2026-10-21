@@ -74,13 +74,14 @@ func (c *Client) UserTimeline(ctx context.Context, handle string, opts UserTimel
 
 // SkippedPost is a post a skipping read left out of Tweets, instead of failing
 // the whole read, because X served it in a form the reading account cannot
-// read.
+// read in full.
 type SkippedPost struct {
 	ID     string     `json:"id"`
 	Reason SkipReason `json:"reason"`
 }
 
-// SkipReason says why a skipping read left a post out.
+// SkipReason says why a skipping read left a post out. Treat a reason you do
+// not recognize like SkipUnreadable.
 type SkipReason string
 
 const (
@@ -89,9 +90,15 @@ const (
 	// subscriber-only post the reading account has not unlocked. The teaser is
 	// not the post, so it is never returned as one.
 	SkipPreviewOnly SkipReason = "preview-only"
+	// SkipQuotesPreviewOnly means the post is readable but quotes a post X
+	// serves only as a preview, directly or further along the quote's own
+	// relations. Returning it without its quote would misrepresent it.
+	SkipQuotesPreviewOnly SkipReason = "quotes-preview-only"
+	// SkipRepostsPreviewOnly is SkipQuotesPreviewOnly for a repost.
+	SkipRepostsPreviewOnly SkipReason = "reposts-preview-only"
 	// SkipUnreadable means the post had no readable author or text in any
-	// shape birdy recognizes. Unlike SkipPreviewOnly this can mean X changed
-	// its payload, so many at once deserve a look rather than just a log line.
+	// shape birdy recognizes. Unlike the preview reasons this can mean X
+	// changed its payload, so it deserves a look rather than just a log line.
 	SkipUnreadable SkipReason = "unreadable"
 )
 
@@ -110,16 +117,17 @@ type SkippingTimelinePage struct {
 
 // UserTimelineSkippingUnreadable is UserTimeline for a caller that would
 // rather lose a post than the whole read. A post X serves in a form the
-// reading account cannot read — most often a subscriber-only post, which X
-// replaces with a preview — is left out of Tweets and listed in Skipped
-// instead of failing the call. Under UserTimeline one such post pinned to a
-// profile fails every read of that profile.
+// reading account cannot read in full — most often a subscriber-only post,
+// which X replaces with a preview, or a post quoting or reposting one — is
+// left out of Tweets and listed in Skipped instead of failing the call. Under
+// UserTimeline one such post pinned to a profile fails every read of that
+// profile.
 //
 // Everything else matches UserTimeline: Limit counts readable tweets only,
 // the page budget is the same, NextCursor resumes after skipped and returned
-// entries alike, and a malformed quote or repost relation still fails the
-// call. The choice is per call, so strict and skipping reads can share one
-// Client concurrently without seeing each other's skips.
+// entries alike, and any other malformed quote or repost relation still
+// fails the call. The choice is per call, so strict and skipping reads can
+// share one Client concurrently without seeing each other's skips.
 func (c *Client) UserTimelineSkippingUnreadable(ctx context.Context, handle string, opts UserTimelineOptions) (SkippingTimelinePage, error) {
 	var skipped []xapi.SkippedPost
 	tweets, cursor, err := c.userTimelineRaw(ctx, handle, opts, &skipped)

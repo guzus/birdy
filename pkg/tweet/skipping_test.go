@@ -25,11 +25,26 @@ func readableEntry(id, handle string) string {
 // TweetPreviewDisplay whose inner tweet has an author and a teaser but no
 // legacy body.
 func previewEntry(id, handle string) string {
-	return fmt.Sprintf(`{"content":{"entryType":"TimelineTimelineItem","itemContent":{"itemType":"TimelineTweet",`+
-		`"__typename":"TimelineTweet","tweet_results":{"result":{"__typename":"TweetPreviewDisplay",`+
-		`"cta":{"title":"Subscribe to unlock"},"tweet":{"rest_id":"%s",`+
+	return `{"content":{"entryType":"TimelineTimelineItem","itemContent":{"itemType":"TimelineTweet",` +
+		`"__typename":"TimelineTweet","tweet_results":{"result":` + previewResult(id, handle) + `}}}}`
+}
+
+func previewResult(id, handle string) string {
+	return fmt.Sprintf(`{"__typename":"TweetPreviewDisplay","cta":{"title":"Subscribe to unlock"},"tweet":{"rest_id":"%s",`+
 		`"core":{"user_results":{"result":{"rest_id":"42","core":{"screen_name":"%s","name":"N"}}}},`+
-		`"created_at":"Wed Oct 21 01:27:40 +0000 2026","text":"For members only…"}}}}}}`, id, handle)
+		`"created_at":"Wed Oct 21 01:27:40 +0000 2026","text":"For members only…"}}`, id, handle)
+}
+
+// promotingEntry is a readable post by handle that quotes (or, with repost,
+// reposts) the preview-only post previewID — how creators advertise a locked
+// post, often pinned.
+func promotingEntry(id, handle, previewID string, repost bool) string {
+	relation := `"legacy":{"full_text":"new post for members"},"quoted_status_result":{"result":` + previewResult(previewID, handle) + `}`
+	if repost {
+		relation = `"legacy":{"full_text":"RT","retweeted_status_result":{"result":` + previewResult(previewID, handle) + `}}`
+	}
+	return fmt.Sprintf(`{"content":{"itemContent":{"tweet_results":{"result":{"rest_id":"%s",`+
+		`"core":{"user_results":{"result":{"rest_id":"42","legacy":{"screen_name":"%s","name":"N"}}}},%s}}}}}`, id, handle, relation)
 }
 
 func userTweetsBody(cursor string, entries ...string) string {
@@ -121,6 +136,30 @@ func TestUserTimelineSkippingUnreadableKeepsReadablePosts(t *testing.T) {
 	}
 }
 
+// A post quoting or reposting a locked post is left out under its own
+// reason, so promoting a subscriber-only post cannot darken the profile.
+func TestUserTimelineSkipsPostsPromotingAPreview(t *testing.T) {
+	server := timelineServer(t, map[string]string{
+		"target": userTweetsBody("NEXT",
+			promotingEntry("23001", "target", "23901", false),
+			promotingEntry("23002", "target", "23902", true),
+			readableEntry("23003", "target")),
+	})
+	c := monitoringClient(t, server.URL)
+
+	if _, err := c.UserTimeline(t.Context(), "target", UserTimelineOptions{Limit: 20}); err == nil || !strings.Contains(err.Error(), `quotes tweet "23901"`) {
+		t.Fatalf("strict UserTimeline err = %v, want the quote of a preview to fail", err)
+	}
+	page, err := c.UserTimelineSkippingUnreadable(t.Context(), "target", UserTimelineOptions{Limit: 20})
+	if err != nil {
+		t.Fatalf("UserTimelineSkippingUnreadable: %v", err)
+	}
+	want := []SkippedPost{{ID: "23001", Reason: SkipQuotesPreviewOnly}, {ID: "23002", Reason: SkipRepostsPreviewOnly}}
+	if len(page.Tweets) != 1 || page.Tweets[0].ID != "23003" || !reflect.DeepEqual(page.Skipped, want) {
+		t.Fatalf("tweets = %+v skipped = %+v, want 23003 and %+v", page.Tweets, page.Skipped, want)
+	}
+}
+
 // TestMalformedTweetItemsCannotBecomeSuccessfulEmptyPages, for the opt-in:
 // each malformed item either still fails the read or is named in Skipped.
 // None may come back as a silent empty success.
@@ -209,8 +248,10 @@ func TestSkippingAndStrictReadsDoNotCrossTalk(t *testing.T) {
 
 func TestSkipReasonsMirrorParser(t *testing.T) {
 	pairs := map[xapi.SkipReason]SkipReason{
-		xapi.SkipPreviewOnly: SkipPreviewOnly,
-		xapi.SkipUnreadable:  SkipUnreadable,
+		xapi.SkipPreviewOnly:        SkipPreviewOnly,
+		xapi.SkipQuotesPreviewOnly:  SkipQuotesPreviewOnly,
+		xapi.SkipRepostsPreviewOnly: SkipRepostsPreviewOnly,
+		xapi.SkipUnreadable:         SkipUnreadable,
 	}
 	for parser, public := range pairs {
 		if SkipReason(parser) != public {
