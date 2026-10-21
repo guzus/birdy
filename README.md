@@ -920,6 +920,14 @@ Notes:
 - `ReadPost` returns that same monitoring shape for one exact tweet and fails
   closed when a present quote or repost relation is malformed. Legacy `Read`
   retains its existing return type and behavior.
+- `UserTimeline` fails the whole read when one post on the page cannot be read.
+  The usual cause is a subscriber-only post, which X serves only as a
+  `TweetPreviewDisplay` teaser; if that post is pinned, every read of the
+  profile fails. `UserTimelineSkippingUnreadable` (and
+  `UserTimelineFullSkippingUnreadable`) opt in per call: such a post is left
+  out of `Tweets` and listed in `Skipped` with a reason (`preview-only` or
+  `unreadable`). `NextCursor` resumes after skipped posts too, so record them.
+  A malformed quote or repost relation still fails the read.
 - `ReadFull`, `SearchFull` and `UserTimelineFull` return `FullTweet` — the
   `--json-full` view: `Tweet`'s fields in `Tweet`'s order, then `URL`,
   `CreatedAtISO`, `ViewCount`, `QuoteCount`, `BookmarkCount`, `Lang`,

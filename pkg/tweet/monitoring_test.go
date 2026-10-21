@@ -865,6 +865,8 @@ func TestMonitoringJSONContract(t *testing.T) {
 		want string
 	}{
 		{"timeline", TimelinePage{Tweets: []TimelineTweet{}, NextCursor: "C"}, `{"tweets":[],"nextCursor":"C"}`},
+		{"skipping timeline without skips", SkippingTimelinePage{TimelinePage: TimelinePage{Tweets: []TimelineTweet{}, NextCursor: "C"}}, `{"tweets":[],"nextCursor":"C"}`},
+		{"skipping timeline", SkippingTimelinePage{TimelinePage: TimelinePage{Tweets: []TimelineTweet{}}, Skipped: []SkippedPost{{ID: "1", Reason: SkipPreviewOnly}}}, `{"tweets":[],"skipped":[{"id":"1","reason":"preview-only"}]}`},
 		{"following", FollowingSnapshot{Users: []FollowingUser{{ID: "1", Username: "u", Name: "U", FollowersCount: &zero}}, NextCursor: "C", Pages: 1}, `{"users":[{"id":"1","username":"u","name":"U","followersCount":0}],"nextCursor":"C","complete":false,"pages":1}`},
 		{"profile", UserProfile{ID: "1", Username: "u", Name: "U", Followers: &zero}, `{"id":"1","username":"u","name":"U","followers":0,"verified":false}`},
 	}

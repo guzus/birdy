@@ -65,16 +65,78 @@ func (c *Client) ReadPost(ctx context.Context, ref string) (*TimelineTweet, erro
 // The terminal response page is never truncated, so Tweets may exceed Limit
 // and NextCursor always resumes after every returned entry.
 func (c *Client) UserTimeline(ctx context.Context, handle string, opts UserTimelineOptions) (TimelinePage, error) {
-	tweets, cursor, err := c.userTimelineRaw(ctx, handle, opts)
+	tweets, cursor, err := c.userTimelineRaw(ctx, handle, opts, nil)
 	if err != nil {
 		return TimelinePage{}, err
 	}
 	return TimelinePage{Tweets: convertTimelineTweets(tweets), NextCursor: cursor}, nil
 }
 
-// userTimelineRaw is the fetch behind UserTimeline and UserTimelineFull: the
-// same limits, paging, and author check, before either public shape is built.
-func (c *Client) userTimelineRaw(ctx context.Context, handle string, opts UserTimelineOptions) ([]xapi.Tweet, string, error) {
+// SkippedPost is a post a skipping read left out of Tweets, instead of failing
+// the whole read, because X served it in a form the reading account cannot
+// read.
+type SkippedPost struct {
+	ID     string     `json:"id"`
+	Reason SkipReason `json:"reason"`
+}
+
+// SkipReason says why a skipping read left a post out.
+type SkipReason string
+
+const (
+	// SkipPreviewOnly means X served only a preview of the post
+	// (TweetPreviewDisplay, "Subscribe to unlock"), as it does for a
+	// subscriber-only post the reading account has not unlocked. The teaser is
+	// not the post, so it is never returned as one.
+	SkipPreviewOnly SkipReason = "preview-only"
+	// SkipUnreadable means the post had no readable author or text in any
+	// shape birdy recognizes. Unlike SkipPreviewOnly this can mean X changed
+	// its payload, so many at once deserve a look rather than just a log line.
+	SkipUnreadable SkipReason = "unreadable"
+)
+
+// SkippingTimelinePage is a TimelinePage from a read that skips unreadable
+// posts. TimelinePage is embedded, so Tweets and NextCursor stay directly
+// accessible and the JSON stays flat, without changing TimelinePage's frozen
+// layout.
+type SkippingTimelinePage struct {
+	TimelinePage
+	// Skipped lists, once each and in timeline order, the posts left out of
+	// Tweets. NextCursor already resumes after them, so a caller that persists
+	// cursors will not be shown them again. A read that skipped every post is
+	// still a success; Skipped is what tells it apart from an empty timeline.
+	Skipped []SkippedPost `json:"skipped,omitempty"`
+}
+
+// UserTimelineSkippingUnreadable is UserTimeline for a caller that would
+// rather lose a post than the whole read. A post X serves in a form the
+// reading account cannot read — most often a subscriber-only post, which X
+// replaces with a preview — is left out of Tweets and listed in Skipped
+// instead of failing the call. Under UserTimeline one such post pinned to a
+// profile fails every read of that profile.
+//
+// Everything else matches UserTimeline: Limit counts readable tweets only,
+// the page budget is the same, NextCursor resumes after skipped and returned
+// entries alike, and a malformed quote or repost relation still fails the
+// call. The choice is per call, so strict and skipping reads can share one
+// Client concurrently without seeing each other's skips.
+func (c *Client) UserTimelineSkippingUnreadable(ctx context.Context, handle string, opts UserTimelineOptions) (SkippingTimelinePage, error) {
+	var skipped []xapi.SkippedPost
+	tweets, cursor, err := c.userTimelineRaw(ctx, handle, opts, &skipped)
+	if err != nil {
+		return SkippingTimelinePage{}, err
+	}
+	return SkippingTimelinePage{
+		TimelinePage: TimelinePage{Tweets: convertTimelineTweets(tweets), NextCursor: cursor},
+		Skipped:      convertSkippedPosts(skipped),
+	}, nil
+}
+
+// userTimelineRaw is the fetch behind UserTimeline, UserTimelineFull and their
+// skipping variants: the same limits, paging, and author check, before any
+// public shape is built. A non-nil skipped opts this call into skipping
+// unreadable posts and receives them; nil keeps the strict read.
+func (c *Client) userTimelineRaw(ctx context.Context, handle string, opts UserTimelineOptions, skipped *[]xapi.SkippedPost) ([]xapi.Tweet, string, error) {
 	limit, err := timelineLimit(opts)
 	if err != nil {
 		return nil, "", err
@@ -89,7 +151,17 @@ func (c *Client) userTimelineRaw(ctx context.Context, handle string, opts UserTi
 		cursor string
 	)
 	err = c.withAccount(ctx, func(ctx context.Context, api *xapi.Client) error {
-		page, next, err := api.UserTweetsPageAlignedFrom(ctx, handle, limit, strings.TrimSpace(opts.Cursor), opts.MaxPages)
+		var (
+			page    []xapi.Tweet
+			next    string
+			dropped []xapi.SkippedPost
+			err     error
+		)
+		if skipped != nil {
+			page, next, dropped, err = api.UserTweetsPageAlignedSkipping(ctx, handle, limit, strings.TrimSpace(opts.Cursor), opts.MaxPages)
+		} else {
+			page, next, err = api.UserTweetsPageAlignedFrom(ctx, handle, limit, strings.TrimSpace(opts.Cursor), opts.MaxPages)
+		}
 		if err != nil {
 			return err
 		}
@@ -99,12 +171,26 @@ func (c *Client) userTimelineRaw(ctx context.Context, handle string, opts UserTi
 			}
 		}
 		tweets, cursor = page, next
+		if skipped != nil {
+			*skipped = dropped
+		}
 		return nil
 	})
 	if err != nil {
 		return nil, "", err
 	}
 	return tweets, cursor, nil
+}
+
+func convertSkippedPosts(in []xapi.SkippedPost) []SkippedPost {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]SkippedPost, 0, len(in))
+	for _, s := range in {
+		out = append(out, SkippedPost{ID: s.ID, Reason: SkipReason(s.Reason)})
+	}
+	return out
 }
 
 func timelineLimit(opts UserTimelineOptions) (int, error) {

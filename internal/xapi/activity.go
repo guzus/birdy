@@ -131,7 +131,7 @@ func (c *Client) QuoteTweets(ctx context.Context, tweetID string, count int) (*Q
 		"product":                                "Top",
 		"withGrokTranslatedBio":                  true,
 		"withQuickPromoteEligibilityTweetFields": false,
-	}, false)
+	}, false, false)
 	if err != nil {
 		return nil, err
 	}

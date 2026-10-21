@@ -172,16 +172,32 @@ func (c *Client) UserTweets(ctx context.Context, handle string, count int) ([]Tw
 // UserTweetsFrom returns recent tweets starting at cursor. maxPages bounds the
 // requests made; zero retains UserTweets' ten-page safety cap.
 func (c *Client) UserTweetsFrom(ctx context.Context, handle string, count int, cursor string, maxPages int) ([]Tweet, string, error) {
-	return c.userTimelineFrom(ctx, opUserTweets, handle, count, cursor, maxPages, false)
+	return c.userTimelineFrom(ctx, opUserTweets, handle, count, cursor, maxPages, false, nil)
 }
 
 // UserTweetsPageAlignedFrom walks the posts timeline without truncating the
 // terminal response page, so its returned cursor cannot skip entries.
 func (c *Client) UserTweetsPageAlignedFrom(ctx context.Context, handle string, count int, cursor string, maxPages int) ([]Tweet, string, error) {
-	return c.userTimelineFrom(ctx, opUserTweets, handle, count, cursor, maxPages, true)
+	return c.userTimelineFrom(ctx, opUserTweets, handle, count, cursor, maxPages, true, nil)
 }
 
-func (c *Client) userTimelineFrom(ctx context.Context, op timelineOp, handle string, count int, cursor string, maxPages int, fullPages bool) ([]Tweet, string, error) {
+// UserTweetsPageAlignedSkipping is UserTweetsPageAlignedFrom for a caller that
+// would rather lose one post than the whole page. For this call only, a post
+// that cannot itself be read is left out instead of failing its page, and
+// every post left out is returned with the reason (see SkippedPost). Skipped
+// posts do not count toward count, the page budget is unchanged, and the
+// returned cursor resumes after them. Malformed relations, and unreadable
+// posts without an id, still fail the call.
+func (c *Client) UserTweetsPageAlignedSkipping(ctx context.Context, handle string, count int, cursor string, maxPages int) ([]Tweet, string, []SkippedPost, error) {
+	var skipped []SkippedPost
+	tweets, next, err := c.userTimelineFrom(ctx, opUserTweets, handle, count, cursor, maxPages, true, &skipped)
+	if err != nil {
+		return nil, "", nil, err
+	}
+	return tweets, next, skipped, nil
+}
+
+func (c *Client) userTimelineFrom(ctx context.Context, op timelineOp, handle string, count int, cursor string, maxPages int, fullPages bool, skipped *[]SkippedPost) ([]Tweet, string, error) {
 	user, err := c.UserByScreenName(ctx, handle)
 	if err != nil {
 		return nil, "", err
@@ -202,6 +218,7 @@ func (c *Client) userTimelineFrom(ctx context.Context, op timelineOp, handle str
 		cursor:    strings.TrimSpace(cursor),
 		fullPages: fullPages,
 		pageDelay: c.userTweetsPageDelay,
+		skipped:   skipped,
 		variables: func(pageCount int, cursor string) map[string]any {
 			return withCursor(map[string]any{
 				"userId": user.ID,
@@ -348,7 +365,9 @@ func clampCount(count int) int {
 }
 
 // timelinePageFor runs one timeline request and maps its tweets and cursor.
-func (c *Client) timelinePageFor(ctx context.Context, op timelineOp, variables map[string]any, strict bool) (timelinePage, error) {
+// skipUnreadable opts this request alone into strictParseOptions'
+// skipUnreadablePosts; it only affects the strict parser.
+func (c *Client) timelinePageFor(ctx context.Context, op timelineOp, variables map[string]any, strict, skipUnreadable bool) (timelinePage, error) {
 	var (
 		body []byte
 		err  error
@@ -362,7 +381,7 @@ func (c *Client) timelinePageFor(ctx context.Context, op timelineOp, variables m
 		return timelinePage{}, err
 	}
 	if strict {
-		return parseTimelinePageStrictWith(body, op.roots, strictParseOptions{skipUnreadablePosts: c.skipUnreadablePosts})
+		return parseTimelinePageStrictWith(body, op.roots, strictParseOptions{skipUnreadablePosts: skipUnreadable || c.skipUnreadablePosts})
 	}
 	return parseTimelinePage(body, op.roots)
 }
@@ -394,6 +413,12 @@ type pagedOptions struct {
 	// cursor is empty on the first page and must then be OMITTED from the
 	// payload, not sent as null — X rejects an explicit null cursor.
 	variables func(pageCount int, cursor string) map[string]any
+	// skipped, when non-nil, opts this walk alone into skipping unreadable
+	// posts on strict pages, and receives every post it skipped: once each, in
+	// timeline order, minus any that a later entry returned readable. It is
+	// written only when the walk succeeds. Being per call, two walks on one
+	// Client can never see each other's setting or each other's skips.
+	skipped *[]SkippedPost
 }
 
 // pagedTimeline is a transcription of bird's page loop, which is character-for-
@@ -415,11 +440,13 @@ func (c *Client) pagedTimeline(ctx context.Context, op timelineOp, o pagedOption
 
 	var (
 		tweets     []Tweet
+		skipped    []SkippedPost
 		cursor     = o.cursor
 		nextCursor string
 		pages      int
 	)
 	seen := make(map[string]bool)
+	seenSkipped := make(map[string]bool)
 	seenCursors := make(map[string]struct{})
 	if cursor != "" {
 		seenCursors[cursor] = struct{}{}
@@ -441,12 +468,24 @@ func (c *Client) pagedTimeline(ctx context.Context, op timelineOp, o pagedOption
 			pageCount = remaining
 		}
 
-		page, err := c.timelinePageFor(ctx, op, o.variables(pageCount, cursor), o.fullPages)
+		page, err := c.timelinePageFor(ctx, op, o.variables(pageCount, cursor), o.fullPages, o.skipped != nil)
 		if err != nil {
 			// bird fails the whole call and discards what it accumulated.
 			return nil, "", err
 		}
 		pages++
+
+		// Skipped posts never count toward the limit: it is a target for
+		// readable tweets, and the page budget still bounds the requests.
+		for _, s := range page.skipped {
+			// The process-wide hook sees every skip (the CLI prints it); only
+			// o.skipped attributes skips to this walk.
+			reportMalformedEntry(s.ID)
+			if !seenSkipped[s.ID] {
+				seenSkipped[s.ID] = true
+				skipped = append(skipped, s)
+			}
+		}
 
 		added := 0
 		for _, t := range page.tweets {
@@ -498,6 +537,19 @@ func (c *Client) pagedTimeline(ctx context.Context, op timelineOp, o pagedOption
 		}
 		cursor = page.cursor
 		nextCursor = page.cursor
+	}
+	if o.skipped != nil {
+		// A post skipped on one page but returned readable on another was not
+		// left out, so it must not be reported as if it were.
+		kept := make([]SkippedPost, 0, len(skipped))
+		for _, s := range skipped {
+			if !seen[s.ID] {
+				kept = append(kept, s)
+			}
+		}
+		if len(kept) > 0 {
+			*o.skipped = kept
+		}
 	}
 	return tweets, nextCursor, nil
 }
@@ -658,10 +710,13 @@ func buildQuery(variables map[string]any, features map[string]bool, fieldToggles
 }
 
 // timelinePage is one response: the tweets it carried and the cursor to ask for
-// the next one, empty when the timeline is exhausted.
+// the next one, empty when the timeline is exhausted. skipped holds, in entry
+// order, the posts a skipping strict parse left out; the cursor already
+// resumes after them.
 type timelinePage struct {
-	tweets []Tweet
-	cursor string
+	tweets  []Tweet
+	skipped []SkippedPost
+	cursor  string
 }
 
 // parseTimeline maps tweets from a response whose instructions live at one of
@@ -725,13 +780,49 @@ func parseTimelinePageStrict(body []byte, roots [][]string) (timelinePage, error
 // caller asks for it. The zero value is the monitoring contract.
 type strictParseOptions struct {
 	// skipUnreadablePosts drops a tweet-typed entry whose POST cannot be read
-	// (no author, no text) and reports it via MalformedEntryHook, instead of
-	// failing the page. Malformed quote/repost RELATIONS still fail closed.
-	// The CLI's bulk reads opt in (one such entry cost whole accounts per
-	// production multi-fetch run on 2026-09-06); library monitoring reads
-	// keep the default, where a malformed item must never become an empty
-	// successful page.
+	// (no author, no text) and returns it in timelinePage.skipped, instead of
+	// failing the page. Malformed quote/repost RELATIONS still fail closed,
+	// and so does an unreadable post with no id: there would be nothing to
+	// report it by. Callers opt in per client (SetSkipUnreadablePosts) or per
+	// call (UserTweetsPageAlignedSkipping); the default stays strict, where a
+	// malformed item must never become an empty successful page. One such
+	// entry cost whole accounts per production multi-fetch run on 2026-09-06.
 	skipUnreadablePosts bool
+}
+
+// SkippedPost is a post a skipping read left out of its page, instead of
+// failing the page, because the post itself could not be read.
+type SkippedPost struct {
+	ID     string
+	Reason SkipReason
+}
+
+// SkipReason says why a skipping read left a post out.
+type SkipReason string
+
+const (
+	// SkipPreviewOnly: X served only a preview of the post
+	// (TweetPreviewDisplay, "Subscribe to unlock"), as it does for a
+	// subscriber-only post the reading account has not unlocked. Its teaser
+	// is not the post, so it is never returned as one.
+	SkipPreviewOnly SkipReason = "preview-only"
+	// SkipUnreadable: a tweet-typed result with no readable author or text in
+	// any shape birdy recognizes. Unlike SkipPreviewOnly this can mean X
+	// changed its payload, so many of them at once deserve a look.
+	SkipUnreadable SkipReason = "unreadable"
+)
+
+// isPreviewOnly reports X's locked-preview wrapper. It has to be read before
+// unwrap, which peels it away to the inner teaser tweet.
+func isPreviewOnly(node *tweetResult) bool {
+	return node != nil && node.TypeName == "TweetPreviewDisplay"
+}
+
+func skipReasonFor(node *tweetResult) SkipReason {
+	if isPreviewOnly(node) {
+		return SkipPreviewOnly
+	}
+	return SkipUnreadable
 }
 
 func parseTimelinePageStrictWith(body []byte, roots [][]string, opts strictParseOptions) (timelinePage, error) {
@@ -800,8 +891,9 @@ func parseStrictTimelineInstructionsWith(raw json.RawMessage, opts strictParseOp
 		return timelinePage{}, &APIError{Message: "malformed timeline instructions: " + err.Error()}
 	}
 	var (
-		tweets []Tweet
-		cursor string
+		tweets  []Tweet
+		skipped []SkippedPost
+		cursor  string
 	)
 	seen := make(map[string]struct{})
 	for index, rawInstruction := range instructions {
@@ -830,10 +922,11 @@ func parseStrictTimelineInstructionsWith(raw json.RawMessage, opts strictParseOp
 				return timelinePage{}, &APIError{Message: fmt.Sprintf("malformed timeline instruction %d entries", index)}
 			}
 			for _, rawEntry := range entries {
-				entryTweets, entryCursor, err := parseStrictTimelineEntryWith(rawEntry, opts)
+				entryTweets, entrySkipped, entryCursor, err := parseStrictTimelineEntryWith(rawEntry, opts)
 				if err != nil {
 					return timelinePage{}, err
 				}
+				skipped = append(skipped, entrySkipped...)
 				for _, post := range entryTweets {
 					if _, duplicate := seen[post.ID]; !duplicate {
 						seen[post.ID] = struct{}{}
@@ -853,10 +946,11 @@ func parseStrictTimelineInstructionsWith(raw json.RawMessage, opts strictParseOp
 			if (typeName != "TimelineReplaceEntry" && typeName != "TimelinePinEntry") || string(entryRaw) == "null" {
 				return timelinePage{}, &APIError{Message: fmt.Sprintf("unsupported singular timeline instruction %q", typeName)}
 			}
-			entryTweets, entryCursor, err := parseStrictTimelineEntryWith(entryRaw, opts)
+			entryTweets, entrySkipped, entryCursor, err := parseStrictTimelineEntryWith(entryRaw, opts)
 			if err != nil {
 				return timelinePage{}, err
 			}
+			skipped = append(skipped, entrySkipped...)
 			for _, post := range entryTweets {
 				if _, duplicate := seen[post.ID]; !duplicate {
 					seen[post.ID] = struct{}{}
@@ -878,77 +972,81 @@ func parseStrictTimelineInstructionsWith(raw json.RawMessage, opts strictParseOp
 			return timelinePage{}, err
 		}
 	}
-	return timelinePage{tweets: tweets, cursor: cursor}, nil
+	return timelinePage{tweets: tweets, skipped: skipped, cursor: cursor}, nil
 }
 
 func parseStrictTimelineEntry(raw json.RawMessage) ([]Tweet, string, error) {
-	return parseStrictTimelineEntryWith(raw, strictParseOptions{})
+	tweets, _, cursor, err := parseStrictTimelineEntryWith(raw, strictParseOptions{})
+	return tweets, cursor, err
 }
 
-func parseStrictTimelineEntryWith(raw json.RawMessage, opts strictParseOptions) ([]Tweet, string, error) {
+func parseStrictTimelineEntryWith(raw json.RawMessage, opts strictParseOptions) ([]Tweet, []SkippedPost, string, error) {
 	var object map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &object); err != nil || object == nil {
-		return nil, "", &APIError{Message: "malformed timeline entry"}
+		return nil, nil, "", &APIError{Message: "malformed timeline entry"}
 	}
 	contentRaw, ok := object["content"]
 	if !ok || string(contentRaw) == "null" {
-		return nil, "", &APIError{Message: "malformed timeline entry: missing content"}
+		return nil, nil, "", &APIError{Message: "malformed timeline entry: missing content"}
 	}
 	var parsed entry
 	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return nil, "", &APIError{Message: "malformed timeline entry content"}
+		return nil, nil, "", &APIError{Message: "malformed timeline entry content"}
 	}
 	contentType, err := consistentDiscriminator(parsed.Content.EntryType, parsed.Content.TypeName, "timeline entry content")
 	if err != nil {
-		return nil, "", err
+		return nil, nil, "", err
 	}
 	typedCursor := contentType == "TimelineTimelineCursor"
 	if typedCursor && parsed.Content.CursorType == "" {
-		return nil, "", &APIError{Message: "malformed typed timeline cursor: missing cursorType"}
+		return nil, nil, "", &APIError{Message: "malformed typed timeline cursor: missing cursorType"}
 	}
 	hasData := parsed.Content.ItemContent != nil || parsed.Content.Item != nil || parsed.Content.Items != nil
 	if parsed.Content.CursorType != "" && hasData {
-		return nil, "", &APIError{Message: "malformed timeline entry: cursor content also carries data"}
+		return nil, nil, "", &APIError{Message: "malformed timeline entry: cursor content also carries data"}
 	}
 	if parsed.Content.CursorType == "Bottom" {
 		if parsed.Content.Value == "" {
-			return nil, "", &APIError{Message: "malformed Bottom cursor: empty value"}
+			return nil, nil, "", &APIError{Message: "malformed Bottom cursor: empty value"}
 		}
-		return nil, parsed.Content.Value, nil
+		return nil, nil, parsed.Content.Value, nil
 	}
 	if parsed.Content.CursorType == "Top" && parsed.Content.Value == "" {
-		return nil, "", &APIError{Message: "malformed Top cursor: empty value"}
+		return nil, nil, "", &APIError{Message: "malformed Top cursor: empty value"}
 	}
 	if parsed.Content.CursorType != "" && parsed.Content.CursorType != "Top" {
-		return nil, "", &APIError{Message: fmt.Sprintf("unsupported timeline cursor type %q", parsed.Content.CursorType)}
+		return nil, nil, "", &APIError{Message: fmt.Sprintf("unsupported timeline cursor type %q", parsed.Content.CursorType)}
 	}
 	if err := validateStrictTimelineItemTypes(parsed); err != nil {
-		return nil, "", err
+		return nil, nil, "", err
 	}
 	nodes, err := collectFromEntry(parsed, false)
 	if err != nil {
-		return nil, "", err
+		return nil, nil, "", err
 	}
 	tweets := make([]Tweet, 0, len(nodes))
+	var skipped []SkippedPost
 	for _, node := range nodes {
 		if isKnownNonTweetResult(node) {
 			continue
 		}
 		post, err := mapMonitoringTweet(node)
 		if err != nil {
-			// Opt-in only (see strictParseOptions): an unreadable POST is
-			// skipped and reported; a malformed RELATION always fails closed.
-			if opts.skipUnreadablePosts {
-				if _, ok := mapTweetWithoutRepost(node.unwrap()); !ok {
-					reportMalformedEntry(node.unwrap().RestID)
+			// Opt-in only (see strictParseOptions): an unreadable POST that
+			// has an id is skipped and returned; a malformed RELATION on a
+			// readable post, or a post with no id, always fails closed.
+			// isKnownNonTweetResult has already ruled out a nil unwrap.
+			if raw := node.unwrap(); opts.skipUnreadablePosts && raw.RestID != "" {
+				if _, readable := mapTweetWithoutRepost(raw); !readable {
+					skipped = append(skipped, SkippedPost{ID: raw.RestID, Reason: skipReasonFor(node)})
 					continue
 				}
 			}
-			return nil, "", err
+			return nil, nil, "", err
 		}
 		tweets = append(tweets, post)
 	}
-	return tweets, "", nil
+	return tweets, skipped, "", nil
 }
 
 func rawTypeDiscriminator(object map[string]json.RawMessage, context string) (string, error) {

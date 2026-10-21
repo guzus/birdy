@@ -143,7 +143,11 @@ func TestPublicFieldOrderIsFrozen(t *testing.T) {
 			"Lang", "IsRepost", "IsReply", "IsQuote",
 		},
 		"FullTimelinePage": {"Tweets", "NextCursor"},
-		"FollowingOptions": {"PageSize", "MaxPages", "Cursor"},
+		// The skipping reads embed the frozen pages rather than growing them.
+		"SkippedPost":              {"ID", "Reason"},
+		"SkippingTimelinePage":     {"TimelinePage", "Skipped"},
+		"SkippingFullTimelinePage": {"FullTimelinePage", "Skipped"},
+		"FollowingOptions":         {"PageSize", "MaxPages", "Cursor"},
 		// Unavailable was appended after v1.1. Every earlier field keeps its
 		// name, type, and position, so keyed literals and the JSON contract are
 		// unchanged; only an unkeyed literal of this struct would break, and
@@ -172,26 +176,29 @@ func TestPublicFieldOrderIsFrozen(t *testing.T) {
 		"ListOwner": {"ID", "Username", "Name"},
 	}
 	types := map[string]reflect.Type{
-		"Tweet":               reflect.TypeOf(Tweet{}),
-		"Author":              reflect.TypeOf(Author{}),
-		"Media":               reflect.TypeOf(Media{}),
-		"Article":             reflect.TypeOf(Article{}),
-		"Options":             reflect.TypeOf(Options{}),
-		"MonitoringOptions":   reflect.TypeOf(MonitoringOptions{}),
-		"UserTimelineOptions": reflect.TypeOf(UserTimelineOptions{}),
-		"TimelinePage":        reflect.TypeOf(TimelinePage{}),
-		"TimelineTweet":       reflect.TypeOf(TimelineTweet{}),
-		"FullTweet":           reflect.TypeOf(FullTweet{}),
-		"FullTimelinePage":    reflect.TypeOf(FullTimelinePage{}),
-		"FollowingOptions":    reflect.TypeOf(FollowingOptions{}),
-		"FollowingUser":       reflect.TypeOf(FollowingUser{}),
-		"FollowingSnapshot":   reflect.TypeOf(FollowingSnapshot{}),
-		"UserProfile":         reflect.TypeOf(UserProfile{}),
-		"NewsItem":            reflect.TypeOf(NewsItem{}),
-		"AboutProfile":        reflect.TypeOf(AboutProfile{}),
-		"Viewer":              reflect.TypeOf(Viewer{}),
-		"List":                reflect.TypeOf(List{}),
-		"ListOwner":           reflect.TypeOf(ListOwner{}),
+		"Tweet":                    reflect.TypeOf(Tweet{}),
+		"Author":                   reflect.TypeOf(Author{}),
+		"Media":                    reflect.TypeOf(Media{}),
+		"Article":                  reflect.TypeOf(Article{}),
+		"Options":                  reflect.TypeOf(Options{}),
+		"MonitoringOptions":        reflect.TypeOf(MonitoringOptions{}),
+		"UserTimelineOptions":      reflect.TypeOf(UserTimelineOptions{}),
+		"TimelinePage":             reflect.TypeOf(TimelinePage{}),
+		"TimelineTweet":            reflect.TypeOf(TimelineTweet{}),
+		"FullTweet":                reflect.TypeOf(FullTweet{}),
+		"FullTimelinePage":         reflect.TypeOf(FullTimelinePage{}),
+		"SkippedPost":              reflect.TypeOf(SkippedPost{}),
+		"SkippingTimelinePage":     reflect.TypeOf(SkippingTimelinePage{}),
+		"SkippingFullTimelinePage": reflect.TypeOf(SkippingFullTimelinePage{}),
+		"FollowingOptions":         reflect.TypeOf(FollowingOptions{}),
+		"FollowingUser":            reflect.TypeOf(FollowingUser{}),
+		"FollowingSnapshot":        reflect.TypeOf(FollowingSnapshot{}),
+		"UserProfile":              reflect.TypeOf(UserProfile{}),
+		"NewsItem":                 reflect.TypeOf(NewsItem{}),
+		"AboutProfile":             reflect.TypeOf(AboutProfile{}),
+		"Viewer":                   reflect.TypeOf(Viewer{}),
+		"List":                     reflect.TypeOf(List{}),
+		"ListOwner":                reflect.TypeOf(ListOwner{}),
 	}
 
 	for name, want := range frozen {
@@ -242,6 +249,15 @@ func TestMonitoringStructContractsAreFrozen(t *testing.T) {
 		}},
 		"TimelineTweet": {reflect.TypeOf(TimelineTweet{}), []frozenField{
 			{"Tweet", "Tweet", ""}, {"RepostedTweet", "*Tweet", "repostedTweet,omitempty"},
+		}},
+		"SkippedPost": {reflect.TypeOf(SkippedPost{}), []frozenField{
+			{"ID", "string", "id"}, {"Reason", "SkipReason", "reason"},
+		}},
+		"SkippingTimelinePage": {reflect.TypeOf(SkippingTimelinePage{}), []frozenField{
+			{"TimelinePage", "TimelinePage", ""}, {"Skipped", "[]SkippedPost", "skipped,omitempty"},
+		}},
+		"SkippingFullTimelinePage": {reflect.TypeOf(SkippingFullTimelinePage{}), []frozenField{
+			{"FullTimelinePage", "FullTimelinePage", ""}, {"Skipped", "[]SkippedPost", "skipped,omitempty"},
 		}},
 		"FollowingOptions": {reflect.TypeOf(FollowingOptions{}), []frozenField{
 			{"PageSize", "int", ""}, {"MaxPages", "int", ""}, {"Cursor", "string", ""},

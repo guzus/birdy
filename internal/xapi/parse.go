@@ -385,12 +385,18 @@ func mapMonitoringTweet(raw *tweetResult) (Tweet, error) {
 }
 
 func mapMonitoringTweetDepth(raw *tweetResult, depth int) (Tweet, error) {
+	previewOnly := isPreviewOnly(raw)
 	raw = raw.unwrap()
 	if raw == nil {
 		return Tweet{}, &APIError{Message: "malformed monitoring tweet"}
 	}
 	post, ok := mapTweetWithoutRepost(raw)
 	if !ok {
+		if previewOnly {
+			// Not malformed: X deliberately withholds the body. Saying so
+			// keeps a locked post from being debugged as a parser bug.
+			return Tweet{}, &APIError{Message: fmt.Sprintf("tweet %q is a preview-only post (TweetPreviewDisplay, e.g. subscriber-only) this account cannot read", raw.RestID)}
+		}
 		return Tweet{}, &APIError{Message: fmt.Sprintf("malformed tweet timeline entry for id %q", raw.RestID)}
 	}
 	// mapTweetWithoutRepost follows the legacy quote-depth environment. Clear
@@ -917,10 +923,12 @@ func tweetsFromInstructions(instructions []instruction, allowTweetDetailCursors 
 }
 
 // MalformedEntryHook, when set, is called with the rest_id of every timeline
-// entry that carried a tweet-like result mapTweet could not read. The CLI
-// installs a stderr warning; library callers may count or collect them. It
-// must be safe to call from concurrent goroutines (multi-fetch runs pages in
-// parallel in-process).
+// entry that carried a tweet-like result the parser could not read and
+// skipped. The CLI installs a stderr warning. It is process-wide, so it cannot
+// tell which call a skip belongs to: a library caller that needs that should
+// use a per-call skipping read (UserTweetsPageAlignedSkipping), whose result
+// carries its own skips. It must be safe to call from concurrent goroutines
+// (multi-fetch runs pages in parallel in-process).
 var MalformedEntryHook func(id string)
 
 func reportMalformedEntry(id string) {

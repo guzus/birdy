@@ -133,11 +133,32 @@ func (c *Client) SearchFull(ctx context.Context, query string, count int) ([]Ful
 // UserTimelineFull is UserTimeline with enriched entries. Paging, limits and
 // the author check are identical.
 func (c *Client) UserTimelineFull(ctx context.Context, handle string, opts UserTimelineOptions) (FullTimelinePage, error) {
-	tweets, cursor, err := c.userTimelineRaw(ctx, handle, opts)
+	tweets, cursor, err := c.userTimelineRaw(ctx, handle, opts, nil)
 	if err != nil {
 		return FullTimelinePage{}, err
 	}
 	return FullTimelinePage{Tweets: convertFullTweets(tweets), NextCursor: cursor}, nil
+}
+
+// SkippingFullTimelinePage is FullTimelinePage from a read that skips
+// unreadable posts; Skipped means what it does on SkippingTimelinePage.
+type SkippingFullTimelinePage struct {
+	FullTimelinePage
+	Skipped []SkippedPost `json:"skipped,omitempty"`
+}
+
+// UserTimelineFullSkippingUnreadable is UserTimelineSkippingUnreadable with
+// enriched entries.
+func (c *Client) UserTimelineFullSkippingUnreadable(ctx context.Context, handle string, opts UserTimelineOptions) (SkippingFullTimelinePage, error) {
+	var skipped []xapi.SkippedPost
+	tweets, cursor, err := c.userTimelineRaw(ctx, handle, opts, &skipped)
+	if err != nil {
+		return SkippingFullTimelinePage{}, err
+	}
+	return SkippingFullTimelinePage{
+		FullTimelinePage: FullTimelinePage{Tweets: convertFullTweets(tweets), NextCursor: cursor},
+		Skipped:          convertSkippedPosts(skipped),
+	}, nil
 }
 
 // --- Conversion boundary -----------------------------------------------------

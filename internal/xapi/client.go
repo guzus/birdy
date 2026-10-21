@@ -145,18 +145,20 @@ func (c *Client) SetSettingsPages(pages []string) {
 	c.viewer.mu.Unlock()
 }
 
-// SetUserTweetsPageDelay overrides the wait between user-tweets pages.
-// Intended for tests; production callers should leave bird's 1s default in
-// place, because it is what keeps a 10-page walk from looking like a burst.
-// SetSkipUnreadablePosts makes strict page reads drop a tweet-typed entry
-// whose post cannot be read (no author, no text), reporting it through
-// MalformedEntryHook, instead of failing the whole page. Malformed
-// quote/repost relations still fail closed. Bulk CLI reads turn this on;
-// monitoring callers should leave it off.
+// SetSkipUnreadablePosts makes every strict page read on this client drop a
+// tweet-typed entry whose post cannot be read (no author, no text), reporting
+// it only through the process-wide MalformedEntryHook, instead of failing the
+// whole page. Malformed quote/repost relations still fail closed. Bulk CLI
+// reads turn this on; monitoring callers should leave it off, and a caller
+// that needs the skipped ids should use a per-call skipping read such as
+// UserTweetsPageAlignedSkipping instead. Set it before the client is shared.
 func (c *Client) SetSkipUnreadablePosts(skip bool) {
 	c.skipUnreadablePosts = skip
 }
 
+// SetUserTweetsPageDelay overrides the wait between user-tweets pages.
+// Intended for tests; production callers should leave bird's 1s default in
+// place, because it is what keeps a 10-page walk from looking like a burst.
 func (c *Client) SetUserTweetsPageDelay(d time.Duration) {
 	c.userTweetsPageDelay = d
 }

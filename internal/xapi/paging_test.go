@@ -35,6 +35,8 @@ type pageSpec struct {
 	// status, when non-zero, is served instead of a body.
 	status    int
 	malformed int // tweet-typed entries mapTweet cannot read
+	// previews become subscriber-only preview entries with these ids.
+	previews []string
 }
 
 // recordedRequest is what the client actually sent.
@@ -138,6 +140,9 @@ func timelinePageBody(root []string, page pageSpec) string {
 		entries = append(entries, fmt.Sprintf(
 			`{"entryId":"tweet-bad-%d","content":{"itemContent":{"tweet_results":{"result":{"__typename":"Tweet","rest_id":"90%d"}}}}}`, i, i))
 	}
+	for _, id := range page.previews {
+		entries = append(entries, previewEntry(id))
+	}
 	for i := 0; i < page.tombstones; i++ {
 		// The exact shape X serves for a deleted or withheld tweet.
 		entries = append(entries, `{"entryId":"tweet-dead","content":{"__typename":"TimelineTimelineItem","itemContent":{"__typename":"TimelineTweet","tweet_results":{}}}}`)
@@ -154,6 +159,19 @@ func timelinePageBody(root []string, page pageSpec) string {
 		payload = `{"` + root[i] + `":` + payload + `}`
 	}
 	return `{"data":` + payload + `}`
+}
+
+// previewEntry is X's "Subscribe to unlock" stand-in for a subscriber-only
+// post, trimmed from the shape served live on 2026-10-21 (13 of 21 posts on
+// one monitored profile, its pinned post included): a TweetPreviewDisplay
+// whose inner tweet has an author and a teaser but no legacy body.
+func previewEntry(id string) string {
+	return fmt.Sprintf(`{"entryId":"tweet-%s","content":{"entryType":"TimelineTimelineItem","__typename":"TimelineTimelineItem",`+
+		`"itemContent":{"itemType":"TimelineTweet","__typename":"TimelineTweet","tweet_results":{"result":{`+
+		`"__typename":"TweetPreviewDisplay","cta":{"title":"Subscribe to unlock"},`+
+		`"limited_action_results":{"limited_actions":[{"action":"Reply"},{"action":"Retweet"}]},`+
+		`"tweet":{"rest_id":"%s","core":{"user_results":{"result":{"__typename":"User","rest_id":"9","core":{"screen_name":"u","name":"U"}}}},`+
+		`"created_at":"Wed Oct 21 01:27:40 +0000 2026","text":"For members only…","favorite_count":14}}}}}}`, id, id)
 }
 
 func ids(tweets []Tweet) []string {
