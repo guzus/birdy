@@ -29,6 +29,11 @@ monitoring configuration and repost relations therefore live on new
 `MonitoringOptions` and `TimelineTweet` types; the original `Options` and
 `Tweet` layouts remain unchanged.
 
+Author photos follow the same rule: `ReadProfiled` and `SearchProfiled` return
+the additive `ProfiledTweet` wrapper. The original `Author` and `Tweet` field
+sets and the existing CLI JSON output remain unchanged. An absent profile
+photo is an empty string, omitted from profiled JSON, rather than a guessed URL.
+
 Monitoring reads make partial data explicit. `pkg/tweet.Following` returns
 `Complete=true` only after a walk from the first page reaches X's end before a
 page cap stops it. Page caps return `Complete=false` and an opaque `NextCursor`;

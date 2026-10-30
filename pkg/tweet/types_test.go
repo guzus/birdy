@@ -13,6 +13,7 @@ import (
 // from becoming an accidental source break.
 var (
 	_ = Options{"", "", ""}
+	_ = Author{"", ""}
 	_ = Tweet{"", "", "", 0, 0, 0, "", "", Author{}, "", nil, nil, nil}
 )
 
@@ -133,6 +134,7 @@ func TestPublicFieldOrderIsFrozen(t *testing.T) {
 		"UserTimelineOptions": {"Limit", "Cursor", "MaxPages"},
 		"TimelinePage":        {"Tweets", "NextCursor"},
 		"TimelineTweet":       {"Tweet", "RepostedTweet"},
+		"ProfiledTweet":       {"Tweet", "AuthorProfileImageURL", "QuotedTweet", "RepostedTweet"},
 		// FullTweet's prefix is Tweet's order verbatim — that is what makes
 		// --json-full a strict superset of --json — followed by the extras.
 		"FullTweet": {
@@ -185,6 +187,7 @@ func TestPublicFieldOrderIsFrozen(t *testing.T) {
 		"UserTimelineOptions":      reflect.TypeOf(UserTimelineOptions{}),
 		"TimelinePage":             reflect.TypeOf(TimelinePage{}),
 		"TimelineTweet":            reflect.TypeOf(TimelineTweet{}),
+		"ProfiledTweet":            reflect.TypeOf(ProfiledTweet{}),
 		"FullTweet":                reflect.TypeOf(FullTweet{}),
 		"FullTimelinePage":         reflect.TypeOf(FullTimelinePage{}),
 		"SkippedPost":              reflect.TypeOf(SkippedPost{}),
@@ -249,6 +252,10 @@ func TestMonitoringStructContractsAreFrozen(t *testing.T) {
 		}},
 		"TimelineTweet": {reflect.TypeOf(TimelineTweet{}), []frozenField{
 			{"Tweet", "Tweet", ""}, {"RepostedTweet", "*Tweet", "repostedTweet,omitempty"},
+		}},
+		"ProfiledTweet": {reflect.TypeOf(ProfiledTweet{}), []frozenField{
+			{"Tweet", "Tweet", ""}, {"AuthorProfileImageURL", "string", "authorProfileImageUrl,omitempty"},
+			{"QuotedTweet", "*ProfiledTweet", "quotedTweet,omitempty"}, {"RepostedTweet", "*ProfiledTweet", "repostedTweet,omitempty"},
 		}},
 		"SkippedPost": {reflect.TypeOf(SkippedPost{}), []frozenField{
 			{"ID", "string", "id"}, {"Reason", "SkipReason", "reason"},

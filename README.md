@@ -938,6 +938,13 @@ Notes:
   `IsRepost`, `IsReply`, `IsQuote`. It is a new type, not fields on `Tweet`,
   because `Tweet` and `TimelineTweet` are frozen; `FullTweet.Tweet()` projects
   back to the frozen shape.
+- `ReadProfiled` and `SearchProfiled` return `ProfiledTweet`, which embeds
+  `Tweet` and adds `AuthorProfileImageURL` (`authorProfileImageUrl` in JSON).
+  The photo comes from the same X response, including current `avatar` and
+  legacy profile-image fields; there are no extra per-author requests.
+  Missing photos stay empty/omitted. Quoted and reposted posts use the same
+  profiled shape. Consumers should validate remote image URLs before rendering.
+  Existing `Author`, `Tweet`, and CLI JSON contracts are unchanged.
 - A timeline `Limit` is a target capped at 200, not a truncation boundary. The
   full terminal response page is returned, so the slice may exceed `Limit` but
   `NextCursor` never skips entries X over-delivered on that page.

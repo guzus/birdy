@@ -77,12 +77,12 @@ type Tweet struct {
 	// explicit avoids inferring reposts from localized display text.
 	RepostedTweet *Tweet `json:"repostedTweet,omitempty"`
 
-	// Extra public-web metrics bird's JSON contract never emitted. They stay
-	// unexported so --json remains byte-identical; scrape reads them via Metrics.
-	quoteCount    int
-	viewCount     int
-	bookmarkCount int
-	lang          string
+	// Extra metadata stays unexported so --json remains byte-identical.
+	quoteCount            int
+	viewCount             int
+	bookmarkCount         int
+	lang                  string
+	authorProfileImageURL string
 }
 
 // TweetMetrics are engagement and language fields X reports but bird omits.
@@ -92,6 +92,9 @@ type TweetMetrics struct {
 	BookmarkCount int
 	Lang          string
 }
+
+// AuthorProfileImageURL returns the photo URL carried by the tweet's author.
+func (t Tweet) AuthorProfileImageURL() string { return t.authorProfileImageURL }
 
 // Metrics returns the extra counts captured from the GraphQL payload.
 func (t Tweet) Metrics() TweetMetrics {
@@ -204,13 +207,17 @@ type tweetResult struct {
 			Result *struct {
 				RestID string `json:"rest_id"`
 				Legacy *struct {
-					ScreenName string `json:"screen_name"`
-					Name       string `json:"name"`
+					ScreenName           string `json:"screen_name"`
+					Name                 string `json:"name"`
+					ProfileImageURLHTTPS string `json:"profile_image_url_https"`
 				} `json:"legacy"`
 				Core *struct {
 					ScreenName string `json:"screen_name"`
 					Name       string `json:"name"`
 				} `json:"core"`
+				Avatar *struct {
+					ImageURL string `json:"image_url"`
+				} `json:"avatar"`
 			} `json:"result"`
 		} `json:"user_results"`
 	} `json:"core"`
@@ -325,7 +332,7 @@ func mapTweet(raw *tweetResult) (Tweet, bool) {
 		return Tweet{}, false
 	}
 
-	username, name, authorID := mapAuthor(raw)
+	username, name, authorID, profileImageURL := mapAuthor(raw)
 	if username == "" {
 		return Tweet{}, false
 	}
@@ -336,12 +343,13 @@ func mapTweet(raw *tweetResult) (Tweet, bool) {
 	}
 
 	t := Tweet{
-		ID:       raw.RestID,
-		Text:     text,
-		AuthorID: authorID,
-		Author:   Author{Username: username, Name: name},
-		Media:    extractMedia(raw),
-		Article:  extractArticleMetadata(raw),
+		ID:                    raw.RestID,
+		Text:                  text,
+		AuthorID:              authorID,
+		Author:                Author{Username: username, Name: name},
+		authorProfileImageURL: profileImageURL,
+		Media:                 extractMedia(raw),
+		Article:               extractArticleMetadata(raw),
 	}
 
 	applyTweetMetrics(&t, raw)
@@ -379,15 +387,16 @@ func mapTweetWithoutRepost(raw *tweetResult) (Tweet, bool) {
 	if raw == nil || raw.RestID == "" {
 		return Tweet{}, false
 	}
-	username, name, authorID := mapAuthor(raw)
+	username, name, authorID, profileImageURL := mapAuthor(raw)
 	text := extractText(raw)
 	if username == "" || text == "" {
 		return Tweet{}, false
 	}
 	t := Tweet{
 		ID: raw.RestID, Text: text, AuthorID: authorID,
-		Author: Author{Username: username, Name: name},
-		Media:  extractMedia(raw), Article: extractArticleMetadata(raw),
+		Author:                Author{Username: username, Name: name},
+		authorProfileImageURL: profileImageURL,
+		Media:                 extractMedia(raw), Article: extractArticleMetadata(raw),
 	}
 	applyTweetMetrics(&t, raw)
 	if depth := quoteDepth(); depth > 0 {
@@ -582,7 +591,7 @@ func mapQuoted(raw *tweetResult, depth int) *Tweet {
 		return nil
 	}
 
-	username, name, authorID := mapAuthor(inner)
+	username, name, authorID, profileImageURL := mapAuthor(inner)
 	if username == "" {
 		return nil
 	}
@@ -592,12 +601,13 @@ func mapQuoted(raw *tweetResult, depth int) *Tweet {
 	}
 
 	quoted := Tweet{
-		ID:       inner.RestID,
-		Text:     text,
-		AuthorID: authorID,
-		Author:   Author{Username: username, Name: name},
-		Media:    extractMedia(inner),
-		Article:  extractArticleMetadata(inner),
+		ID:                    inner.RestID,
+		Text:                  text,
+		AuthorID:              authorID,
+		Author:                Author{Username: username, Name: name},
+		authorProfileImageURL: profileImageURL,
+		Media:                 extractMedia(inner),
+		Article:               extractArticleMetadata(inner),
 	}
 	applyTweetMetrics(&quoted, inner)
 	quoted.QuotedTweet = mapQuoted(inner, depth-1)
@@ -619,9 +629,9 @@ func quoteDepth() int {
 }
 
 // mapAuthor reads the handle from whichever of the two shapes X returns.
-func mapAuthor(raw *tweetResult) (username, name, authorID string) {
+func mapAuthor(raw *tweetResult) (username, name, authorID, profileImageURL string) {
 	if raw.Core == nil || raw.Core.UserResults.Result == nil {
-		return "", "", ""
+		return "", "", "", ""
 	}
 	user := raw.Core.UserResults.Result
 	authorID = user.RestID
@@ -629,6 +639,7 @@ func mapAuthor(raw *tweetResult) (username, name, authorID string) {
 	if user.Legacy != nil {
 		username = user.Legacy.ScreenName
 		name = user.Legacy.Name
+		profileImageURL = user.Legacy.ProfileImageURLHTTPS
 	}
 	// Newer payloads moved these onto a nested "core" object.
 	if username == "" && user.Core != nil {
@@ -640,7 +651,10 @@ func mapAuthor(raw *tweetResult) (username, name, authorID string) {
 	if name == "" {
 		name = username
 	}
-	return username, name, authorID
+	if user.Avatar != nil && user.Avatar.ImageURL != "" {
+		profileImageURL = user.Avatar.ImageURL
+	}
+	return username, name, authorID, profileImageURL
 }
 
 func applyTweetMetrics(t *Tweet, raw *tweetResult) {
