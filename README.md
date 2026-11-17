@@ -859,6 +859,12 @@ if profile.Followers != nil {
     fmt.Println(*profile.Followers)
 }
 
+// Save profile.ID once. Subsequent one-page polls need only UserTweets.
+page, err := client.UserTimelineByID(ctx, profile.ID, tweet.UserTimelineOptions{
+    MaxPages: 1,
+})
+fmt.Println(len(page.Tweets), page.NextCursor)
+
 // A following-graph reconciliation is safe only when Complete is true.
 following, err := client.Following(ctx, "1953337039510003712", tweet.FollowingOptions{
     PageSize: 100,
@@ -916,6 +922,11 @@ Notes:
   reads `from:<handle> filter:replies` from reverse-chronological Latest Search.
   The two streams have independent cursors and should be merged by tweet ID and
   `CreatedAt`.
+- If you already store the numeric X user ID, use `UserTimelineByID` or
+  `UserTimelineFullByID` to skip the handle lookup on each poll. Both check
+  the outer author ID on every returned post, so a saved ID follows the same
+  account through a rename. Pass the page's `NextCursor` in `Cursor` to resume.
+  The handle methods continue to interpret all-digit handles as handles.
 - Timeline results use `TimelineTweet`, which embeds the frozen `Tweet` type and
   adds `RepostedTweet` only on this new monitoring surface. Existing unkeyed
   `Tweet` literals therefore continue to compile unchanged.
@@ -934,6 +945,8 @@ Notes:
   `unreadable` for any other shape birdy cannot read). `NextCursor` resumes
   after skipped posts too, so record them. Any other malformed quote or
   repost relation still fails the read.
+  `UserTimelineByIDSkippingUnreadable` and `UserTimelineFullByIDSkippingUnreadable`
+  apply the same policy when polling by ID.
 - `ReadFull`, `SearchFull` and `UserTimelineFull` return `FullTweet` — the
   `--json-full` view: `Tweet`'s fields in `Tweet`'s order, then `URL`,
   `CreatedAtISO`, `ViewCount`, `QuoteCount`, `BookmarkCount`, `Lang`,

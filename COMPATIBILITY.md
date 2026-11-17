@@ -46,15 +46,18 @@ limits. The terminal X response page is returned in full, so the result can
 exceed `Limit`, and `NextCursor` then resumes after every returned entry instead
 of skipping an over-delivered suffix. `UserTimeline` is the Posts stream;
 `UserReplies` is a separate Latest Search stream with an independent cursor.
+`UserTimelineByID` and `UserTimelineFullByID` take a positive decimal X user
+ID in canonical form. They use the same page and cursor semantics as their
+handle counterparts and verify the outer author ID of each returned post.
+The handle methods still resolve numeric screen names through X's handle lookup.
 Missing collection roots fail closed and are not interpreted as empty data.
 `ReadPost` applies the same strict monitoring relation mapper to one TweetDetail
 read: reply, quote, and repost relations are preserved, while a present but
 malformed relation returns an error. Legacy `Read` retains its existing shape
-and permissive relation behavior. `UserTimelineSkippingUnreadable` and
-`UserTimelineFullSkippingUnreadable` are the only timeline reads that leave a
-post out: a subscriber-only preview, a post that quotes or reposts one or a
-post X will not show, or a post whose own author or text cannot be read is
-listed in `Skipped` with its reason instead of failing the read, and
+and permissive relation behavior. The `SkippingUnreadable` variants for both
+handle and ID reads can leave a post out. They list subscriber-only previews,
+posts that quote or repost a preview or an unavailable post, and posts with
+unreadable authors or text in `Skipped`. Each entry carries a reason, and
 `NextCursor` resumes past it. Their
 result types embed the frozen pages rather than adding fields to them. A
 preview is never returned as a post, even if its teaser carries text.

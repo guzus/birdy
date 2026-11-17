@@ -133,7 +133,17 @@ func (c *Client) SearchFull(ctx context.Context, query string, count int) ([]Ful
 // UserTimelineFull is UserTimeline with enriched entries. Paging, limits and
 // the author check are identical.
 func (c *Client) UserTimelineFull(ctx context.Context, handle string, opts UserTimelineOptions) (FullTimelinePage, error) {
-	tweets, cursor, err := c.userTimelineRaw(ctx, handle, opts, nil)
+	return c.userTimelineFull(ctx, timelineAuthor{value: handle}, opts)
+}
+
+// UserTimelineFullByID returns enriched posts by numeric user ID.
+// It sends the ID directly to X and checks the outer author ID of every returned post.
+func (c *Client) UserTimelineFullByID(ctx context.Context, userID string, opts UserTimelineOptions) (FullTimelinePage, error) {
+	return c.userTimelineFull(ctx, timelineAuthor{value: userID, byID: true}, opts)
+}
+
+func (c *Client) userTimelineFull(ctx context.Context, author timelineAuthor, opts UserTimelineOptions) (FullTimelinePage, error) {
+	tweets, cursor, err := c.userTimelineRaw(ctx, author, opts, nil)
 	if err != nil {
 		return FullTimelinePage{}, err
 	}
@@ -150,8 +160,18 @@ type SkippingFullTimelinePage struct {
 // UserTimelineFullSkippingUnreadable is UserTimelineSkippingUnreadable with
 // enriched entries.
 func (c *Client) UserTimelineFullSkippingUnreadable(ctx context.Context, handle string, opts UserTimelineOptions) (SkippingFullTimelinePage, error) {
+	return c.userTimelineFullSkippingUnreadable(ctx, timelineAuthor{value: handle}, opts)
+}
+
+// UserTimelineFullByIDSkippingUnreadable returns enriched posts by numeric user ID with per-call skip reporting.
+// It sends the ID directly to X and checks the outer author ID of every returned post.
+func (c *Client) UserTimelineFullByIDSkippingUnreadable(ctx context.Context, userID string, opts UserTimelineOptions) (SkippingFullTimelinePage, error) {
+	return c.userTimelineFullSkippingUnreadable(ctx, timelineAuthor{value: userID, byID: true}, opts)
+}
+
+func (c *Client) userTimelineFullSkippingUnreadable(ctx context.Context, author timelineAuthor, opts UserTimelineOptions) (SkippingFullTimelinePage, error) {
 	var skipped []xapi.SkippedPost
-	tweets, cursor, err := c.userTimelineRaw(ctx, handle, opts, &skipped)
+	tweets, cursor, err := c.userTimelineRaw(ctx, author, opts, &skipped)
 	if err != nil {
 		return SkippingFullTimelinePage{}, err
 	}

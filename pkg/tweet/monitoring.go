@@ -3,6 +3,7 @@ package tweet
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/guzus/birdy/internal/xapi"
@@ -65,7 +66,17 @@ func (c *Client) ReadPost(ctx context.Context, ref string) (*TimelineTweet, erro
 // The terminal response page is never truncated, so Tweets may exceed Limit
 // and NextCursor always resumes after every returned entry.
 func (c *Client) UserTimeline(ctx context.Context, handle string, opts UserTimelineOptions) (TimelinePage, error) {
-	tweets, cursor, err := c.userTimelineRaw(ctx, handle, opts, nil)
+	return c.userTimeline(ctx, timelineAuthor{value: handle}, opts)
+}
+
+// UserTimelineByID returns posts by the account with this numeric X user ID.
+// It sends the ID directly to X and checks the outer author ID of every returned post.
+func (c *Client) UserTimelineByID(ctx context.Context, userID string, opts UserTimelineOptions) (TimelinePage, error) {
+	return c.userTimeline(ctx, timelineAuthor{value: userID, byID: true}, opts)
+}
+
+func (c *Client) userTimeline(ctx context.Context, author timelineAuthor, opts UserTimelineOptions) (TimelinePage, error) {
+	tweets, cursor, err := c.userTimelineRaw(ctx, author, opts, nil)
 	if err != nil {
 		return TimelinePage{}, err
 	}
@@ -135,8 +146,18 @@ type SkippingTimelinePage struct {
 // fails the call. The choice is per call, so strict and skipping reads can
 // share one Client concurrently without seeing each other's skips.
 func (c *Client) UserTimelineSkippingUnreadable(ctx context.Context, handle string, opts UserTimelineOptions) (SkippingTimelinePage, error) {
+	return c.userTimelineSkippingUnreadable(ctx, timelineAuthor{value: handle}, opts)
+}
+
+// UserTimelineByIDSkippingUnreadable returns posts by numeric user ID with the same skip reporting as UserTimelineSkippingUnreadable.
+// It sends the ID directly to X and checks the outer author ID of every returned post.
+func (c *Client) UserTimelineByIDSkippingUnreadable(ctx context.Context, userID string, opts UserTimelineOptions) (SkippingTimelinePage, error) {
+	return c.userTimelineSkippingUnreadable(ctx, timelineAuthor{value: userID, byID: true}, opts)
+}
+
+func (c *Client) userTimelineSkippingUnreadable(ctx context.Context, author timelineAuthor, opts UserTimelineOptions) (SkippingTimelinePage, error) {
 	var skipped []xapi.SkippedPost
-	tweets, cursor, err := c.userTimelineRaw(ctx, handle, opts, &skipped)
+	tweets, cursor, err := c.userTimelineRaw(ctx, author, opts, &skipped)
 	if err != nil {
 		return SkippingTimelinePage{}, err
 	}
@@ -146,18 +167,32 @@ func (c *Client) UserTimelineSkippingUnreadable(ctx context.Context, handle stri
 	}, nil
 }
 
+type timelineAuthor struct {
+	value string
+	byID  bool
+}
+
 // userTimelineRaw is the fetch behind UserTimeline, UserTimelineFull and their
 // skipping variants: the same limits, paging, and author check, before any
 // public shape is built. A non-nil skipped opts this call into skipping
 // unreadable posts and receives them; nil keeps the strict read.
-func (c *Client) userTimelineRaw(ctx context.Context, handle string, opts UserTimelineOptions, skipped *[]xapi.SkippedPost) ([]xapi.Tweet, string, error) {
+func (c *Client) userTimelineRaw(ctx context.Context, author timelineAuthor, opts UserTimelineOptions, skipped *[]xapi.SkippedPost) ([]xapi.Tweet, string, error) {
 	limit, err := timelineLimit(opts)
 	if err != nil {
 		return nil, "", err
 	}
-	normalized, ok := xapi.ValidHandle(handle)
-	if !ok {
-		return nil, "", fmt.Errorf("invalid timeline author handle %q", handle)
+	if author.byID {
+		author.value = strings.TrimSpace(author.value)
+		id, err := strconv.ParseUint(author.value, 10, 64)
+		if err != nil || id == 0 || strconv.FormatUint(id, 10) != author.value {
+			return nil, "", fmt.Errorf("invalid timeline user ID %q", author.value)
+		}
+	} else {
+		handle, ok := xapi.ValidHandle(author.value)
+		if !ok {
+			return nil, "", fmt.Errorf("invalid timeline author handle %q", author.value)
+		}
+		author.value = handle
 	}
 
 	var (
@@ -165,29 +200,28 @@ func (c *Client) userTimelineRaw(ctx context.Context, handle string, opts UserTi
 		cursor string
 	)
 	err = c.withAccount(ctx, func(ctx context.Context, api *xapi.Client) error {
-		var (
-			page    []xapi.Tweet
-			next    string
-			dropped []xapi.SkippedPost
-			err     error
-		)
-		if skipped != nil {
-			page, next, dropped, err = api.UserTweetsPageAlignedSkipping(ctx, handle, limit, strings.TrimSpace(opts.Cursor), opts.MaxPages)
-		} else {
-			page, next, err = api.UserTweetsPageAlignedFrom(ctx, handle, limit, strings.TrimSpace(opts.Cursor), opts.MaxPages)
+		id := author.value
+		if !author.byID {
+			user, err := api.UserByScreenName(ctx, author.value)
+			if err != nil {
+				return err
+			}
+			id = user.ID
 		}
+		page, next, err := api.UserTweetsPageAlignedByID(ctx, id, limit, opts.Cursor, opts.MaxPages, skipped)
 		if err != nil {
 			return err
 		}
 		for _, post := range page {
-			if !strings.EqualFold(post.Author.Username, normalized) {
-				return fmt.Errorf("user timeline returned tweet %s by @%s while tracking @%s", post.ID, post.Author.Username, normalized)
+			if author.byID {
+				if post.AuthorID != id {
+					return fmt.Errorf("user timeline returned tweet %s with author ID %q while tracking user ID %q", post.ID, post.AuthorID, id)
+				}
+			} else if !strings.EqualFold(post.Author.Username, author.value) {
+				return fmt.Errorf("user timeline returned tweet %s by @%s while tracking @%s", post.ID, post.Author.Username, author.value)
 			}
 		}
 		tweets, cursor = page, next
-		if skipped != nil {
-			*skipped = dropped
-		}
 		return nil
 	})
 	if err != nil {

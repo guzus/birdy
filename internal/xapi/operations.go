@@ -173,13 +173,13 @@ func (c *Client) UserTweets(ctx context.Context, handle string, count int) ([]Tw
 // UserTweetsFrom returns recent tweets starting at cursor. maxPages bounds the
 // requests made; zero retains UserTweets' ten-page safety cap.
 func (c *Client) UserTweetsFrom(ctx context.Context, handle string, count int, cursor string, maxPages int) ([]Tweet, string, error) {
-	return c.userTimelineFrom(ctx, opUserTweets, handle, count, cursor, maxPages, false, nil)
+	return c.userTimelineFrom(ctx, handle, count, cursor, maxPages, false, nil)
 }
 
 // UserTweetsPageAlignedFrom walks the posts timeline without truncating the
 // terminal response page, so its returned cursor cannot skip entries.
 func (c *Client) UserTweetsPageAlignedFrom(ctx context.Context, handle string, count int, cursor string, maxPages int) ([]Tweet, string, error) {
-	return c.userTimelineFrom(ctx, opUserTweets, handle, count, cursor, maxPages, true, nil)
+	return c.userTimelineFrom(ctx, handle, count, cursor, maxPages, true, nil)
 }
 
 // UserTweetsPageAlignedSkipping is UserTweetsPageAlignedFrom for a caller that
@@ -191,19 +191,29 @@ func (c *Client) UserTweetsPageAlignedFrom(ctx context.Context, handle string, c
 // without an id, still fail the call.
 func (c *Client) UserTweetsPageAlignedSkipping(ctx context.Context, handle string, count int, cursor string, maxPages int) ([]Tweet, string, []SkippedPost, error) {
 	var skipped []SkippedPost
-	tweets, next, err := c.userTimelineFrom(ctx, opUserTweets, handle, count, cursor, maxPages, true, &skipped)
+	tweets, next, err := c.userTimelineFrom(ctx, handle, count, cursor, maxPages, true, &skipped)
 	if err != nil {
 		return nil, "", nil, err
 	}
 	return tweets, next, skipped, nil
 }
 
-func (c *Client) userTimelineFrom(ctx context.Context, op timelineOp, handle string, count int, cursor string, maxPages int, fullPages bool, skipped *[]SkippedPost) ([]Tweet, string, error) {
+func (c *Client) userTimelineFrom(ctx context.Context, handle string, count int, cursor string, maxPages int, fullPages bool, skipped *[]SkippedPost) ([]Tweet, string, error) {
 	user, err := c.UserByScreenName(ctx, handle)
 	if err != nil {
 		return nil, "", err
 	}
 
+	return c.userTimelineByID(ctx, user.ID, count, cursor, maxPages, fullPages, skipped)
+}
+
+// UserTweetsPageAlignedByID walks the Posts timeline for a resolved user ID.
+// A non-nil skipped slice enables per-call reporting of unreadable posts.
+func (c *Client) UserTweetsPageAlignedByID(ctx context.Context, userID string, count int, cursor string, maxPages int, skipped *[]SkippedPost) ([]Tweet, string, error) {
+	return c.userTimelineByID(ctx, userID, count, cursor, maxPages, true, skipped)
+}
+
+func (c *Client) userTimelineByID(ctx context.Context, userID string, count int, cursor string, maxPages int, fullPages bool, skipped *[]SkippedPost) ([]Tweet, string, error) {
 	// bird: effectiveMaxPages = min(10, ceil(limit / 20)). Preserve that
 	// behavior for the legacy, truncating surface. Page-aligned monitoring may
 	// need extra explicitly-budgeted pages when X returns only duplicates or
@@ -213,7 +223,7 @@ func (c *Client) userTimelineFrom(ctx context.Context, op timelineOp, handle str
 		maxPages = requestedPages
 	}
 
-	return c.pagedTimeline(ctx, op, pagedOptions{
+	return c.pagedTimeline(ctx, opUserTweets, pagedOptions{
 		limit:     count,
 		maxPages:  maxPages,
 		cursor:    strings.TrimSpace(cursor),
@@ -222,7 +232,7 @@ func (c *Client) userTimelineFrom(ctx context.Context, op timelineOp, handle str
 		skipped:   skipped,
 		variables: func(pageCount int, cursor string) map[string]any {
 			return withCursor(map[string]any{
-				"userId": user.ID,
+				"userId": userID,
 				"count":  pageCount,
 				// Profile monitoring must not admit promoted/foreign authors.
 				// bird likewise sends includePromotedContent:false here.
@@ -542,15 +552,13 @@ func (c *Client) pagedTimeline(ctx context.Context, op timelineOp, o pagedOption
 	if o.skipped != nil {
 		// A post skipped on one page but returned readable on another was not
 		// left out, so it must not be reported as if it were.
-		kept := make([]SkippedPost, 0, len(skipped))
+		var kept []SkippedPost
 		for _, s := range skipped {
 			if !seen[s.ID] {
 				kept = append(kept, s)
 			}
 		}
-		if len(kept) > 0 {
-			*o.skipped = kept
-		}
+		*o.skipped = kept
 	}
 	return tweets, nextCursor, nil
 }
