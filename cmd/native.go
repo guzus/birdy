@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -58,6 +59,13 @@ var defaultCounts = map[string]int{
 	"news":     10,
 }
 
+func nativeCommandName(name string) string {
+	if name == "trending" {
+		return "news"
+	}
+	return name
+}
+
 // nativeSupports reports whether a command has a native implementation.
 func nativeSupports(command string) bool {
 	_, ok := nativeCommands[command]
@@ -78,6 +86,7 @@ func useBird() bool {
 
 // nativeArgs is the parsed argument set shared by the native commands.
 type nativeArgs struct {
+	stderr io.Writer
 	// positional is the first non-flag argument: a tweet id/url, handle, query,
 	// or list id depending on the command.
 	positional string
@@ -107,7 +116,12 @@ type nativeArgs struct {
 	latest bool
 	// user is what --user carried. followers/following take a numeric account
 	// id here; mentions takes a handle. The commands interpret it themselves.
-	user string
+	user      string
+	userSet   bool
+	all       bool
+	cursor    string
+	maxPages  int
+	pagingErr error
 	// memberOf switches `lists` from owned lists to memberships.
 	memberOf bool
 	// types is `activity`'s --types selector.
@@ -162,6 +176,27 @@ func parseNativeArgs(args []string) nativeArgs {
 			// Accepted for compatibility; native output is never colorized.
 		case arg == "--latest":
 			parsed.latest = true
+		case arg == "--all":
+			parsed.all = true
+		case flagName(arg) == "--max-pages" || flagName(arg) == "--cursor":
+			name, value, inline := splitFlag(arg)
+			if !inline && i+1 < len(args) && !strings.HasPrefix(args[i+1], "--") {
+				i++
+				value = args[i]
+			}
+			switch name {
+			case "--max-pages":
+				n, err := strconv.Atoi(value)
+				if err != nil || n < 1 {
+					parsed.pagingErr = fmt.Errorf("Invalid --max-pages. Expected a positive integer.")
+				}
+				parsed.maxPages = n
+			case "--cursor":
+				if value == "" {
+					parsed.pagingErr = fmt.Errorf("--cursor requires a value")
+				}
+				parsed.cursor = value
+			}
 		case arg == "--member-of":
 			parsed.memberOf = true
 		case arg == "--ai-only":
@@ -177,28 +212,34 @@ func parseNativeArgs(args []string) nativeArgs {
 			parsed.types = arg[len("--types="):]
 		case arg == "--user" || arg == "-u":
 			if i+1 < len(args) {
+				parsed.userSet = true
 				parsed.user = args[i+1]
 				i++
 			}
 		case strings.HasPrefix(arg, "--user="):
+			parsed.userSet = true
 			parsed.user = arg[len("--user="):]
 		case strings.HasPrefix(arg, "-u="):
+			parsed.userSet = true
 			parsed.user = arg[len("-u="):]
 		case arg == "-n" || arg == "--count" || arg == "--limit":
 			if i+1 < len(args) {
 				parsed.count, parsed.countSet, parsed.countErr = parseCount(args[i+1])
 				i++
 			}
-		case strings.HasPrefix(arg, "--count=") || strings.HasPrefix(arg, "--limit="):
+		case strings.HasPrefix(arg, "--count=") || strings.HasPrefix(arg, "--limit=") || strings.HasPrefix(arg, "-n="):
 			parsed.count, parsed.countSet, parsed.countErr = parseCount(arg[strings.IndexByte(arg, '=')+1:])
-		case strings.HasPrefix(arg, "-"):
+		case arg == "--":
+			parsed.positionals = append(parsed.positionals, args[i+1:]...)
+			i = len(args)
+		case strings.HasPrefix(arg, "-") && arg != "-":
 			// Ignored here; nativeAcceptsFlags rejects the command first.
 		default:
-			if parsed.positional == "" {
-				parsed.positional = arg
-			}
 			parsed.positionals = append(parsed.positionals, arg)
 		}
+	}
+	if len(parsed.positionals) > 0 {
+		parsed.positional = parsed.positionals[0]
 	}
 	return parsed
 }
@@ -372,8 +413,8 @@ var commandExtraFlags = map[string]map[string]bool{
 	// else, and bird has no such flag at all, so accepting it elsewhere meant
 	// silently ignoring a flag the user passed deliberately.
 	"home":      {"--latest": true},
-	"followers": {"--user": true},
-	"following": {"--user": true},
+	"followers": {"--user": true, "--all": true, "--max-pages": true, "--cursor": true},
+	"following": {"--user": true, "--all": true, "--max-pages": true, "--cursor": true},
 	// mentions also takes --user, but as a handle rather than a numeric id.
 	"mentions": {"--user": true, "-u": true},
 	"lists":    {"--member-of": true},
@@ -388,7 +429,7 @@ var commandExtraFlags = map[string]map[string]bool{
 // mistaken for a flag in its own right.
 var flagsTakingValue = map[string]bool{
 	"-n": true, "--count": true, "--limit": true, "--user": true, "-u": true,
-	"--types":     true,
+	"--types": true, "--max-pages": true, "--cursor": true,
 	"--min-likes": true, "--min-retweets": true, "--min-views": true, "--since": true,
 }
 
@@ -431,6 +472,9 @@ func nativeAcceptsFlags(command string, args []string) bool {
 	extra := commandExtraFlags[command]
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
+		if arg == "--" {
+			return true
+		}
 		if !strings.HasPrefix(arg, "-") || arg == "-" {
 			continue
 		}
@@ -444,15 +488,20 @@ func nativeAcceptsFlags(command string, args []string) bool {
 		if unsupported[name] {
 			return false
 		}
-		if flagsTakingValue[name] && !strings.Contains(arg, "=") {
-			i++ // skip the value
+		if strings.Contains(arg, "=") {
+			if !flagsTakingValue[name] {
+				return false
+			}
+		} else if flagsTakingValue[name] {
+			i++
+			if i == len(args) {
+				return false
+			}
 		}
 	}
 	return true
 }
 
-// runNative executes a command against X directly. The account has already been
-// selected by the caller, so no rotation happens here.
 func init() {
 	// Surface entries the native parser skipped so a thinner-than-expected
 	// page is explainable from the log, without failing the command.
@@ -461,7 +510,12 @@ func init() {
 	}
 }
 
-func runNative(ctx context.Context, account *store.Account, command string, args []string, out io.Writer) error {
+func (route commandCapture) runNative(ctx context.Context, account *store.Account, argv []string, out, errOut io.Writer) error {
+	command, args := argv[0], argv[1:]
+	if helpRequested(args) {
+		renderNativeHelp(out, birdCommandHelp[command])
+		return nil
+	}
 	handler, ok := nativeCommands[command]
 	if !ok {
 		return fmt.Errorf("no native implementation for %q", command)
@@ -479,27 +533,34 @@ func runNative(ctx context.Context, account *store.Account, command string, args
 	// The skipped id is reported via MalformedEntryHook (see init above).
 	client.SetSkipUnreadablePosts(true)
 
-	// --vpn routes this invocation through the configured SOCKS5 exit.
-	//
-	// This has to happen here rather than in passthrough.go, where the bird-era
-	// setup lives: that code runs after the native dispatch has already
-	// returned, so once every command became native, --vpn silently stopped
-	// doing anything. A routing flag that is a no-op is worse than one that
-	// errors — the caller believes their egress IP changed when it did not.
-	if vpnFlag || vpnServerFlag != "" {
-		dial, err := vpnDialer(os.Stderr)
-		if err != nil {
-			return err
-		}
-		client.SetDialContext(dial)
+	if route.dial != nil {
+		client.SetDialContext(route.dial)
 	}
 
 	parsed := parseNativeArgs(args)
+	parsed.stderr = errOut
 	if parsed.countErr != nil {
+		if command == "user-tweets" {
+			return nativeUsageError(parsed.countErr.Error())
+		}
 		return parsed.countErr
 	}
 	if parsed.filterErr != nil {
 		return parsed.filterErr
+	}
+	// Commander rejects surplus operands before invoking a command. Especially
+	// for writes, never act on a truncated request.
+	maxArgs := 0
+	switch command {
+	case "unbookmark":
+		maxArgs = len(parsed.positionals)
+	case "reply":
+		maxArgs = 2
+	case "tweet", "follow", "unfollow", "read", "thread", "replies", "search", "user-tweets", "list-timeline", "about", "activity":
+		maxArgs = 1
+	}
+	if len(parsed.positionals) > maxArgs {
+		return fmt.Errorf("%s: too many arguments (expected %d, got %d)", command, maxArgs, len(parsed.positionals))
 	}
 	parsed.command = command
 	parsed.authToken = account.AuthToken
@@ -604,16 +665,20 @@ func nativeHome(ctx context.Context, c *xapi.Client, args nativeArgs, out io.Wri
 // cap before making any request, and prints a resume hint to stderr. All three
 // are reachable from a plain `-n`, with no paging flag involved.
 func nativeUserTweets(ctx context.Context, c *xapi.Client, args nativeArgs, out io.Writer) error {
-	if args.positional == "" {
+	if args.positional == "" && len(args.positionals) == 0 {
 		return fmt.Errorf("user-tweets: missing username")
 	}
 	// Validated before the network call, exactly where bird validates it.
 	if args.count > userTweetsMaxCount {
-		return fmt.Errorf("Invalid --count. Max %d tweets per run (safety cap: %d pages). Use --cursor to continue.",
-			userTweetsMaxCount, userTweetsMaxCount/userTweetsPageSize)
+		return nativeUsageError(fmt.Sprintf("Invalid --count. Max %d tweets per run (safety cap: %d pages). Use --cursor to continue.",
+			userTweetsMaxCount, userTweetsMaxCount/userTweetsPageSize))
 	}
 
-	tweets, nextCursor, err := c.UserTweets(ctx, args.positional, args.count)
+	handle, ok := cliHandle(args.positional)
+	if !ok {
+		return nativeUsageError("Invalid handle: " + args.positional)
+	}
+	tweets, nextCursor, err := c.UserTweets(ctx, handle, args.count)
 	if err != nil {
 		return err
 	}
@@ -639,7 +704,7 @@ func nativeUserTweets(ctx context.Context, c *xapi.Client, args nativeArgs, out 
 		return err
 	}
 	if !args.json && nextCursor != "" {
-		fmt.Fprintf(nativeStderr, "%s More tweets available. Use --cursor %q to continue.\n",
+		fmt.Fprintf(args.stderr, "%s More tweets available. Use --cursor %q to continue.\n",
 			status("info", "ℹ️", "Info:", args), nextCursor)
 	}
 	return nil
@@ -666,10 +731,6 @@ type fullTweetsEnvelope struct {
 	NextCursor *string          `json:"nextCursor"`
 }
 
-// nativeStderr is where the native commands write bird's stderr-only notes.
-// Indirected so tests can capture them without touching the process's stderr.
-var nativeStderr io.Writer = os.Stderr
-
 func nativeBookmarks(ctx context.Context, c *xapi.Client, args nativeArgs, out io.Writer) error {
 	tweets, err := c.Bookmarks(ctx, args.count)
 	if err != nil {
@@ -678,11 +739,19 @@ func nativeBookmarks(ctx context.Context, c *xapi.Client, args nativeArgs, out i
 	return renderTweets(out, tweets, args)
 }
 
+var birdListURL = regexp.MustCompile(`(?i)(?:twitter\.com|x\.com)/i/lists/(\d+)`)
+
 func nativeListTimeline(ctx context.Context, c *xapi.Client, args nativeArgs, out io.Writer) error {
-	if args.positional == "" {
+	if args.positional == "" && len(args.positionals) == 0 {
 		return fmt.Errorf("list-timeline: missing list id")
 	}
-	tweets, err := c.ListTimeline(ctx, args.positional, args.count)
+	id := strings.TrimSpace(args.positional)
+	if match := birdListURL.FindStringSubmatch(id); match != nil {
+		id = match[1]
+	} else if len(id) < 5 || !onlyDigits.MatchString(id) {
+		return nativeUsageError("Invalid list ID or URL. Expected numeric ID or https://x.com/i/lists/<id>.")
+	}
+	tweets, err := c.ListTimeline(ctx, id, args.count)
 	if err != nil {
 		return err
 	}

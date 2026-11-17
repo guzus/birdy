@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -82,7 +83,7 @@ func decodeError(t *testing.T, resp *http.Response) errorResponse {
 func TestRunRoundTrip(t *testing.T) {
 	var gotArgs []string
 	hs, _, teardown := newTestServer(t, Config{
-		Run: func(_ *store.Account, args []string) (int, string, string, error) {
+		Run: func(_ context.Context, _ *store.Account, args []string) (int, string, string, error) {
 			gotArgs = args
 			return 0, "hello", "world", nil
 		},
@@ -109,12 +110,33 @@ func TestRunRoundTrip(t *testing.T) {
 	}
 }
 
+func TestRunCancelsActiveCommand(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	_, srv, teardown := newTestServer(t, Config{
+		Run: func(commandCtx context.Context, _ *store.Account, _ []string) (int, string, string, error) {
+			cancel()
+			if commandCtx.Err() != context.Canceled {
+				t.Fatal("command did not observe request cancellation")
+			}
+			return 1, "", "", commandCtx.Err()
+		},
+	})
+	defer teardown()
+	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/run", strings.NewReader(`{"args":["read","123"]}`))
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	if ctx.Err() == nil {
+		t.Fatal("command never started")
+	}
+}
+
 // TestRunRoundTripPropagatesNonZeroExit verifies the daemon returns
 // HTTP 200 with the bird exit code in the JSON body, mirroring how
 // `multi-fetch` and the API command surface non-zero exits.
 func TestRunRoundTripPropagatesNonZeroExit(t *testing.T) {
 	hs, _, teardown := newTestServer(t, Config{
-		Run: func(_ *store.Account, _ []string) (int, string, string, error) {
+		Run: func(_ context.Context, _ *store.Account, _ []string) (int, string, string, error) {
 			return 7, "", "boom", nil
 		},
 	})
@@ -134,7 +156,7 @@ func TestRunRoundTripPropagatesNonZeroExit(t *testing.T) {
 // (Distinct from a non-zero exit code, which is success at the HTTP layer.)
 func TestRunRunnerError(t *testing.T) {
 	hs, _, teardown := newTestServer(t, Config{
-		Run: func(_ *store.Account, _ []string) (int, string, string, error) {
+		Run: func(_ context.Context, _ *store.Account, _ []string) (int, string, string, error) {
 			return 0, "", "", fmt.Errorf("bird CLI not found")
 		},
 	})
@@ -153,7 +175,7 @@ func TestRunRunnerError(t *testing.T) {
 // TestRunBadJSON confirms a malformed body returns 400.
 func TestRunBadJSON(t *testing.T) {
 	hs, _, teardown := newTestServer(t, Config{
-		Run: func(_ *store.Account, _ []string) (int, string, string, error) {
+		Run: func(_ context.Context, _ *store.Account, _ []string) (int, string, string, error) {
 			t.Fatal("runner should not be called on bad JSON")
 			return 0, "", "", nil
 		},
@@ -180,7 +202,7 @@ func TestRunEmptyArgs(t *testing.T) {
 	for _, in := range cases {
 		t.Run(in, func(t *testing.T) {
 			hs, _, teardown := newTestServer(t, Config{
-				Run: func(_ *store.Account, _ []string) (int, string, string, error) {
+				Run: func(_ context.Context, _ *store.Account, _ []string) (int, string, string, error) {
 					t.Fatal("runner should not be called on empty args")
 					return 0, "", "", nil
 				},
@@ -202,7 +224,7 @@ func TestRunEmptyArgs(t *testing.T) {
 // TestRunMethodNotAllowed confirms /run only accepts POST.
 func TestRunMethodNotAllowed(t *testing.T) {
 	hs, _, teardown := newTestServer(t, Config{
-		Run: func(_ *store.Account, _ []string) (int, string, string, error) {
+		Run: func(_ context.Context, _ *store.Account, _ []string) (int, string, string, error) {
 			return 0, "", "", nil
 		},
 	})
@@ -235,7 +257,7 @@ func TestConcurrencyCap(t *testing.T) {
 
 	hs, _, teardown := newTestServer(t, Config{
 		Concurrency: cap_,
-		Run: func(_ *store.Account, _ []string) (int, string, string, error) {
+		Run: func(_ context.Context, _ *store.Account, _ []string) (int, string, string, error) {
 			mu.Lock()
 			inFlight++
 			if inFlight > maxInFlight {
@@ -296,7 +318,7 @@ func TestCacheHitAndMiss(t *testing.T) {
 	var calls atomic.Int64
 	hs, srv, teardown := newTestServer(t, Config{
 		CacheTTL: 30 * time.Second,
-		Run: func(_ *store.Account, _ []string) (int, string, string, error) {
+		Run: func(_ context.Context, _ *store.Account, _ []string) (int, string, string, error) {
 			calls.Add(1)
 			return 0, "first", "", nil
 		},
@@ -347,7 +369,7 @@ func TestCacheExpires(t *testing.T) {
 	var calls atomic.Int64
 	hs, srv, teardown := newTestServer(t, Config{
 		CacheTTL: 5 * time.Second,
-		Run: func(_ *store.Account, _ []string) (int, string, string, error) {
+		Run: func(_ context.Context, _ *store.Account, _ []string) (int, string, string, error) {
 			calls.Add(1)
 			return 0, "x", "", nil
 		},
@@ -375,7 +397,7 @@ func TestCacheDisabled(t *testing.T) {
 	var calls atomic.Int64
 	hs, srv, teardown := newTestServer(t, Config{
 		CacheTTL: 0,
-		Run: func(_ *store.Account, _ []string) (int, string, string, error) {
+		Run: func(_ context.Context, _ *store.Account, _ []string) (int, string, string, error) {
 			calls.Add(1)
 			return 0, "ok", "", nil
 		},
@@ -403,7 +425,7 @@ func TestCacheDoesNotStoreFailure(t *testing.T) {
 	var calls atomic.Int64
 	hs, _, teardown := newTestServer(t, Config{
 		CacheTTL: 30 * time.Second,
-		Run: func(_ *store.Account, _ []string) (int, string, string, error) {
+		Run: func(_ context.Context, _ *store.Account, _ []string) (int, string, string, error) {
 			calls.Add(1)
 			return 1, "", "rate limited", nil
 		},
@@ -427,7 +449,7 @@ func TestHealthShape(t *testing.T) {
 	hs, _, teardown := newTestServer(t, Config{
 		AccountCount: func() int { return 3 },
 		CacheTTL:     30 * time.Second,
-		Run: func(_ *store.Account, _ []string) (int, string, string, error) {
+		Run: func(_ context.Context, _ *store.Account, _ []string) (int, string, string, error) {
 			return 0, "ok", "", nil
 		},
 	})
@@ -477,7 +499,9 @@ func TestHealthShape(t *testing.T) {
 // TestHealthMethodNotAllowed verifies /health rejects POST.
 func TestHealthMethodNotAllowed(t *testing.T) {
 	hs, _, teardown := newTestServer(t, Config{
-		Run: func(_ *store.Account, _ []string) (int, string, string, error) { return 0, "", "", nil },
+		Run: func(_ context.Context, _ *store.Account, _ []string) (int, string, string, error) {
+			return 0, "", "", nil
+		},
 	})
 	defer teardown()
 
@@ -497,7 +521,7 @@ func TestPickAccountError(t *testing.T) {
 		PickAccount: func(_ []string) (*store.Account, error) {
 			return nil, fmt.Errorf("no writable accounts")
 		},
-		Run: func(_ *store.Account, _ []string) (int, string, string, error) {
+		Run: func(_ context.Context, _ *store.Account, _ []string) (int, string, string, error) {
 			t.Fatal("runner should not be called when pick fails")
 			return 0, "", "", nil
 		},
@@ -533,7 +557,9 @@ func TestNewServerValidatesConfig(t *testing.T) {
 		{
 			name: "missing PickAccount",
 			cfg: Config{
-				Run:          func(_ *store.Account, _ []string) (int, string, string, error) { return 0, "", "", nil },
+				Run: func(_ context.Context, _ *store.Account, _ []string) (int, string, string, error) {
+					return 0, "", "", nil
+				},
 				AccountCount: func() int { return 0 },
 			},
 			want: "PickAccount",
@@ -541,7 +567,9 @@ func TestNewServerValidatesConfig(t *testing.T) {
 		{
 			name: "missing AccountCount",
 			cfg: Config{
-				Run:         func(_ *store.Account, _ []string) (int, string, string, error) { return 0, "", "", nil },
+				Run: func(_ context.Context, _ *store.Account, _ []string) (int, string, string, error) {
+					return 0, "", "", nil
+				},
 				PickAccount: func(_ []string) (*store.Account, error) { return stubAccount(), nil },
 			},
 			want: "AccountCount",

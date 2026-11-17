@@ -171,9 +171,12 @@ The Chrome harness keeps its separate fixed, no-tools backend policy.
 
 Command traffic is limited to 60 operations per minute per IP; a batch is
 charged once per operation. Chat is limited to 20 requests per minute per IP.
-At most eight bird subprocesses run concurrently across command endpoints.
-For commands, HTTP `200` means the process ran; inspect `exit_code` for command
-success. For chat, HTTP `200` can still contain an SSE `error` before `done`.
+Both command endpoints return the same native output as the CLI, including
+Birdy’s enriched tweet fields for `--json-full` and its own `query-ids` report.
+The two command endpoints share eight execution slots. Supported commands run
+in the host's Go process. For a command response with HTTP `200`, inspect
+`exit_code` for success. For chat, HTTP `200` can still contain an SSE `error`
+before `done`.
 Write commands are **not idempotent**: never automatically retry `tweet`,
 `reply`, `follow`, `unfollow`, or `unbookmark`. Set `BIRDY_READ_ONLY=1` for a
 public research deployment.
@@ -579,13 +582,13 @@ birdy multi-fetch --manifest m.json --output-dir /tmp/bird --aggregate /tmp/bird
 }
 ```
 
-Ops are served by the native Go engine in-process (the bird CLI only under
-`--bird`). Ids must be unique, contain no path separators, and must not
-start with `_` — that prefix is reserved for multi-fetch's own files.
+Operations use the native Go engine in-process. An explicit `--bird` or an
+option supported only by the legacy CLI selects the subprocess. Operation IDs
+must be unique and contain no path separators. The ID `_report` is reserved.
 
 **Rate limits.** Accounts are pre-assigned by the rotation strategy, and a
 long manifest can exhaust one account's quota before its tail is reached. A
-rate-limited op (HTTP 429) therefore records the 429 against its account and
+rate-limited op (HTTP 429) records the 429 against its account. A read
 is retried once on a different account that is not inside its 15-minute 429
 cooldown (`--retry-rate-limited N`, default 1; `--rate-limit-delay 2s` to
 pause first). The 429 stamps are saved, so with `--strategy quota-aware` the
@@ -702,11 +705,10 @@ birdy serves these commands itself, in Go, with no Node.js and no `bird` binary:
 `read` `thread` `replies` `search` `home` `user-tweets` `bookmarks`
 `list-timeline` `whoami` `about` `likes` `followers` `following`
 `tweet` `reply` `follow` `unfollow` `unbookmark` `check` `mentions`
-`query-ids` `lists` `activity` `news`
+`query-ids` `lists` `activity` `news` (also available as `trending`)
 
-That is every command birdy has. Nothing forwards to
-[bird](https://github.com/steipete/bird), and the release ships no bird and no
-`node_modules`.
+The CLI, hosted command endpoints, daemon, and batch workflows use the same
+native command selection. The release ships as a single Go binary.
 
 `--bird` still runs the original engine when you install bird separately
 (`npm install -g @steipete/bird`). It is how birdy's output is checked against
@@ -751,8 +753,8 @@ appears there is one the engine serves; a flag that does not is not. Help is
 answered in-process and never forwarded — it works on a runner with no
 accounts configured and no bird installed.
 
-A command carrying a flag the native path does not implement (`--all`,
-`--max-pages`, `--cursor`, …) is never silently ignored. It is
+A command carrying a flag the native path does not implement (for example,
+`search --all` or `tweet --media`) is never silently ignored. It is
 routed to the bird CLI instead: with bird installed it runs there; without
 bird the command fails with `bird CLI not found` rather than returning an
 answer to a different question.

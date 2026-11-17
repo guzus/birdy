@@ -388,6 +388,7 @@ func TestAPICommandRunsBirdThroughHostedMux(t *testing.T) {
 	})
 
 	t.Setenv("HOME", home)
+	t.Setenv("BIRDY_USE_BIRD", "1")
 	t.Setenv("BIRDY_BIRD_PATH", birdPath)
 
 	reqBody := bytes.NewBufferString(`{"command":"home","account":"alpha"}`)
@@ -615,6 +616,7 @@ func TestAPICommandRotationSkipsReadOnlyAccountsForWrites(t *testing.T) {
 
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("BIRDY_USE_BIRD", "1")
 	t.Setenv("BIRDY_BIRD_PATH", birdPath)
 	writeAccountsFixture(t, home, []map[string]any{
 		{"name": "alpha", "auth_token": "token-a", "ct0": "ct0-a", "read_only": true, "use_count": 0},
@@ -685,6 +687,7 @@ func TestAPICommandIncludesRecoveryWarningsInStderr(t *testing.T) {
 		t.Fatalf("write corrupt state: %v", err)
 	}
 	t.Setenv("HOME", home)
+	t.Setenv("BIRDY_USE_BIRD", "1")
 	t.Setenv("BIRDY_BIRD_PATH", birdPath)
 	t.Setenv("BIRDY_ACCOUNTS", `[{"name":"env_user","auth_token":"t","ct0":"c"}]`)
 
@@ -718,6 +721,7 @@ func TestAPICommandDoesNotPersistUsageOrRotationOnRunnerError(t *testing.T) {
 		{"name": "beta", "auth_token": "token-b", "ct0": "ct0-b", "use_count": 0},
 	})
 	writeStateFixture(t, home, "alpha", "sonnet")
+	t.Setenv("BIRDY_USE_BIRD", "1")
 	t.Setenv("BIRDY_BIRD_PATH", filepath.Join(t.TempDir(), "missing-bird"))
 
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/api/command", bytes.NewBufferString(`{"command":"home","strategy":"round-robin"}`))
@@ -764,9 +768,10 @@ func TestAPICommandPersistsUsageAndRotationAfterSuccess(t *testing.T) {
 		{"name": "beta", "auth_token": "token-b", "ct0": "ct0-b", "use_count": 0},
 	})
 	writeStateFixture(t, home, "alpha", "sonnet")
-	t.Setenv("BIRDY_BIRD_PATH", writeFakeBirdScript(t, "#!/bin/sh\nexit 0\n"))
+	t.Setenv("BIRDY_USE_BIRD", "")
+	t.Setenv("BIRDY_BIRD_PATH", filepath.Join(home, "missing-bird"))
 
-	req := httptest.NewRequest(http.MethodPost, "http://example.com/api/command", bytes.NewBufferString(`{"command":"home","strategy":"round-robin"}`))
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/api/command", bytes.NewBufferString(`{"command":"check","strategy":"round-robin"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Invite-Code", "birdy")
 
@@ -777,6 +782,13 @@ func TestAPICommandPersistsUsageAndRotationAfterSuccess(t *testing.T) {
 		t.Fatalf("expected 200, got %d body=%q", rr.Code, rr.Body.String())
 	}
 
+	var resp apiCommandResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !resp.OK || resp.ExitCode != 0 || resp.Account != "beta" || !strings.Contains(resp.Stdout, "token-b...") {
+		t.Fatalf("unexpected native check result: %+v", resp)
+	}
 	st, err := store.Open()
 	if err != nil {
 		t.Fatalf("open store: %v", err)

@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -17,7 +16,7 @@ import (
 	"github.com/guzus/birdy/internal/runner"
 	"github.com/guzus/birdy/internal/state"
 	"github.com/guzus/birdy/internal/store"
-	"github.com/guzus/birdy/internal/xapi"
+
 	"github.com/spf13/cobra"
 )
 
@@ -69,45 +68,7 @@ var (
 // 429 / not-found / timeout paths without touching the network.
 type multiFetchRunFunc func(ctx context.Context, account *store.Account, args []string) (runner.Result, string, string, error)
 
-var multiFetchRun multiFetchRunFunc = runMultiFetchOp
-
-// multiFetchEngine names the engine that will serve args: "native" when
-// birdy serves the command in-process (the same rule passthrough.go applies),
-// "bird" when it is handed to the bird CLI subprocess (--bird, or a
-// command/flag the native engine has not implemented).
-func multiFetchEngine(args []string) string {
-	if len(args) == 0 {
-		return "bird"
-	}
-	if !useBird() && nativeSupports(args[0]) && nativeAcceptsFlags(args[0], args[1:]) {
-		return "native"
-	}
-	return "bird"
-}
-
-// runMultiFetchOp is the production multiFetchRun. Native ops run in-process
-// through runNative — no subprocess, no bird binary on PATH — and their error
-// is presented the way a subprocess would present it: exit 1 with the message
-// on stderr, classified through the same markers the runner's scanner uses.
-func runMultiFetchOp(ctx context.Context, account *store.Account, args []string) (runner.Result, string, string, error) {
-	if multiFetchEngine(args) != "native" {
-		return runner.RunCaptureContext(ctx, account, args, runner.Options{})
-	}
-	var out bytes.Buffer
-	err := runNative(ctx, account, args[0], args[1:], &out)
-	if err == nil {
-		return runner.Result{}, out.String(), "", nil
-	}
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return runner.Result{ExitCode: 1}, out.String(), "", fmt.Errorf("running native %s: %w", args[0], ctxErr)
-	}
-	msg := err.Error()
-	return runner.Result{
-		ExitCode:    1,
-		RateLimited: xapi.IsRateLimited(err),
-		NotFound:    runner.IsNotFoundMessage([]byte(msg)),
-	}, out.String(), msg, nil
-}
+var multiFetchRun multiFetchRunFunc = runCommandCapture
 
 func newMultiFetchCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -216,7 +177,7 @@ func validateMultiFetchManifest(m *MultiFetchManifest) error {
 type multiFetchTask struct {
 	Op       MultiFetchOperation
 	Account  *store.Account
-	Mutating bool // a retry must also stay on a writable account
+	Mutating bool // never replay a write on another account
 }
 
 // multiFetchOutcome is the final state of one op after every attempt.
@@ -507,7 +468,7 @@ func runMultiFetch(cmd *cobra.Command, _ []string) error {
 // the account this one just exhausted. Never touches the rotation cursor.
 func executeMultiFetchTask(ctx context.Context, st *store.Store, t multiFetchTask, outPath string, opts multiFetchOptions) multiFetchOutcome {
 	opStart := time.Now()
-	o := multiFetchOutcome{ID: t.Op.ID, Engine: multiFetchEngine(t.Op.Args)}
+	o := multiFetchOutcome{ID: t.Op.ID, Engine: commandEngine(t.Op.Args)}
 	acc := t.Account
 	tried := make(map[string]bool, 2)
 	retriesLeft := opts.RetryRateLimited
@@ -538,12 +499,12 @@ func executeMultiFetchTask(ctx context.Context, st *store.Store, t multiFetchTas
 		o.RunErr = runErr
 		o.Reason = multiFetchReason(res, stdout, stderr, runErr)
 
-		if o.Status != multiFetchStatusRateLimited || retriesLeft <= 0 || opts.PinnedAccount {
+		if o.Status != multiFetchStatusRateLimited || retriesLeft <= 0 || opts.PinnedAccount || t.Mutating {
 			break
 		}
-		next := pickMultiFetchRetryAccount(st.List(), tried, t.Mutating, time.Now())
+		next := pickMultiFetchRetryAccount(st.List(), tried, time.Now())
 		if next == nil {
-			break // every other account is cooling, read-only, or already tried
+			break // no eligible account remains
 		}
 		retriesLeft--
 		if opts.RateLimitDelay > 0 && !multiFetchSleep(ctx, opts.RateLimitDelay) {
@@ -648,15 +609,12 @@ func multiFetchCooling(a store.Account, now time.Time) bool {
 
 // pickMultiFetchRetryAccount chooses where a rate-limited op is retried:
 // quota-aware over the accounts not yet tried for this op, minus anything
-// disabled, cooling, or (for a mutating op) read-only. nil means there is no
+// disabled or cooling. nil means there is no
 // account worth retrying on, so the op is reported rate_limited as-is.
-func pickMultiFetchRetryAccount(accounts []store.Account, tried map[string]bool, mutating bool, now time.Time) *store.Account {
+func pickMultiFetchRetryAccount(accounts []store.Account, tried map[string]bool, now time.Time) *store.Account {
 	eligible := make([]store.Account, 0, len(accounts))
 	for _, a := range accounts {
 		if tried[a.Name] || a.Disabled || multiFetchCooling(a, now) {
-			continue
-		}
-		if mutating && a.ReadOnly {
 			continue
 		}
 		eligible = append(eligible, a)

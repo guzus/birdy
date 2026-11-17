@@ -1,6 +1,15 @@
 package cmd
 
-import "testing"
+import (
+	"bytes"
+	"fmt"
+	"github.com/spf13/cobra"
+	"io"
+	"net/http"
+	"path/filepath"
+	"strings"
+	"testing"
+)
 
 const sampleOutput = `@stratechery (Stratechery):
 Mythos, Muse, and the Opportunity Cost of Compute
@@ -72,5 +81,34 @@ func TestFormatBookmarkTelegram(t *testing.T) {
 	want := "<b>@test</b> · Test &lt;User&gt;\n\nHello &amp; goodbye &lt;world&gt;"
 	if got != want {
 		t.Errorf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestProcessBookmarksNativeDryRun(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("BIRDY_ACCOUNTS", `[{"name":"ci","auth_token":"t","ct0":"c"}]`)
+	t.Setenv("BIRDY_USE_BIRD", "")
+	t.Setenv("BIRDY_BIRD_PATH", filepath.Join(t.TempDir(), "missing-bird"))
+	prevDry, prevDigest, prevCount, prevAccount := pbDryRun, pbDigest, pbCount, accountFlag
+	t.Cleanup(func() { pbDryRun, pbDigest, pbCount, accountFlag = prevDry, prevDigest, prevCount, prevAccount })
+	pbDryRun, pbDigest, pbCount, accountFlag = true, false, "1", "ci"
+	original := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = original })
+	http.DefaultTransport = commandRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if !strings.HasSuffix(r.URL.Path, "/Bookmarks") {
+			return nil, fmt.Errorf("unexpected operation %s", r.URL.Path)
+		}
+		const data = `{"data":{"bookmark_timeline_v2":{"timeline":{"instructions":[{"entries":[{"content":{"itemContent":{"tweet_results":{"result":{"rest_id":"123","core":{"user_results":{"result":{"rest_id":"9","legacy":{"screen_name":"tester","name":"Tester"}}}},"legacy":{"full_text":"fixture post"}}}}}}]}]}}}}`
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(data)), Header: make(http.Header)}, nil
+	})
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetContext(t.Context())
+	cmd.SetOut(&out)
+	if err := runProcessBookmarks(cmd, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "<b>@tester</b> · Tester\n\nfixture post") || !strings.Contains(out.String(), "[View on X → https://x.com/tester/status/123]") {
+		t.Fatalf("unexpected preview: %q", out.String())
 	}
 }

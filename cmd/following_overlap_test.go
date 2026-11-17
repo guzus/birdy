@@ -2,8 +2,13 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -70,6 +75,7 @@ exit 9
 		t.Fatalf("write fake bird: %v", err)
 	}
 	t.Setenv("BIRDY_BIRD_PATH", birdPath)
+	t.Setenv("BIRDY_USE_BIRD", "1")
 
 	prevMin, prevPageSize, prevAll, prevMaxPages, prevJSON := followingOverlapMin, followingOverlapPageSize, followingOverlapAll, followingOverlapMaxPages, followingOverlapJSON
 	prevAccount, prevStrategy := accountFlag, strategyFlag
@@ -99,6 +105,7 @@ exit 9
 	}
 	var out bytes.Buffer
 	var errOut bytes.Buffer
+	cmd.SetContext(context.Background())
 	cmd.SetOut(&out)
 	cmd.SetErr(&errOut)
 	if err := cmd.RunE(cmd, []string{"@Alpha", "beta", "gamma"}); err != nil {
@@ -120,5 +127,47 @@ exit 9
 	}
 	if got[1].Username != "two" || got[1].Count != 2 {
 		t.Fatalf("expected two second with count 2, got %+v", got[1])
+	}
+}
+
+func TestFollowingOverlapDefaultRunsNatively(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("BIRDY_ACCOUNTS", `[{"name":"ci","auth_token":"test","ct0":"test"}]`)
+	t.Setenv("BIRDY_USE_BIRD", "")
+	t.Setenv("BIRDY_BIRD_PATH", filepath.Join(t.TempDir(), "missing-bird"))
+	prevMin, prevSize, prevAll, prevMax, prevJSON := followingOverlapMin, followingOverlapPageSize, followingOverlapAll, followingOverlapMaxPages, followingOverlapJSON
+	prevAccount, prevStrategy := accountFlag, strategyFlag
+	t.Cleanup(func() {
+		accountFlag, strategyFlag = prevAccount, prevStrategy
+		followingOverlapMin, followingOverlapPageSize, followingOverlapAll, followingOverlapMaxPages, followingOverlapJSON = prevMin, prevSize, prevAll, prevMax, prevJSON
+	})
+	accountFlag, strategyFlag = "ci", "round-robin"
+	cmd := newFollowingOverlapCmd()
+	cmd.SetContext(t.Context())
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	original := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = original })
+	var followingCalls int
+	http.DefaultTransport = commandRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		var body string
+		switch path.Base(r.URL.Path) {
+		case "UserByScreenName":
+			body = `{"data":{"user":{"result":{"rest_id":"9","legacy":{"screen_name":"seed","name":"Seed"}}}}}`
+		case "UserTweets":
+			body = `{"data":{"user":{"result":{"timeline":{"timeline":{"instructions":[{"entries":[{"content":{"itemContent":{"tweet_results":{"result":{"rest_id":"1","core":{"user_results":{"result":{"rest_id":"9","legacy":{"screen_name":"seed","name":"Seed"}}}},"legacy":{"full_text":"fixture"}}}}}}]}]}}}}}}`
+		case "Following":
+			followingCalls++
+			body = `{"data":{"user":{"result":{"timeline":{"timeline":{"instructions":[{"entries":[{"content":{"itemContent":{"user_results":{"result":{"__typename":"User","rest_id":"10","legacy":{"screen_name":"common","name":"Common"}}}}}}]}]}}}}}}`
+		default:
+			return nil, fmt.Errorf("unexpected operation %s", r.URL.Path)
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+	})
+	if err := cmd.RunE(cmd, []string{"alpha", "beta"}); err != nil {
+		t.Fatal(err)
+	}
+	if followingCalls != 2 || !strings.Contains(out.String(), "2\t@common\tCommon\t0 followers\talpha,beta") {
+		t.Fatalf("following calls %d, output %q", followingCalls, out.String())
 	}
 }

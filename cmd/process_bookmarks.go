@@ -10,7 +10,6 @@ import (
 
 	"github.com/guzus/birdy/internal/claude"
 	"github.com/guzus/birdy/internal/rotation"
-	"github.com/guzus/birdy/internal/runner"
 	"github.com/guzus/birdy/internal/state"
 	"github.com/guzus/birdy/internal/store"
 	"github.com/guzus/birdy/internal/telegram"
@@ -228,7 +227,7 @@ func runProcessBookmarks(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	res, stdout, stderr, err := runner.RunCapture(account, []string{"bookmarks", "--count", pbCount})
+	res, stdout, stderr, err := runCommandCapture(cmd.Context(), account, []string{"bookmarks", "--count", pbCount})
 	if err != nil {
 		return fmt.Errorf("running bird bookmarks: %w", err)
 	}

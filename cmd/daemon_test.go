@@ -2,9 +2,15 @@ package cmd
 
 import (
 	"bytes"
+	"context"
+	"io"
+	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/guzus/birdy/internal/store"
 )
 
 // TestDaemonCommandRegistered verifies the daemon subcommand is wired into
@@ -170,5 +176,50 @@ func TestRunDaemonRejectsNoAccounts(t *testing.T) {
 	err := runDaemon(rootCmd, nil)
 	if err == nil || !strings.Contains(err.Error(), "no accounts configured") {
 		t.Fatalf("expected no-accounts error, got %v", err)
+	}
+}
+
+func TestDaemonNativeReadRecordsGraphQLRateLimit(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("BIRDY_ACCOUNTS", "")
+	t.Setenv("BIRDY_USE_BIRD", "")
+	t.Setenv("BIRDY_BIRD_PATH", filepath.Join(home, "missing-bird"))
+	writeAccountsFixture(t, home, []map[string]string{{"name": "alpha", "auth_token": "tok", "ct0": "ct0"}})
+	st, err := store.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	acc, err := st.Get("alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	prev := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = prev })
+	http.DefaultTransport = commandRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if !strings.HasSuffix(r.URL.Path, "/TweetDetail") {
+			t.Fatalf("unexpected request: %s", r.URL.Path)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"errors":[{"code":88,"message":"Rate limit exceeded"}]}`)),
+			Header:     make(http.Header),
+		}, nil
+	})
+	exit, _, stderr, err := daemonCommandRunner(st)(context.Background(), acc, []string{"read", "1234567890123456789"})
+	if err != nil || exit != 1 || !strings.Contains(stderr, "Rate limit exceeded") {
+		t.Fatalf("exit=%d stderr=%q err=%v", exit, stderr, err)
+	}
+	persisted, err := store.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := persisted.Get("alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.RateLimitCount != 1 || got.LastRateLimitedAt.IsZero() {
+		t.Fatal("missing persisted rate limit")
 	}
 }

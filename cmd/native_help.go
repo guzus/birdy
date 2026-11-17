@@ -56,6 +56,12 @@ var flagDocs = []flagSpec{
 		doc: "numeric account id to list (default: the authenticated account)"},
 	{names: []string{"--user", "-u"}, arg: "HANDLE", only: []string{"mentions"},
 		doc: "handle whose mentions to search (default: the authenticated account)"},
+	{names: []string{"--all"},
+		doc: "fetch all user-list pages"},
+	{names: []string{"--max-pages"}, arg: "N",
+		doc: "stop after at most N pages when using --all"},
+	{names: []string{"--cursor"}, arg: "CURSOR",
+		doc: "resume listing users at a previous response's nextCursor"},
 	{names: []string{"--member-of"},
 		doc: "lists you are a member of instead of lists you own"},
 	{names: []string{"--types"}, arg: "likes,reposts,quotes",
@@ -234,13 +240,13 @@ func containsString(list []string, s string) bool {
 
 // nativeHelpAvailable reports whether renderNativeHelp has text for command.
 func nativeHelpAvailable(command string) bool {
-	_, ok := nativeCommandHelps[command]
+	_, ok := nativeCommandHelps[nativeCommandName(command)]
 	return ok
 }
 
 // renderNativeHelp writes birdy-authored help for one X command.
 func renderNativeHelp(w io.Writer, cmd *cobra.Command) {
-	name := cmd.Name()
+	name := nativeCommandName(cmd.Name())
 	help, native := nativeCommandHelps[name]
 
 	fmt.Fprintln(w, cmd.Short)

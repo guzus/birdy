@@ -35,6 +35,7 @@ func TestAPIMultiCommandHappyPath(t *testing.T) {
 		{"name": "beta", "auth_token": "token-b", "ct0": "ct0-b"},
 	})
 	t.Setenv("HOME", home)
+	t.Setenv("BIRDY_USE_BIRD", "1")
 	t.Setenv("BIRDY_BIRD_PATH", birdPath)
 
 	body := `{"operations":[
@@ -85,6 +86,7 @@ func TestAPIMultiCommandPerOpUnsupportedCommand(t *testing.T) {
 		{"name": "alpha", "auth_token": "token-a", "ct0": "ct0-a"},
 	})
 	t.Setenv("HOME", home)
+	t.Setenv("BIRDY_USE_BIRD", "1")
 	t.Setenv("BIRDY_BIRD_PATH", birdPath)
 
 	body := `{"operations":[
@@ -122,6 +124,7 @@ func TestAPIMultiCommandPerOpReadOnlyMutation(t *testing.T) {
 		{"name": "alpha", "auth_token": "token-a", "ct0": "ct0-a"},
 	})
 	t.Setenv("HOME", home)
+	t.Setenv("BIRDY_USE_BIRD", "1")
 	t.Setenv("BIRDY_BIRD_PATH", birdPath)
 
 	body := `{"operations":[
@@ -227,6 +230,7 @@ func TestAPIMultiCommandRunsConcurrently(t *testing.T) {
 		{"name": "alpha", "auth_token": "token-a", "ct0": "ct0-a"},
 	})
 	t.Setenv("HOME", home)
+	t.Setenv("BIRDY_USE_BIRD", "1")
 	t.Setenv("BIRDY_BIRD_PATH", birdPath)
 
 	body := `{"operations":[
@@ -279,6 +283,7 @@ func TestAPIMultiCommandDoesNotAdvanceRotationWhenAllOpsFailBeforeRunner(t *test
 	writeStateFixture(t, home, "alpha", "sonnet")
 	// Point bird at a path that doesn't exist so RunCapture errors before
 	// the runner can spawn anything. All ops should fail with `runErr` set.
+	t.Setenv("BIRDY_USE_BIRD", "1")
 	t.Setenv("BIRDY_BIRD_PATH", filepath.Join(t.TempDir(), "missing-bird"))
 
 	body := `{"operations":[
@@ -312,26 +317,18 @@ func TestAPIMultiCommandDoesNotAdvanceRotationWhenAllOpsFailBeforeRunner(t *test
 }
 
 func TestAPIMultiCommandLeastUsedDistributesAcrossBatch(t *testing.T) {
-	// Echo back which account ran. Two fresh accounts (use_count=0). With
-	// the per-batch in-memory usage update, a 2-op least-used batch should
-	// pick BOTH accounts. Without the fix, both ops pick the same account
-	// (the snapshot stays unchanged across iterations).
-	birdPath := writeFakeBirdScript(t, strings.Join([]string{
-		"#!/bin/sh",
-		`echo "$AUTH_TOKEN"`,
-	}, "\n"))
-
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	writeAccountsFixture(t, home, []map[string]any{
 		{"name": "alpha", "auth_token": "token-a", "ct0": "ct0-a", "use_count": 0},
 		{"name": "beta", "auth_token": "token-b", "ct0": "ct0-b", "use_count": 0},
 	})
-	t.Setenv("BIRDY_BIRD_PATH", birdPath)
+	t.Setenv("BIRDY_USE_BIRD", "")
+	t.Setenv("BIRDY_BIRD_PATH", filepath.Join(home, "missing-bird"))
 
 	body := `{"operations":[
-		{"id":"a","command":"search","args":["x"]},
-		{"id":"b","command":"search","args":["y"]}
+		{"id":"a","command":"check"},
+		{"id":"b","command":"check"}
 	],"strategy":"least-used"}`
 
 	rr := httptest.NewRecorder()
@@ -346,7 +343,7 @@ func TestAPIMultiCommandLeastUsedDistributesAcrossBatch(t *testing.T) {
 	}
 	seen := map[string]bool{}
 	for _, r := range resp.Results {
-		if !r.OK {
+		if !r.OK || r.ExitCode != 0 || !strings.Contains(r.Stdout, "Credential check") {
 			t.Fatalf("op %q failed: %+v", r.ID, r)
 		}
 		seen[r.Account] = true

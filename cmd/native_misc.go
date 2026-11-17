@@ -50,7 +50,7 @@ func preview(secret string) string {
 // different set and silently diverge.
 func nativeMentions(ctx context.Context, c *xapi.Client, args nativeArgs, out io.Writer) error {
 	handle := args.user
-	if handle == "" {
+	if handle == "" && !args.userSet {
 		viewer, err := c.CurrentUser(ctx)
 		if err != nil {
 			return fmt.Errorf("could not determine current user (%w). Use --user <handle>", err)
@@ -58,10 +58,13 @@ func nativeMentions(ctx context.Context, c *xapi.Client, args nativeArgs, out io
 		handle = viewer.Username
 	}
 
-	normalized, ok := xapi.ValidHandle(handle)
+	normalized, ok := cliHandle(handle)
 	if !ok {
-		return fmt.Errorf("Invalid --user handle. Expected something like @steipete " +
-			"(letters, digits, underscore; max 15)")
+		const msg = "Invalid --user handle. Expected something like @steipete (letters, digits, underscore; max 15)"
+		if args.userSet || args.user != "" {
+			return nativeUsageError(msg)
+		}
+		return fmt.Errorf(msg)
 	}
 
 	tweets, err := c.Search(ctx, "@"+normalized, args.count)

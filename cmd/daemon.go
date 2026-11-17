@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -33,10 +34,9 @@ func newDaemonCmd() *cobra.Command {
 		Use:     "daemon",
 		Short:   "Run birdy as a long-lived HTTP server with warm bird auth state",
 		GroupID: "birdy",
-		Long: `daemon runs birdy as a foreground HTTP server. It holds warm bird auth
-and account-rotation state so agent reasoning loops that issue many
-follow-up bird queries get sub-second latency on each call instead of
-paying the ~200–400ms bird CLI startup cost every time.
+		Long: `daemon runs birdy as a foreground HTTP server. It keeps account and
+rotation state in memory and runs supported commands in native Go. Use
+--bird to select the legacy subprocess for all commands.
 
 Endpoints:
 
@@ -143,6 +143,7 @@ func runDaemon(cmd *cobra.Command, _ []string) error {
 	// defeat the rotation system. Per-request picking keeps the rotation
 	// state file authoritative across all birdy invocations (CLI, multi-
 	// fetch, daemon).
+	var rotationMu sync.Mutex
 	pickAccount := func(args []string) (*store.Account, error) {
 		if accountFlag != "" {
 			acc, err := st.Get(accountFlag)
@@ -154,6 +155,9 @@ func runDaemon(cmd *cobra.Command, _ []string) error {
 			}
 			return acc, nil
 		}
+		// Concurrent requests share one rotation cursor.
+		rotationMu.Lock()
+		defer rotationMu.Unlock()
 		accounts := st.List()
 		if blocked, name := isMutatingBirdCommand(args); blocked {
 			accounts = filterWritableAccounts(accounts)
@@ -185,7 +189,7 @@ func runDaemon(cmd *cobra.Command, _ []string) error {
 	}
 
 	srv, err := daemon.NewServer(daemon.Config{
-		Run:          daemon.DefaultRunner(st),
+		Run:          daemonCommandRunner(st),
 		PickAccount:  pickAccount,
 		AccountCount: st.Len,
 		Accounts:     st.List,
@@ -213,4 +217,16 @@ func runDaemon(cmd *cobra.Command, _ []string) error {
 	}
 	fmt.Fprintln(out, "birdy daemon: stopped")
 	return nil
+}
+
+func daemonCommandRunner(st *store.Store) daemon.RunFunc {
+	return func(ctx context.Context, account *store.Account, args []string) (int, string, string, error) {
+		res, stdout, stderr, err := runCommandCapture(ctx, account, args)
+		if res.RateLimited {
+			if recordErr := st.RecordRateLimit(account.Name); recordErr == nil {
+				_ = st.Save()
+			}
+		}
+		return res.ExitCode, stdout, stderr, err
+	}
 }

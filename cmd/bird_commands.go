@@ -188,6 +188,8 @@ func parseBoolFlag(s string) (bool, bool) {
 	return false, false
 }
 
+var birdCommandHelp = make(map[string]*cobra.Command)
+
 func init() {
 	rootCmd.AddGroup(
 		&cobra.Group{ID: "bird", Title: "X Commands (native Go engine; `birdy <command> --help` lists its flags):"},
@@ -214,7 +216,7 @@ func init() {
 		{"reply", "Reply to a tweet"},
 		{"search", "Search for tweets"},
 		{"thread", "Read a tweet thread"},
-		{"trending", "Get trending topics (bird CLI only: needs --bird and a separate bird install)"},
+		{"trending", "Alias for news"},
 		{"tweet", "Post a new tweet"},
 		{"unbookmark", "Remove a tweet from bookmarks"},
 		{"unfollow", "Unfollow a user"},
@@ -223,6 +225,8 @@ func init() {
 	}
 
 	for _, c := range birdCmds {
-		rootCmd.AddCommand(makeBirdCmd(c.use, c.short))
+		command := makeBirdCmd(c.use, c.short)
+		rootCmd.AddCommand(command)
+		birdCommandHelp[command.Name()] = command
 	}
 }

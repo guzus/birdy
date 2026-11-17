@@ -8,6 +8,12 @@ import (
 )
 
 func TestFirstBirdCommandSkipsFlags(t *testing.T) {
+	if got := firstBirdCommand([]string{"--chrome-profile", "home", "news"}); got != "news" {
+		t.Fatalf("command-like option value selected as command: %q", got)
+	}
+	if got := firstBirdCommand([]string{"--plain", "unknown", "news"}); got != "unknown" {
+		t.Fatalf("operand selected as command: %q", got)
+	}
 	if got := firstBirdCommand([]string{"--foo", "-v", "tweet"}); got != "tweet" {
 		t.Fatalf("expected tweet, got %q", got)
 	}

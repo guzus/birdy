@@ -316,7 +316,7 @@ func Execute() {
 			os.Exit(1)
 		}
 		fmt.Fprintf(rootCmd.ErrOrStderr(), "Error: %v\n", err)
-		os.Exit(1)
+		os.Exit(commandExitCode(err))
 	}
 }
 

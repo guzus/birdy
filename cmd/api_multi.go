@@ -9,7 +9,6 @@ import (
 
 	"github.com/guzus/birdy/internal/birdtool"
 	"github.com/guzus/birdy/internal/rotation"
-	"github.com/guzus/birdy/internal/runner"
 	"github.com/guzus/birdy/internal/state"
 	"github.com/guzus/birdy/internal/store"
 )
@@ -136,7 +135,7 @@ func handleAPIMultiCommand(inviteCode string) http.HandlerFunc {
 
 		// Per-batch concurrency hint (client-controlled). Capped at the
 		// process-wide ceiling. Even when this is high, the goroutines also
-		// acquire apiSubprocessSem so the cross-endpoint cap is enforced.
+		// acquire apiCommandSem so the cross-endpoint cap is enforced.
 		batchConc := apiMultiCommandConcurrency
 		if req.Concurrency > 0 && req.Concurrency < batchConc {
 			batchConc = req.Concurrency
@@ -304,15 +303,15 @@ func handleAPIMultiCommand(inviteCode string) http.HandlerFunc {
 				}
 				// Process-wide cap shared with /api/command.
 				select {
-				case apiSubprocessSem <- struct{}{}:
-					defer func() { <-apiSubprocessSem }()
+				case apiCommandSem <- struct{}{}:
+					defer func() { <-apiCommandSem }()
 				case <-r.Context().Done():
 					results[i] = apiMultiOpResult{ID: t.ID, OK: false, Error: "client closed request"}
 					return
 				}
 
 				opStart := time.Now()
-				res, stdout, stderr, runErr := runner.RunCapture(t.Account, t.Args)
+				res, stdout, stderr, runErr := runCommandCapture(r.Context(), t.Account, t.Args)
 				if runErr != nil {
 					results[i] = apiMultiOpResult{
 						ID:        t.ID,

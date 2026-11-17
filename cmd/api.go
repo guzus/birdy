@@ -17,7 +17,6 @@ import (
 	"github.com/guzus/birdy/internal/chatmodel"
 	"github.com/guzus/birdy/internal/claude"
 	"github.com/guzus/birdy/internal/rotation"
-	"github.com/guzus/birdy/internal/runner"
 	"github.com/guzus/birdy/internal/state"
 	"github.com/guzus/birdy/internal/store"
 )
@@ -169,19 +168,10 @@ func streamAPIChatModel(ctx context.Context, prompt string, model chatmodel.Sele
 	}, emit)
 }
 
-// apiCommandConcurrency caps in-flight bird subprocesses spawned by the
-// hosted API endpoints. The 60 req/min/IP rate limit allows bursts of 60
-// concurrent requests in the worst case; without this cap each one fans
-// out a fresh bird (Node) process. Eight is enough for interactive web
-// use and small enough to keep the host responsive under burst.
+// apiCommandConcurrency limits simultaneous commands across both hosted endpoints.
 const apiCommandConcurrency = 8
 
-// apiSubprocessSem is a process-wide semaphore shared by /api/command and
-// /api/multi-command so the cap applies across endpoints, not per-handler
-// or per-batch. Without sharing, multiple concurrent /api/multi-command
-// requests would each construct their own per-batch semaphore and
-// collectively exceed the process cap.
-var apiSubprocessSem = make(chan struct{}, apiCommandConcurrency)
+var apiCommandSem = make(chan struct{}, apiCommandConcurrency)
 
 func hostRequestInviteCode(r *http.Request) string {
 	if v := strings.TrimSpace(r.Header.Get("X-Invite-Code")); v != "" {
@@ -285,12 +275,12 @@ func handleAPICommand(inviteCode string) http.HandlerFunc {
 
 		start := time.Now()
 
-		// Cap concurrent bird subprocess spawns process-wide. Honor client
+		// Cap concurrent commands process-wide. Honor client
 		// disconnect so a queued client that gives up doesn't tie up an
 		// account or a slot.
 		select {
-		case apiSubprocessSem <- struct{}{}:
-			defer func() { <-apiSubprocessSem }()
+		case apiCommandSem <- struct{}{}:
+			defer func() { <-apiCommandSem }()
 		case <-r.Context().Done():
 			writeJSON(w, 499, apiError{OK: false, Error: "client closed request"})
 			return
@@ -355,7 +345,7 @@ func handleAPICommand(inviteCode string) http.HandlerFunc {
 			return
 		}
 
-		res, stdout, stderr, runErr := runner.RunCapture(account, args)
+		res, stdout, stderr, runErr := runCommandCapture(r.Context(), account, args)
 		if runErr != nil {
 			writeJSON(w, http.StatusInternalServerError, apiError{OK: false, Error: runErr.Error()})
 			return

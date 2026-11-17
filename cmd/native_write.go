@@ -136,22 +136,36 @@ func nativeUnbookmark(ctx context.Context, c *xapi.Client, args nativeArgs, out 
 		return fmt.Errorf("unbookmark: missing tweet id or url")
 	}
 
-	var failures []string
+	var failures unbookmarkFailures
 	for _, ref := range args.positionals {
 		id, err := tweet.ExtractTweetID(ref)
 		if err != nil {
-			failures = append(failures, fmt.Sprintf("%s: %v", ref, err))
+			failures.messages = append(failures.messages, fmt.Sprintf("%s: %v", ref, err))
 			continue
 		}
 		if err := c.DeleteBookmark(ctx, id); err != nil {
-			failures = append(failures, fmt.Sprintf("%s: %v", id, err))
+			failures.messages = append(failures.messages, fmt.Sprintf("%s: %v", id, err))
+			if xapi.IsRateLimited(err) {
+				failures.rateLimit = err
+			}
 			continue
 		}
 		fmt.Fprintf(out, "%s Removed bookmark for %s\n", status("ok", "✅", "OK:", args), id)
 	}
 
-	if len(failures) > 0 {
-		return fmt.Errorf("failed to remove bookmark for %s", strings.Join(failures, "; "))
+	if len(failures.messages) > 0 {
+		return &failures
 	}
 	return nil
 }
+
+// Keep each item's diagnostic while exposing a rate limit on any item to account rotation.
+type unbookmarkFailures struct {
+	messages  []string
+	rateLimit error
+}
+
+func (e *unbookmarkFailures) Error() string {
+	return "failed to remove bookmark for " + strings.Join(e.messages, "; ")
+}
+func (e *unbookmarkFailures) Unwrap() error { return e.rateLimit }

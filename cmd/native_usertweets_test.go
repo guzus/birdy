@@ -157,11 +157,8 @@ func TestUserTweetsPrintsCursorHintToStderr(t *testing.T) {
 	c, _ := userTweetsServer(t, []string{"C1", "C2"}, 20)
 
 	var errBuf bytes.Buffer
-	restore := nativeStderr
-	nativeStderr = &errBuf
-	t.Cleanup(func() { nativeStderr = restore })
 
-	out, err := runUserTweets(t, c, nativeArgs{count: 21, emoji: true})
+	out, err := runUserTweets(t, c, nativeArgs{count: 21, emoji: true, stderr: &errBuf})
 	if err != nil {
 		t.Fatalf("nativeUserTweets: %v", err)
 	}
@@ -178,11 +175,8 @@ func TestUserTweetsNoHintWhenExhausted(t *testing.T) {
 	c, _ := userTweetsServer(t, []string{""}, 5)
 
 	var errBuf bytes.Buffer
-	restore := nativeStderr
-	nativeStderr = &errBuf
-	t.Cleanup(func() { nativeStderr = restore })
 
-	if _, err := runUserTweets(t, c, nativeArgs{count: 20, emoji: true}); err != nil {
+	if _, err := runUserTweets(t, c, nativeArgs{count: 20, emoji: true, stderr: &errBuf}); err != nil {
 		t.Fatalf("nativeUserTweets: %v", err)
 	}
 	if errBuf.Len() != 0 {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"time"
 	"unicode/utf16"
 
 	"github.com/guzus/birdy/internal/xapi"
@@ -13,34 +14,99 @@ import (
 // bird's `followers`/`following` take no positional handle. The target is
 // --user <userId>, a numeric id, and it defaults to the authenticated account.
 func nativeFollowers(ctx context.Context, c *xapi.Client, args nativeArgs, out io.Writer) error {
-	return renderUserList(ctx, c, args, out, c.Followers)
+	return renderUserList(ctx, c, args, out, c.FollowersPage)
 }
 
 func nativeFollowing(ctx context.Context, c *xapi.Client, args nativeArgs, out io.Writer) error {
-	return renderUserList(ctx, c, args, out, c.Following)
+	return renderUserList(ctx, c, args, out, c.FollowingPage)
 }
 
 type userListFetcher func(context.Context, string, int, string) (*xapi.UserListPage, error)
 
 func renderUserList(ctx context.Context, c *xapi.Client, args nativeArgs, out io.Writer, fetch userListFetcher) error {
+	if args.pagingErr != nil {
+		return args.pagingErr
+	}
+	if args.maxPages > 0 && !args.all {
+		return fmt.Errorf("--max-pages requires --all.")
+	}
 	userID, err := resolveUserID(ctx, c, args.user)
 	if err != nil {
 		return err
 	}
 
-	page, err := fetch(ctx, userID, args.count, "")
+	var page *xapi.UserListPage
+	if args.all {
+		page, err = fetchAllListedUsers(ctx, fetch, userID, args)
+	} else {
+		page, err = fetch(ctx, userID, args.count, args.cursor)
+	}
 	if err != nil {
 		return err
 	}
-
 	if args.json {
-		users := page.Users
-		if users == nil {
-			users = []xapi.ListedUser{}
+		if page.Users == nil {
+			page.Users = []xapi.ListedUser{}
 		}
-		return writeNativeJSON(out, users)
+		if args.all || args.cursor != "" {
+			var cursor *string
+			if page.NextCursor != "" {
+				cursor = &page.NextCursor
+			}
+			return writeNativeJSON(out, struct {
+				Users      []xapi.ListedUser `json:"users"`
+				NextCursor *string           `json:"nextCursor"`
+			}{page.Users, cursor})
+		}
+		return writeNativeJSON(out, page.Users)
+	}
+	if args.all {
+		fmt.Fprintf(args.stderr, "%s Total: %d users\n", status("info", "ℹ️", "Info:", args), len(page.Users))
+	}
+	if (args.all || args.cursor != "") && page.NextCursor != "" {
+		prefix := status("info", "ℹ️", "Info:", args)
+		if args.all {
+			fmt.Fprintf(args.stderr, "%s Stopped at --max-pages. Use --cursor to continue.\n", prefix)
+		}
+		fmt.Fprintf(args.stderr, "%s Next cursor: %s\n", prefix, page.NextCursor)
 	}
 	return renderUsers(out, page.Users, args)
+}
+
+func fetchAllListedUsers(ctx context.Context, fetch userListFetcher, userID string, args nativeArgs) (*xapi.UserListPage, error) {
+	result := &xapi.UserListPage{}
+	seenUsers := make(map[string]bool)
+	cursor := args.cursor
+	for n := 1; ; n++ {
+		if !args.json {
+			fmt.Fprintf(args.stderr, "%s Fetching page %d...\n", status("info", "ℹ️", "Info:", args), n)
+		}
+		page, err := fetch(ctx, userID, args.count, cursor)
+		if err != nil {
+			return nil, err
+		}
+		before := len(result.Users)
+		for _, user := range page.Users {
+			if !seenUsers[user.ID] {
+				seenUsers[user.ID] = true
+				result.Users = append(result.Users, user)
+			}
+		}
+		if page.NextCursor == "" || page.NextCursor == cursor || len(result.Users) == before {
+			return result, nil
+		}
+		if n == args.maxPages {
+			result.NextCursor = page.NextCursor
+			return result, nil
+		}
+		cursor = page.NextCursor
+		// Match bird's one-second delay between user-list requests.
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(time.Second):
+		}
+	}
 }
 
 // resolveUserID returns the requested numeric id, or the authenticated

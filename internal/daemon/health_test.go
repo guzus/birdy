@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -47,7 +48,7 @@ func TestHealthRateLimitState(t *testing.T) {
 	hs, srv, teardown := newTestServer(t, Config{
 		AccountCount: func() int { return len(accounts) },
 		Accounts:     func() []store.Account { return accounts },
-		Run: func(_ *store.Account, _ []string) (int, string, string, error) {
+		Run: func(_ context.Context, _ *store.Account, _ []string) (int, string, string, error) {
 			return 0, "ok", "", nil
 		},
 	})
@@ -129,7 +130,7 @@ func TestHealthDegradedWhenEveryAccountCooling(t *testing.T) {
 	hs, srv, teardown := newTestServer(t, Config{
 		AccountCount: func() int { return len(accounts) },
 		Accounts:     func() []store.Account { return accounts },
-		Run: func(_ *store.Account, _ []string) (int, string, string, error) {
+		Run: func(_ context.Context, _ *store.Account, _ []string) (int, string, string, error) {
 			return 0, "ok", "", nil
 		},
 	})
@@ -154,7 +155,7 @@ func TestHealthDegradedWhenEveryAccountCooling(t *testing.T) {
 func TestHealthWithoutAccountsFunc(t *testing.T) {
 	hs, _, teardown := newTestServer(t, Config{
 		AccountCount: func() int { return 3 },
-		Run: func(_ *store.Account, _ []string) (int, string, string, error) {
+		Run: func(_ context.Context, _ *store.Account, _ []string) (int, string, string, error) {
 			return 0, "ok", "", nil
 		},
 	})

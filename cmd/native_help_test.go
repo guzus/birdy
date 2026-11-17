@@ -136,7 +136,7 @@ func TestNativeHelpKnownFlags(t *testing.T) {
 }
 
 // Every native command has usage + at least one example, and every help entry
-// names a native command (or trending, which is registered but bird-only).
+// names a native command.
 func TestNativeHelpCoversEveryNativeCommand(t *testing.T) {
 	for command := range nativeCommands {
 		help, ok := nativeCommandHelps[command]
@@ -180,14 +180,13 @@ func TestNativeHelpHasNoBirdBanner(t *testing.T) {
 	}
 }
 
-// Registered-but-not-native commands must still answer --help in-process and
-// say plainly that they need bird.
-func TestBirdOnlyCommandHelp(t *testing.T) {
-	help := helpOutput(t, "trending")
-	for _, want := range []string{"not served by birdy's native engine", "--bird", "npm install -g @steipete/bird"} {
-		if !strings.Contains(help, want) {
-			t.Errorf("trending help missing %q\n%s", want, help)
-		}
+func TestTrendingUsesNewsHelp(t *testing.T) {
+	trending := helpOutput(t, "trending")
+	news := helpOutput(t, "news")
+	_, trendingBody, _ := strings.Cut(trending, "\n")
+	_, newsBody, _ := strings.Cut(news, "\n")
+	if !strings.HasPrefix(trending, "Alias for news\n") || trendingBody != newsBody {
+		t.Errorf("trending must show the news flags, defaults, and examples:\n%s", trending)
 	}
 }
 
@@ -233,7 +232,7 @@ func TestHelpIsNeverForwarded(t *testing.T) {
 		{[]string{"help", "search"}, "Usage:\n  birdy search <query>"},
 		{[]string{"read", "123", "--help"}, "Usage:\n  birdy read <tweet-id|url>"},
 		{[]string{"-a", "main", "user-tweets", "--help"}, "Usage:\n  birdy user-tweets <@handle>"},
-		{[]string{"trending", "--help"}, "not served by birdy's native engine"},
+		{[]string{"trending", "--help"}, "Alias for news"},
 		// Root fallback path: unknown command or tweet-id shorthand.
 		{[]string{"1234567890", "--help"}, "X Commands"},
 		{[]string{"no-such-command", "-h"}, "X Commands"},
@@ -280,7 +279,7 @@ func TestRootHelpListsNativeCommands(t *testing.T) {
 			t.Errorf("root help does not list %s with its one-liner", command)
 		}
 	}
-	if !strings.Contains(out, "bird CLI only") {
-		t.Errorf("root help must flag trending as bird-only\n%s", out)
+	if !regexp.MustCompile(`(?m)^\s+trending\s+Alias for news$`).MatchString(out) {
+		t.Errorf("root help must list trending as a news alias\n%s", out)
 	}
 }

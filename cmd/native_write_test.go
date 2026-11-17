@@ -242,3 +242,42 @@ func TestReadOnlyGateCoversNativeWrites(t *testing.T) {
 		}
 	}
 }
+
+func TestNativeUnbookmarkKeepsRateLimitAlongsideOtherOutcomes(t *testing.T) {
+	limited := "1900000000000000001"
+	successful := "1900000000000000002"
+	// Return one 429 and one success after an invalid reference rejected locally.
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var mutation struct {
+			Variables struct {
+				TweetID string `json:"tweet_id"`
+			} `json:"variables"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&mutation); err != nil {
+			t.Error(err)
+		}
+		switch mutation.Variables.TweetID {
+		case limited:
+			w.WriteHeader(http.StatusTooManyRequests)
+			io.WriteString(w, "too many requests")
+		case successful:
+			io.WriteString(w, `{"data":{"tweet_bookmark_delete":"Done"}}`)
+		default:
+			t.Errorf("unexpected ID %q", mutation.Variables.TweetID)
+		}
+	}))
+	defer mock.Close()
+	client, err := xapi.NewClient(xapi.Credentials{AuthToken: "t", CT0: "c"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.SetBaseURL(mock.URL)
+	var stdout bytes.Buffer
+	err = nativeUnbookmark(t.Context(), client, nativeArgs{positionals: []string{"bad", limited, successful}}, &stdout)
+	if !xapi.IsRateLimited(err) || !strings.Contains(err.Error(), "bad:") || !strings.Contains(err.Error(), "; "+limited+":") {
+		t.Fatalf("missing rate limit or per-ID failures: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "Removed bookmark for "+successful) {
+		t.Fatalf("missing success after rate limit: %q", stdout.String())
+	}
+}

@@ -2,7 +2,14 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -145,5 +152,74 @@ func TestUserListFlagRouting(t *testing.T) {
 	}
 	if got := parseNativeArgs([]string{"--user=456"}).user; got != "456" {
 		t.Errorf("parsed user = %q, want 456", got)
+	}
+}
+
+func TestNativeUserListPagination(t *testing.T) {
+	for _, command := range []string{"following", "followers"} {
+		t.Run(command, func(t *testing.T) {
+			argv := []string{"--all", "--user", "456", "--max-pages=2", "--cursor=start", "-n", "200", "--plain", "--json"}
+			if !nativeAcceptsFlags(command, argv) {
+				t.Fatal("paged command should run natively")
+			}
+			seen := []string{}
+			client, err := xapi.NewClient(xapi.Credentials{AuthToken: "test", CT0: "test"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var v struct {
+					UserID string `json:"userId"`
+					Count  int
+					Cursor string
+				}
+				if err := json.Unmarshal([]byte(r.URL.Query().Get("variables")), &v); err != nil {
+					t.Errorf("decoding variables: %v", err)
+				}
+				if !strings.HasSuffix(strings.ToLower(r.URL.Path), "/"+command) || v.UserID != "456" || v.Count != 200 {
+					t.Errorf("unexpected request %s %+v", r.URL.Path, v)
+				}
+				seen = append(seen, v.Cursor)
+				const user = `{"content":{"itemContent":{"user_results":{"result":{"__typename":"User","rest_id":"%s","legacy":{"screen_name":"name%s"}}}}}}`
+				entries := fmt.Sprintf(user, "1", "1")
+				next := "second"
+				if v.Cursor == "second" {
+					entries += "," + fmt.Sprintf(user, "2", "2")
+					next = "resume"
+				}
+				fmt.Fprintf(w, `{"data":{"user":{"result":{"timeline":{"timeline":{"instructions":[{"entries":[%s,{"content":{"cursorType":"Bottom","value":%q}}]}]}}}}}}`, entries, next)
+			}))
+			defer srv.Close()
+			client.SetBaseURL(srv.URL)
+			var out bytes.Buffer
+			if err := nativeCommands[command](t.Context(), client, parseNativeArgs(argv), &out); err != nil {
+				t.Fatal(err)
+			}
+			var page struct {
+				Users      []xapi.ListedUser
+				NextCursor string
+			}
+			if err := json.Unmarshal(out.Bytes(), &page); err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(seen, []string{"start", "second"}) || page.NextCursor != "resume" || len(page.Users) != 2 || page.Users[0].ID != "1" || page.Users[1].ID != "2" {
+				t.Fatalf("requests %v returned %+v", seen, page)
+			}
+		})
+	}
+}
+
+func TestNativeUserListCancelsBetweenPages(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	calls := 0
+	fetch := func(context.Context, string, int, string) (*xapi.UserListPage, error) {
+		calls++
+		cancel()
+		return &xapi.UserListPage{Users: []xapi.ListedUser{{ID: "1"}}, NextCursor: "next"}, nil
+	}
+	_, err := fetchAllListedUsers(ctx, fetch, "123", nativeArgs{json: true, all: true})
+	if !errors.Is(err, context.Canceled) || calls != 1 {
+		t.Fatalf("got %v after %d requests", err, calls)
 	}
 }

@@ -599,17 +599,17 @@ func TestMultiFetchRejectsReservedAndUnsafeIDs(t *testing.T) {
 
 func TestMultiFetchEngineSelection(t *testing.T) {
 	setupMultiFetchTest(t, "alpha")
-	if got := multiFetchEngine([]string{"user-tweets", "@x", "-n", "20", "--json", "--plain"}); got != "native" {
+	if got := commandEngine([]string{"user-tweets", "@x", "-n", "20", "--json", "--plain"}); got != "native" {
 		t.Fatalf("user-tweets should be native, got %s", got)
 	}
-	if got := multiFetchEngine([]string{"news", "--ai-only", "-n", "40", "--json", "--plain"}); got != "native" {
+	if got := commandEngine([]string{"news", "--ai-only", "-n", "40", "--json", "--plain"}); got != "native" {
 		t.Fatalf("news --ai-only should be native, got %s", got)
 	}
-	if got := multiFetchEngine([]string{"user-tweets", "@x", "--flag-birdy-does-not-know"}); got != "bird" {
+	if got := commandEngine([]string{"user-tweets", "@x", "--flag-birdy-does-not-know"}); got != "bird" {
 		t.Fatalf("unknown flag should fall back to bird, got %s", got)
 	}
 	birdFlag = true
-	if got := multiFetchEngine([]string{"user-tweets", "@x", "--json"}); got != "bird" {
+	if got := commandEngine([]string{"user-tweets", "@x", "--json"}); got != "bird" {
 		t.Fatalf("--bird should force the bird engine, got %s", got)
 	}
 }
@@ -648,5 +648,22 @@ func TestFormatMultiFetchSummary(t *testing.T) {
 	clean := multiFetchSummary{Total: 3, OK: 3, WallMS: 5, Concurrency: 2}
 	if got := formatMultiFetchSummary(clean); got != "multi-fetch: 3 ops, 3 ok, 0 failed, 0 retried, 5ms wall (concurrency=2)" {
 		t.Fatalf("clean summary: %s", got)
+	}
+}
+
+func TestMultiFetchNeverReplaysRateLimitedWrite(t *testing.T) {
+	setupMultiFetchTest(t, "alpha", "beta")
+	t.Setenv("BIRDY_READ_ONLY", "")
+	multiFetchRun = func(context.Context, *store.Account, []string) (runner.Result, string, string, error) {
+		return rateLimitedResult()
+	}
+	manifest := writeMultiFetchManifest(t, MultiFetchOperation{ID: "remove", Args: []string{"unbookmark", "12345678"}})
+	outDir := t.TempDir()
+	if _, _, err := runMultiFetchCmd(t, "--manifest", manifest, "--output-dir", outDir); err != nil {
+		t.Fatal(err)
+	}
+	op := reportOp(t, readMultiFetchReport(t, filepath.Join(outDir, "_report.json")), "remove")
+	if op.Status != "rate_limited" || op.Attempts != 1 {
+		t.Fatalf("unexpected write outcome: %+v", op)
 	}
 }

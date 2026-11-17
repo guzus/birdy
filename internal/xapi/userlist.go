@@ -49,35 +49,31 @@ type UserListPage struct {
 
 // Following returns accounts the given user id follows.
 func (c *Client) Following(ctx context.Context, userID string, count int, cursor string) (*UserListPage, error) {
-	page, err := c.userList(ctx, "Following", userID, count, cursor)
-	if err == nil {
-		return page, nil
-	}
-	if IsRateLimited(err) {
-		return nil, err
-	}
-	if !isStaleQueryID(err) {
-		return nil, err
-	}
-	return c.userListViaREST(ctx, c.restPaths(followingRESTPaths), userID, count, cursor)
+	return c.fetchUserList(ctx, "Following", followingRESTPaths, userID, cursor, clampCount(count), count)
 }
 
 // Followers returns accounts following the given user id.
-//
-// In practice this always takes the REST path: see the note on
-// followersRESTPaths.
 func (c *Client) Followers(ctx context.Context, userID string, count int, cursor string) (*UserListPage, error) {
-	page, err := c.userList(ctx, "Followers", userID, count, cursor)
-	if err == nil {
-		return page, nil
+	return c.fetchUserList(ctx, "Followers", followersRESTPaths, userID, cursor, clampCount(count), count)
+}
+
+// FollowingPage and FollowersPage preserve the page size requested by the CLI.
+// In particular, following-overlap's default of 200 is significant when the
+// caller limits the number of pages. Embedded readers retain their existing cap.
+func (c *Client) FollowingPage(ctx context.Context, userID string, count int, cursor string) (*UserListPage, error) {
+	return c.fetchUserList(ctx, "Following", followingRESTPaths, userID, cursor, count, count)
+}
+
+func (c *Client) FollowersPage(ctx context.Context, userID string, count int, cursor string) (*UserListPage, error) {
+	return c.fetchUserList(ctx, "Followers", followersRESTPaths, userID, cursor, count, count)
+}
+
+func (c *Client) fetchUserList(ctx context.Context, operation string, paths []string, userID, cursor string, graphCount, restCount int) (*UserListPage, error) {
+	page, err := c.userList(ctx, operation, userID, graphCount, cursor)
+	if err == nil || IsRateLimited(err) || !isStaleQueryID(err) {
+		return page, err
 	}
-	if IsRateLimited(err) {
-		return nil, err
-	}
-	if !isStaleQueryID(err) {
-		return nil, err
-	}
-	return c.userListViaREST(ctx, c.restPaths(followersRESTPaths), userID, count, cursor)
+	return c.userListViaREST(ctx, c.restPaths(paths), userID, restCount, cursor)
 }
 
 // restPaths lets tests redirect the v1.1 endpoints at a local server.
@@ -91,7 +87,7 @@ func (c *Client) restPaths(defaults []string) []string {
 func (c *Client) userList(ctx context.Context, operation, userID string, count int, cursor string) (*UserListPage, error) {
 	variables := map[string]any{
 		"userId":                 userID,
-		"count":                  clampCount(count),
+		"count":                  count,
 		"includePromotedContent": false,
 	}
 	// X rejects an explicit null cursor, so the key is only present when set.

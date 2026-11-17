@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/guzus/birdy/internal/birdtool"
@@ -80,8 +81,7 @@ func runPassthrough(cmd *cobra.Command, args []string) error {
 	// Serve the command in-process when birdy implements it. Falling through to
 	// bird keeps commands that have not been ported working, and --bird forces
 	// the bird path for anything.
-	command := args[0]
-	if !useBird() && nativeSupports(command) && nativeAcceptsFlags(command, args[1:]) {
+	if native := nativeInvocation(args); native != nil {
 		if verboseFlag {
 			fmt.Fprintf(errOut, "[birdy] engine: native (go)\n")
 		}
@@ -90,7 +90,12 @@ func runPassthrough(cmd *cobra.Command, args []string) error {
 			// cobra leaves Context nil unless the caller used ExecuteContext.
 			ctx = context.Background()
 		}
-		err := runNative(ctx, account, command, args[1:], cmd.OutOrStdout())
+		route, closeRoute, err := newCommandCapture(errOut, false)
+		if err != nil {
+			return err
+		}
+		defer closeRoute()
+		err = route.runNative(ctx, account, native, cmd.OutOrStdout(), errOut)
 		rateLimited := xapi.IsRateLimited(err)
 		if rateLimited && verboseFlag {
 			fmt.Fprintf(errOut, "[birdy] %s hit a rate limit (HTTP 429)\n", account.Name)
@@ -245,7 +250,6 @@ func readOnlyModeEnabled() bool {
 }
 
 func firstBirdCommand(args []string) string {
-	firstNonFlag := ""
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		a := strings.TrimSpace(strings.ToLower(arg))
@@ -276,20 +280,22 @@ func firstBirdCommand(args []string) string {
 			}
 			continue
 		}
-		if isKnownBirdCommand(a) {
-			return a
-		}
-		if firstNonFlag == "" {
-			firstNonFlag = a
-		}
+		return a
 	}
-	return firstNonFlag
+	return ""
 }
 
 func shouldSkipFlagValue(args []string, flagIdx int) bool {
 	idx := flagIdx + 1
 	if flagIdx < 0 || idx < 0 || idx >= len(args) {
 		return false
+	}
+	name := strings.TrimPrefix(args[flagIdx], "--")
+	if slices.Contains(birdBoolProgramFlags, name) {
+		return false
+	}
+	if slices.Contains(birdValueProgramFlags, name) || slices.Contains(birdRepeatProgramFlags, name) {
+		return true
 	}
 	value := strings.TrimSpace(strings.ToLower(args[idx]))
 	return value != "" && value != "--" && !strings.HasPrefix(value, "-") && !isKnownBirdCommand(value)
@@ -299,7 +305,7 @@ func isKnownBirdCommand(arg string) bool {
 	if arg == "" || strings.HasPrefix(arg, "-") {
 		return false
 	}
-	if birdtool.APIAllowed(arg) {
+	if nativeSupports(nativeCommandName(arg)) || birdtool.APIAllowed(arg) {
 		return true
 	}
 	if _, ok := readOnlyBlockedBirdCommands[arg]; ok {

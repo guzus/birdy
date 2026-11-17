@@ -1,21 +1,5 @@
-// Package daemon implements `birdy daemon`: a long-lived HTTP server that
-// holds warm bird auth and account-rotation state and serves agent queries
-// with sub-second latency on follow-up calls.
-//
-// Why this exists: every cold `bird` invocation costs ~200–400ms in process
-// spawn alone. An agent reasoning loop that issues 5–15 follow-up bird
-// queries during one inference run pays that cost over and over. The daemon
-// removes the spawn cost from the agent's critical path; only the network
-// round-trip to X.com remains.
-//
-// Scope (v1, intentional):
-//   - HTTP transport only (Unix socket is a follow-up).
-//   - Bounded request concurrency.
-//   - Optional in-memory TTL cache, keyed on the args slice.
-//   - Per-request account rotation (preserves rotation behavior across
-//     processes — picking once at startup would pin the daemon to a single
-//     account and defeat rotation entirely).
-//   - Graceful shutdown: stop accepting new requests, drain in-flight, exit.
+// Package daemon implements the birdy HTTP command server with bounded
+// concurrency, per-request account selection, and optional response caching.
 package daemon
 
 import (
@@ -28,14 +12,11 @@ import (
 	"time"
 
 	"github.com/guzus/birdy/internal/rotation"
-	"github.com/guzus/birdy/internal/runner"
 	"github.com/guzus/birdy/internal/store"
 )
 
-// RunFunc is the runner-execution surface used by the daemon. It mirrors
-// runner.RunCapture so production code can wire that in directly while
-// tests inject a stub. Tests should NEVER need to spawn a real bird.
-type RunFunc func(account *store.Account, args []string) (exitCode int, stdout string, stderr string, err error)
+// RunFunc executes one command using the selected account.
+type RunFunc func(ctx context.Context, account *store.Account, args []string) (exitCode int, stdout string, stderr string, err error)
 
 // AccountPickFunc selects an account for a given request. The args are
 // passed in so callers can apply read-only filtering for mutating bird
@@ -46,7 +27,7 @@ type AccountPickFunc func(args []string) (*store.Account, error)
 // callable is injectable so server_test.go can exercise the HTTP layer
 // without touching disk, the rotation store, or a real bird binary.
 type Config struct {
-	// Run executes the bird CLI. Required.
+	// Run executes a command. Required.
 	Run RunFunc
 	// PickAccount selects an account for a request. Required.
 	PickAccount AccountPickFunc
@@ -304,7 +285,7 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	exitCode, stdout, stderr, runErr := s.cfg.Run(account, req.Args)
+	exitCode, stdout, stderr, runErr := s.cfg.Run(r.Context(), account, req.Args)
 	if runErr != nil {
 		writeJSON(w, http.StatusInternalServerError, errorResponse{OK: false, Error: runErr.Error()})
 		return
@@ -378,24 +359,4 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 	resp.Degraded = resp.Accounts > 0 && resp.AccountsReady == 0
 	writeJSON(w, http.StatusOK, resp)
-}
-
-// DefaultRunner returns a RunFunc backed by runner.RunCapture that also
-// persists per-account 429s into the given store so quota-aware
-// rotation works for daemon traffic. Pass nil to skip recording (only
-// useful for tests that don't care about quota state).
-//
-// The daemon's RunFunc shape predates runner.Result so we flatten it
-// back here. Recording happens before returning so cache.set in
-// handleRun observes a consistent post-call store.
-func DefaultRunner(st *store.Store) RunFunc {
-	return func(account *store.Account, args []string) (int, string, string, error) {
-		res, stdout, stderr, err := runner.RunCapture(account, args)
-		if res.RateLimited && st != nil && account != nil {
-			if rlErr := st.RecordRateLimit(account.Name); rlErr == nil {
-				_ = st.Save()
-			}
-		}
-		return res.ExitCode, stdout, stderr, err
-	}
 }

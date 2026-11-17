@@ -1,16 +1,15 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
 
 	"github.com/guzus/birdy/internal/rotation"
-	"github.com/guzus/birdy/internal/runner"
 	"github.com/guzus/birdy/internal/state"
 	"github.com/guzus/birdy/internal/store"
-	"github.com/guzus/birdy/internal/vpn"
 	"github.com/spf13/cobra"
 )
 
@@ -40,11 +39,12 @@ type followingOverlapResult struct {
 	FollowedBy []string `json:"followedBy"`
 }
 
-type followingOverlapBirdRunner struct {
+type followingOverlapRunner struct {
 	st      *store.Store
 	rs      *state.State
 	strat   rotation.Strategy
-	runOpts runner.Options
+	capture commandCapture
+	ctx     context.Context
 }
 
 var (
@@ -110,31 +110,21 @@ func runFollowingOverlap(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	runOpts := runner.Options{}
-	var bridge *vpn.Bridge
-	if vpnFlag || vpnServerFlag != "" {
-		b, env, err := startVPN(cmd.ErrOrStderr())
-		if err != nil {
-			return err
-		}
-		bridge = b
-		runOpts.ExtraEnv = env
-		defer bridge.Stop()
-	}
-
-	br := &followingOverlapBirdRunner{
-		st:      st,
-		rs:      rs,
-		strat:   strat,
-		runOpts: runOpts,
-	}
-
 	seeds := normalizeFollowingOverlapSeeds(args)
 	if len(seeds) < 2 {
 		return fmt.Errorf("at least two distinct seed accounts are required")
 	}
 	if followingOverlapMin > len(seeds) {
 		return fmt.Errorf("--min cannot be greater than the number of distinct seed accounts")
+	}
+
+	capture, cleanup, err := newCommandCapture(cmd.ErrOrStderr(), useBird())
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	br := &followingOverlapRunner{
+		st: st, rs: rs, strat: strat, ctx: cmd.Context(), capture: capture,
 	}
 
 	byTarget := make(map[string]*followingOverlapResult)
@@ -221,7 +211,7 @@ func normalizeFollowingOverlapSeeds(args []string) []string {
 	return seeds
 }
 
-func (r *followingOverlapBirdRunner) resolveUserID(handle string) (string, error) {
+func (r *followingOverlapRunner) resolveUserID(handle string) (string, error) {
 	stdout, stderr, err := r.run([]string{"user-tweets", handle, "-n", "1", "--json", "--plain"})
 	if err != nil {
 		return "", errWithStderr(err, stderr)
@@ -238,7 +228,7 @@ func (r *followingOverlapBirdRunner) resolveUserID(handle string) (string, error
 	return "", fmt.Errorf("could not determine user ID from user-tweets output")
 }
 
-func (r *followingOverlapBirdRunner) fetchFollowing(userID string) ([]followingOverlapUser, error) {
+func (r *followingOverlapRunner) fetchFollowing(userID string) ([]followingOverlapUser, error) {
 	args := []string{"following", "--user", userID, "-n", fmt.Sprintf("%d", followingOverlapPageSize), "--json", "--plain"}
 	if followingOverlapAll {
 		args = append(args, "--all")
@@ -253,7 +243,7 @@ func (r *followingOverlapBirdRunner) fetchFollowing(userID string) ([]followingO
 	return parseFollowingOverlapUsers([]byte(stdout))
 }
 
-func (r *followingOverlapBirdRunner) run(args []string) (string, string, error) {
+func (r *followingOverlapRunner) run(args []string) (string, string, error) {
 	account, err := r.pickAccount()
 	if err != nil {
 		return "", "", err
@@ -261,7 +251,7 @@ func (r *followingOverlapBirdRunner) run(args []string) (string, string, error) 
 	if err := ensureBirdCommandAllowed(account, args); err != nil {
 		return "", "", err
 	}
-	res, stdout, stderr, err := runner.RunCaptureWith(account, args, r.runOpts)
+	res, stdout, stderr, err := r.capture.run(r.ctx, account, args)
 	if err != nil {
 		return stdout, stderr, err
 	}
@@ -279,7 +269,7 @@ func (r *followingOverlapBirdRunner) run(args []string) (string, string, error) 
 	return stdout, stderr, nil
 }
 
-func (r *followingOverlapBirdRunner) pickAccount() (*store.Account, error) {
+func (r *followingOverlapRunner) pickAccount() (*store.Account, error) {
 	if accountFlag != "" {
 		return r.st.Get(accountFlag)
 	}
@@ -291,7 +281,7 @@ func (r *followingOverlapBirdRunner) pickAccount() (*store.Account, error) {
 	return account, nil
 }
 
-func (r *followingOverlapBirdRunner) saveState() error {
+func (r *followingOverlapRunner) saveState() error {
 	if err := r.st.Save(); err != nil {
 		return fmt.Errorf("saving account store: %w", err)
 	}
