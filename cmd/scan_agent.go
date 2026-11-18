@@ -21,6 +21,7 @@ import (
 type scanAgentLimits struct {
 	maxSteps, maxOutputTokens, timeoutSeconds int
 	budgetUSD                                 float64
+	reasoningEffort                           string
 }
 
 func scanAgentDefinitions(kind scanToolKind, endpoint, model, secretName, toolID string, limits scanAgentLimits) (tool, agent map[string]any) {
@@ -40,6 +41,9 @@ func scanAgentDefinitions(kind scanToolKind, endpoint, model, secretName, toolID
 		"name": name, "model": model, "system": scanAgentSystemPrompt(kind), "toolIds": []string{toolID},
 		"maxSteps": limits.maxSteps, "maxOutputTokens": limits.maxOutputTokens,
 		"budgetUsd": limits.budgetUSD, "timeoutSeconds": limits.timeoutSeconds,
+	}
+	if limits.reasoningEffort != "" {
+		agent["reasoningEffort"] = limits.reasoningEffort
 	}
 	return tool, agent
 }
@@ -108,6 +112,7 @@ func newScanAgentCmd() *cobra.Command {
 	register.Flags().IntVar(&limits.maxSteps, "max-steps", len(scanSources)+2, "model steps per run")
 	register.Flags().IntVar(&limits.maxOutputTokens, "max-output-tokens", 4096, "output tokens per model step")
 	register.Flags().IntVar(&limits.timeoutSeconds, "timeout-seconds", 180, "run deadline")
+	register.Flags().StringVar(&limits.reasoningEffort, "reasoning-effort", "", "model reasoning effort (none, low, medium, high); empty keeps the provider default")
 	register.Flags().Float64Var(&limits.budgetUSD, "budget-usd", 5, "per-run model budget; must cover one step's reservation")
 	root := &cobra.Command{Use: "scan-agent", Short: "Manage Birdy Web's managed briefing agents", Hidden: true}
 	root.AddCommand(register)

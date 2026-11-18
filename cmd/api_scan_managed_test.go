@@ -120,7 +120,7 @@ func TestScanToolHidesReadErrorsAndBoundsOutput(t *testing.T) {
 
 func TestScanAgentDefinitionsUseOnlySupportedSchema(t *testing.T) {
 	for _, kind := range []scanToolKind{publicScanTool, invitedScanTool} {
-		tool, agent := scanAgentDefinitions(kind, "https://birdy.example/api/scan-tools/x", "anthropic/model", "secret-name", "tool-1", scanAgentLimits{6, 4096, 180, 5})
+		tool, agent := scanAgentDefinitions(kind, "https://birdy.example/api/scan-tools/x", "anthropic/model", "secret-name", "tool-1", scanAgentLimits{6, 4096, 180, 5, ""})
 		data, _ := json.Marshal(tool)
 		for _, forbidden := range []string{`"pattern"`, `"format"`, `"$ref"`} {
 			if strings.Contains(string(data), forbidden) {
@@ -137,6 +137,13 @@ func TestScanAgentDefinitionsUseOnlySupportedSchema(t *testing.T) {
 		system := agent["system"].(string)
 		if !strings.Contains(system, kind.name) || !strings.Contains(system, "untrusted") || agent["maxSteps"] != 6 {
 			t.Fatal(agent)
+		}
+		if _, set := agent["reasoningEffort"]; set {
+			t.Fatal("an empty effort must keep the provider default")
+		}
+		_, low := scanAgentDefinitions(kind, "https://birdy.example/api/scan-tools/x", "anthropic/model", "secret-name", "tool-1", scanAgentLimits{6, 4096, 180, 5, "low"})
+		if low["reasoningEffort"] != "low" {
+			t.Fatal(low)
 		}
 	}
 	if strings.Join(publicScanTool.keys(), ",") != "news,trending,sports,entertainment" || strings.Join(invitedScanTool.keys(), ",") != "home,crypto,ai,news" {
