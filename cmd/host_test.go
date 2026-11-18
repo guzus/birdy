@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -604,5 +605,41 @@ func TestHostedWebServesPrivacyNotice(t *testing.T) {
 	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/privacy", nil))
 	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `id=root`) {
 		t.Fatalf("/privacy = %d %q, want the web client", rr.Code, rr.Body.String())
+	}
+}
+
+// The web client loads nothing from another origin (the CSP would block
+// it), and every font the stylesheet names ships with it, with its license.
+func TestWebClientLoadsOnlyOwnAssets(t *testing.T) {
+	index, err := os.ReadFile(filepath.Join("..", "web", "index.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := regexp.MustCompile(`(?i)(src|href)\s*=\s*"(https?:)?//`).Find(index); m != nil {
+		t.Errorf("index.html loads from another origin: %s", m)
+	}
+	css, err := os.ReadFile(filepath.Join("..", "web", "src", "style.css"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if regexp.MustCompile(`(?i)@import\s+url|url\(\s*['"]?(https?:)?//`).Match(css) {
+		t.Error("style.css loads from another origin")
+	}
+	fonts := regexp.MustCompile(`url\('(/fonts/[^']+)'\)`).FindAllSubmatch(css, -1)
+	if len(fonts) == 0 {
+		t.Fatal("no self-hosted fonts in style.css")
+	}
+	for _, m := range fonts {
+		if _, err := os.Stat(filepath.Join("..", "web", "public", filepath.FromSlash(string(m[1])))); err != nil {
+			t.Errorf("%s is named in style.css but not shipped: %v", m[1], err)
+		}
+	}
+	if n := strings.Count(string(css), "font-display: swap;"); n != strings.Count(string(css), "@font-face") {
+		t.Errorf("%d of the @font-face rules lack font-display: swap", strings.Count(string(css), "@font-face")-n)
+	}
+	for _, license := range []string{"Inter-OFL.txt", "JetBrainsMono-OFL.txt"} {
+		if b, err := os.ReadFile(filepath.Join("..", "web", "public", "fonts", license)); err != nil || !strings.Contains(string(b), "SIL Open Font License") {
+			t.Errorf("font license %s missing: %v", license, err)
+		}
 	}
 }
