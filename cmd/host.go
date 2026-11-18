@@ -18,6 +18,7 @@ import (
 
 	"github.com/creack/pty"
 	"github.com/gorilla/websocket"
+	"github.com/guzus/birdy/internal/chatmodel"
 	"github.com/guzus/birdy/internal/processenv"
 	"github.com/spf13/cobra"
 )
@@ -40,6 +41,9 @@ var hostCmd = &cobra.Command{
 	GroupID: "birdy",
 	Args:    cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := chatmodel.ValidateWebConfig(); err != nil {
+			return err
+		}
 		inviteCode, err := ensureHostInviteCode(hostInviteCodeFlag)
 		if err != nil {
 			return err
@@ -372,7 +376,7 @@ func hostedTTYCommand() *exec.Cmd {
 }
 
 func hostedTUIEnvironment(env []string) []string {
-	return processenv.Without(env, "OPENCODE_API_KEY")
+	return processenv.Without(env, "OPENCODE_API_KEY", "CHUBBY_API_KEY")
 }
 
 func authenticateHostedWS(conn *websocket.Conn, inviteCode string) bool {

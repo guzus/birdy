@@ -843,3 +843,49 @@ func writeAccountsFixture(t *testing.T, home string, accounts any) {
 		t.Fatalf("write accounts fixture: %v", err)
 	}
 }
+
+func TestHostedChubbyDefaultChat(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" || r.Header.Get("Authorization") != "Bearer chb_test" {
+			t.Errorf("unexpected Chubby endpoint or authorization")
+		}
+		var request struct {
+			Model  string
+			Stream bool
+			Tools  []json.RawMessage
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.Model != "anthropic/claude-sonnet-test" || !request.Stream || len(request.Tools) != 1 {
+			t.Errorf("bad upstream request: model=%s stream=%t tools=%d", request.Model, request.Stream, len(request.Tools))
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"READY\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+	t.Setenv("BIRDY_WEB_CHAT_BACKEND", "chubby")
+	t.Setenv("CHUBBY_MODEL", "anthropic/claude-sonnet-test")
+	t.Setenv("CHUBBY_API_KEY", "chb_test")
+	t.Setenv("CHUBBY_BASE_URL", upstream.URL+"/v1")
+	t.Setenv("CHUBBY_CA_FILE", "")
+	if err := chatmodel.ValidateWebConfig(); err != nil {
+		t.Fatal(err)
+	}
+	for _, body := range []string{`{"prompt":"probe"}`, `{"model":"sonnet","prompt":"probe"}`} {
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(body))
+		req.RemoteAddr = "192.0.2.149:1234"
+		req.Header.Set("Authorization", "Bearer test")
+		handleAPIChat("test")(rr, req)
+		if rr.Code != 200 || !strings.Contains(rr.Body.String(), "READY") || strings.Contains(rr.Body.String(), "event: error") || !strings.Contains(rr.Body.String(), "event: done") {
+			t.Fatalf("chat failed: %s", rr.Body.String())
+		}
+	}
+	t.Setenv("CHUBBY_MODEL", "auto")
+	selection, err := chatmodel.ResolveClient("")
+	if err != nil || selection.ID != "chubby" || selection.Provider != "Chubby" {
+		t.Fatalf("unexpected default: %+v %v", selection, err)
+	}
+	t.Setenv("CHUBBY_API_KEY", "")
+	if chatmodel.Available(selection) || chatmodel.ValidateWebConfig() == nil {
+		t.Fatal("missing Chubby key accepted")
+	}
+}

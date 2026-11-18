@@ -312,13 +312,28 @@ BIRDY_ACCOUNTS=[{"name":"main","auth_token":"x_auth_token_here","ct0":"x_ct0_her
 E2B_API_KEY=e2b_replace-with-api-key
 BIRDY_E2B_TEMPLATE=bird-box:production
 
-# Required for AI chat (pick one auth method)
+# For Claude Code AI chat, configure one auth method
 CLAUDE_CODE_OAUTH_TOKEN=replace-with-claude-code-oauth-token
 # or
 # ANTHROPIC_API_KEY=replace-with-anthropic-api-key
 # or
 # ANTHROPIC_AUTH_TOKEN=replace-with-anthropic-auth-token
 ```
+
+For Birdy Web chat through Chubby, set `BIRDY_WEB_CHAT_BACKEND=chubby`,
+`CHUBBY_BASE_URL` to the reachable Chubby v1 endpoint, and `CHUBBY_API_KEY` to
+a dedicated server-side direct service key. Set `CHUBBY_MODEL` to a tool-capable
+model allowed by the key, or use `auto`. On a private TLS relay, mount the
+public CA certificate and point `CHUBBY_CA_FILE` to it. Configure the key as
+a runtime secret. The web host calls Chubby directly, streams the response,
+and executes public X reads locally. E2B and Claude OAuth are optional for
+this backend. The Chrome harness retains its separate backend setting.
+
+New web conversations use the default reported by `/api/chat/models`. With
+an explicitly selected Claude Sonnet model on Chubby, saved Sonnet chats keep
+their model ID. An authenticated `POST /api/chat` should produce streamed text
+and a final `done` event. An `error` event indicates the chat failed even
+when the HTTP request returned 200.
 
 ### 4. Add persistent volume
 

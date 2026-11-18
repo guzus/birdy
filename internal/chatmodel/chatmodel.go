@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/guzus/birdy/internal/birdbox"
+	"github.com/guzus/birdy/internal/chubby"
 	"github.com/guzus/birdy/internal/claude"
 	"github.com/guzus/birdy/internal/codex"
 	"github.com/guzus/birdy/internal/opencode"
@@ -17,6 +18,7 @@ import (
 type Backend string
 
 const (
+	BackendChubby     Backend = "chubby"
 	BackendClaudeCode Backend = "claude-code"
 	BackendCodex      Backend = "codex"
 	BackendOpenCode   Backend = "opencode"
@@ -47,18 +49,44 @@ type Request struct {
 	Prompt       string
 	SystemPrompt string
 	BirdyCommand string
+	RunBirdyTool chubby.ToolRunner
 }
 
 type StreamFunc func(context.Context, Selection, Request, func(claude.Event))
 
 var serverClaudeModelPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$`)
 
+func ValidateWebConfig() error {
+	switch strings.TrimSpace(os.Getenv("BIRDY_WEB_CHAT_BACKEND")) {
+	case "", string(BackendClaudeCode):
+		return nil
+	case string(BackendChubby):
+		return chubby.ValidateConfig()
+	default:
+		return fmt.Errorf("unknown BIRDY_WEB_CHAT_BACKEND")
+	}
+}
+
+func defaultClientModel() Selection {
+	if strings.TrimSpace(os.Getenv("BIRDY_WEB_CHAT_BACKEND")) != string(BackendChubby) {
+		return Selection{ID: DefaultClientModelID, Backend: BackendClaudeCode, Provider: "Claude Code", DisplayModel: "Sonnet", RuntimeModel: "sonnet", SupportsTools: true}
+	}
+	model := strings.TrimSpace(os.Getenv("CHUBBY_MODEL"))
+	if model == "" {
+		model = "auto"
+	}
+	id := "chubby"
+	_, name, qualified := strings.Cut(model, "/")
+	if qualified && strings.HasPrefix(name, "claude-sonnet-") {
+		// Existing Sonnet conversations can continue using the same model family.
+		id = DefaultClientModelID
+	}
+	return Selection{ID: id, Backend: BackendChubby, Provider: "Chubby", DisplayModel: model, RuntimeModel: model, SupportsTools: true}
+}
+
 func ClientModels() []Selection {
 	return []Selection{
-		{
-			ID: DefaultClientModelID, Backend: BackendClaudeCode,
-			Provider: "Claude Code", DisplayModel: "Sonnet", RuntimeModel: "sonnet", SupportsTools: true,
-		},
+		defaultClientModel(),
 		{
 			ID: CodexClientModelID, Backend: BackendCodex,
 			Provider: "OpenAI Codex", DisplayModel: codex.ResolveModel(CodexClientModelID), RuntimeModel: CodexClientModelID, SupportsTools: true,
@@ -73,7 +101,7 @@ func ClientModels() []Selection {
 func ResolveClient(value string) (Selection, error) {
 	normalized := strings.ToLower(strings.TrimSpace(value))
 	if normalized == "" {
-		normalized = DefaultClientModelID
+		return defaultClientModel(), nil
 	}
 	for _, model := range ClientModels() {
 		if normalized == model.ID {
@@ -145,6 +173,9 @@ func AvailableNoTools(selection Selection) bool {
 }
 
 func availableFor(selection Selection, mode Mode) bool {
+	if selection.Backend == BackendChubby {
+		return strings.TrimSpace(os.Getenv("CHUBBY_API_KEY")) != ""
+	}
 	if mode == ModeNoTools {
 		switch selection.Backend {
 		case BackendClaudeCode:
@@ -186,6 +217,15 @@ func Stream(ctx context.Context, selection Selection, request Request, emit func
 	}
 
 	switch selection.Backend {
+	case BackendChubby:
+		run := request.RunBirdyTool
+		if request.Mode == ModeNoTools {
+			run = nil
+		} else if run == nil {
+			emitFailure(emit, "Birdy tool runner unavailable")
+			return
+		}
+		chubby.Stream(ctx, request.Prompt, request.SystemPrompt, run, emit)
 	case BackendClaudeCode:
 		if request.Mode == ModeNoTools {
 			if birdbox.Enabled() {
