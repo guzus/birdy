@@ -392,3 +392,31 @@ func TestServerTimelineUsesChubbyTimestamps(t *testing.T) {
 		t.Fatalf("%q %g", got, reserve)
 	}
 }
+
+func TestManagedScanNeverFallsBackWhenARunMayExist(t *testing.T) {
+	refusal := func(status int) error { return &chubby.APIError{Status: status, Code: "x"} }
+	for _, tc := range []struct {
+		name     string
+		errs     []error
+		attempts int
+		fallback bool
+	}{
+		{"refused first", []error{refusal(429)}, 1, true},
+		{"5xx then refused replay", []error{refusal(502), refusal(409)}, 2, false},
+		{"transport then refused replay", []error{errors.New("Chubby managed API connection failed"), refusal(429)}, 2, false},
+		{"redirect then refused replay", []error{refusal(302), refusal(404)}, 2, false},
+		{"5xx twice", []error{refusal(503), refusal(503)}, 2, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &fakeManaged{startErrs: tc.errs}
+			useFakeManaged(t, f)
+			err := runManagedScan(t.Context(), false, (&emitted{}).emit)
+			if len(f.keys) != tc.attempts || errors.Is(err, errScanManagedUnavailable) != tc.fallback || err == nil {
+				t.Fatalf("attempts %d err %v", len(f.keys), err)
+			}
+			if tc.attempts == 2 && f.keys[0] != f.keys[1] {
+				t.Fatal("the replay changed its key")
+			}
+		})
+	}
+}

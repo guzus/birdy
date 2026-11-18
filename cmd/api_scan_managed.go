@@ -153,14 +153,21 @@ func runManagedScan(ctx context.Context, visitor bool, emit scanEmitter) error {
 		return errScanManagedUnavailable
 	}
 	run, err := m.StartRun(ctx, session.ID, scanManagedInput, key)
-	var apiErr *chubby.APIError
-	if err != nil && !errors.As(err, &apiErr) && ctx.Err() == nil {
-		// The submission may have landed: the same key and input return that run.
+	// Only a 4xx on the first attempt proves no run exists. A transport error,
+	// a 5xx or a redirect may follow a created run, and so may any failure of
+	// the replay: falling back then would read every source a second time
+	// beside a run nobody can cancel.
+	mayExist := err != nil && !scanStartRefused(err)
+	if mayExist && ctx.Err() == nil {
+		// The same key and input return the run if the first attempt landed.
 		run, err = m.StartRun(ctx, session.ID, scanManagedInput, key)
 	}
 	if err != nil {
 		log.Printf("[scan-managed] start: %v", err)
-		return errScanManagedUnavailable
+		if !mayExist {
+			return errScanManagedUnavailable
+		}
+		return errors.New("The briefing could not start. Try again.")
 	}
 	metrics.runID = run.ID
 	finished := false
@@ -307,6 +314,11 @@ func runManagedScan(ctx context.Context, visitor bool, emit scanEmitter) error {
 		return errors.New("The model returned no source-linked summary cards.")
 	}
 	return nil
+}
+
+func scanStartRefused(err error) bool {
+	var apiErr *chubby.APIError
+	return errors.As(err, &apiErr) && apiErr.Status >= 400 && apiErr.Status < 500
 }
 
 func tokens(v *float64) float64 {
