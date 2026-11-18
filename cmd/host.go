@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -76,6 +77,8 @@ var hostCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		// Optional usage counts; off (and silent) without its database URL.
+		startWebStatsFromEnv(context.Background())
 		server := &http.Server{
 			Addr:              hostAddrFlag,
 			Handler:           proxy.limitWebRequests(buildHostedMux(inviteCode, allowedOrigins, webDir), newRateLimiter(120, time.Minute)),

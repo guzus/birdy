@@ -236,6 +236,10 @@ func apiScanHandler(invite string, read scanReader, stream chatmodel.StreamFunc)
 			}
 			flusher.Flush()
 		}
+		surface := webSurfaceScan
+		if visitor {
+			surface = webSurfaceVisitorScan
+		}
 		managed := wantsManagedScan(visitor, r.Header.Get("X-Birdy-Scan-Engine"))
 		if managed {
 			if reason := scanManagedBlocked(model, time.Now()); reason != "" {
@@ -244,6 +248,7 @@ func apiScanHandler(invite string, read scanReader, stream chatmodel.StreamFunc)
 				// A trial request named the managed engine: say why, never
 				// substitute a direct briefing.
 				if scanManagedMode() == "trial" {
+					recordWebUse(r, surface, webEngineManaged, !visitor)
 					emit("error", map[string]string{"type": "error", "error": "The managed briefing is unavailable: " + reason + "."})
 					emit("done", map[string]string{"type": "done"})
 					return
@@ -258,6 +263,7 @@ func apiScanHandler(invite string, read scanReader, stream chatmodel.StreamFunc)
 				err = errors.New("The managed briefing could not start.")
 			}
 			if !errors.Is(err, errScanManagedUnavailable) {
+				recordWebUse(r, surface, webEngineManaged, !visitor)
 				if err != nil && ctx.Err() == nil {
 					emit("error", map[string]string{"type": "error", "error": err.Error()})
 				}
@@ -265,6 +271,7 @@ func apiScanHandler(invite string, read scanReader, stream chatmodel.StreamFunc)
 				return
 			}
 		}
+		recordWebUse(r, surface, webEngineDirect, !visitor)
 		plan := scanSources
 		if visitor {
 			plan = publicScanSources

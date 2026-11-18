@@ -239,6 +239,10 @@ The web host allows 120 dynamic requests per IP per minute, including up to 20 c
 
 By default the socket peer identifies the client. Behind a reverse proxy, set `BIRDY_HOST_TRUSTED_PROXIES` to the exact proxy IPs or CIDRs. For a Cloudflare Tunnel behind a trusted proxy, also set `BIRDY_HOST_CLOUDFLARE_TUNNELS` to its tunnel hop. The host uses Cloudflare’s client IP header only when both hops match. Update these settings if the ingress addresses change.
 
+#### Optional usage counts
+
+Set `BIRDY_WEB_STATS_DATABASE_URL` to a PostgreSQL URL to record daily usage counts; unset, nothing is recorded and nothing changes. Once a minute the host adds, per UTC day, the answered chat, scan, visitor chat, visitor scan and command requests by engine (`web_daily`), the distinct clients as an HMAC-SHA256 of the client address under `BIRDY_WEB_STATS_SALT` cut to 16 bytes, marked invited or visitor (`web_clients`; without the salt only counts are kept), and the number of enabled accounts with the rate limits recorded in this process (`web_pool`). No address, prompt, answer, account name or credential is stored. The tables must already exist (the host creates none), and its database role needs only `SELECT`, `INSERT` and `UPDATE` on them. A database failure is logged without the URL and that minute's counts are dropped; requests are never affected. Both variables are removed from the environment at start, so no child process sees them. Rate limits hit by child processes (the CLI tools a direct chat model runs) are not counted.
+
 Notes:
 - Set invite code with `--invite-code` or `BIRDY_HOST_INVITE_CODE`.
 - For public deployments, set `BIRDY_READ_ONLY=1`.
