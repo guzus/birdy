@@ -660,17 +660,17 @@ export function MarkdownMessage({ text }: { text: string }) {
   );
 }
 
-function BirdyTimelineLink() {
+function RelatedLinks() {
+  const linkClass = 'inline-flex min-h-11 items-center gap-1 text-text-dim no-underline hover:text-text focus-visible:outline-2 focus-visible:outline-offset-2 md:min-h-7';
   return (
-    <a
-      href="https://birdy-timeline.guzus.xyz"
-      target="_blank"
-      rel="noreferrer"
-      aria-label="Birdy Timeline (opens in a new tab)"
-      className="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-lg border border-border px-3 text-xs font-medium text-text no-underline hover:bg-bg-2 focus-visible:outline-2 focus-visible:outline-offset-2 sm:min-h-9"
-    >
-      Birdy Timeline <span aria-hidden="true">↗</span>
-    </a>
+    <nav aria-label="Related sites" className="flex shrink-0 items-center justify-end gap-4 border-b border-border/50 px-4 text-[11px]">
+      <a href="https://memtherscan.xyz" target="_blank" rel="noreferrer" className={linkClass}>
+        memtherscan.xyz<span className="hidden sm:inline">&mdash; Monitor trending memes</span>
+      </a>
+      <a href="https://birdy-timeline.guzus.xyz" target="_blank" rel="noreferrer" className={linkClass} aria-label="Birdy Timeline (opens in a new tab)">
+        Birdy Timeline <span aria-hidden="true">↗</span>
+      </a>
+    </nav>
   );
 }
 
@@ -1089,24 +1089,24 @@ function BirdyApp() {
   }, []);
   if (session) return <BirdyWorkspace key={session.publicView ? 'public' : 'invited'} session={session} onInvite={showInvite} />;
   return (
-    <div className="h-full max-w-[640px] mx-auto grid grid-rows-[auto_minmax(0,1fr)] p-3 sm:p-4 gap-0">
-      <header className="flex items-center justify-between py-3 border-b border-border">
-        <BirdyWordmark />
-        <div className="flex items-center gap-2">
+    <div className="h-full flex flex-col">
+      <RelatedLinks />
+      <div className="flex-1 min-h-0 w-full max-w-[640px] mx-auto grid grid-rows-[auto_minmax(0,1fr)] p-3 sm:p-4 gap-0">
+        <header className="flex items-center justify-between py-3 border-b border-border">
+          <BirdyWordmark />
           {busy && <span className="text-[11px] text-text-dim">checking...</span>}
-          <BirdyTimelineLink />
-        </div>
-      </header>
-      {checking ? <p role="status" className="text-sm text-text-dim">Opening Birdy…</p> : <InvitePanel
-        inviteCode={inviteCode}
-        status={status}
-        busy={busy}
-        onChange={setInviteCode}
-        onSubmit={() => void openSession(inviteCode.trim())}
-      />}
-      {!checking && (canReopen || status.includes('Try again')) && <button type="button"
-        className="mb-3 bg-transparent border-none text-xs text-text-muted hover:text-text cursor-pointer"
-        onClick={() => void openSession('')}>{canReopen ? 'Back to public trends' : 'Try again'}</button>}
+        </header>
+        {checking ? <p role="status" className="text-sm text-text-dim">Opening Birdy…</p> : <InvitePanel
+          inviteCode={inviteCode}
+          status={status}
+          busy={busy}
+          onChange={setInviteCode}
+          onSubmit={() => void openSession(inviteCode.trim())}
+        />}
+        {!checking && (canReopen || status.includes('Try again')) && <button type="button"
+          className="mb-3 bg-transparent border-none text-xs text-text-muted hover:text-text cursor-pointer"
+          onClick={() => void openSession('')}>{canReopen ? 'Back to public trends' : 'Try again'}</button>}
+      </div>
     </div>
   );
 }
@@ -1827,10 +1827,7 @@ function BirdyWorkspace({ session, onInvite }: { session: WebSession; onInvite: 
 
       {/* Main content */}
       <div className="flex-1 min-w-0 h-full flex flex-col">
-        {/* Desktop promo banner */}
-        <div className="hidden md:flex items-center justify-end gap-4 px-4 py-1.5 text-[11px] text-text-dim border-b border-border/50">
-          <a href="https://memtherscan.xyz" target="_blank" rel="noreferrer" className="hover:text-text transition-colors no-underline text-text-dim">memtherscan.xyz &mdash; Monitor trending memes</a>
-        </div>
+        <RelatedLinks />
       <div className="flex-1 min-w-0 max-w-[640px] mx-auto w-full grid grid-rows-[auto_minmax(0,1fr)_auto] p-3 sm:p-4 gap-0">
         <header className="flex items-center justify-between py-3 border-b border-border">
           <div className="flex items-center gap-3">
@@ -1842,23 +1839,20 @@ function BirdyWorkspace({ session, onInvite }: { session: WebSession; onInvite: 
             </button>
             <BirdyWordmark />
           </div>
-          <div className="flex items-center gap-2">
-            <BirdyTimelineLink />
-            {publicView ? <button type="button" className="border-0 bg-transparent text-xs text-text-muted hover:text-text cursor-pointer"
-              onClick={() => onInvite('Enter your workspace invite code.')}>Use invite</button> : <button
-              type="button"
-              disabled={!activeHasShareableContent || Boolean(activeRunning)}
-              className="rounded-lg border border-border bg-transparent px-3 py-1.5 text-xs font-medium text-text cursor-pointer hover:bg-bg-2 disabled:cursor-not-allowed disabled:opacity-40"
-              onClick={() => {
-                setShareError('');
-                setShareStatus('');
-                setShareDialogOpen(true);
-              }}
-              title={activeRunning ? 'Wait for the current response to finish' : 'Share a read-only encrypted snapshot'}
-            >
-              Share
-            </button>}
-          </div>
+          {publicView ? <button type="button" className="border-0 bg-transparent text-xs text-text-muted hover:text-text cursor-pointer"
+            onClick={() => onInvite('Enter your workspace invite code.')}>Use invite</button> : <button
+            type="button"
+            disabled={!activeHasShareableContent || Boolean(activeRunning)}
+            className="rounded-lg border border-border bg-transparent px-3 py-1.5 text-xs font-medium text-text cursor-pointer hover:bg-bg-2 disabled:cursor-not-allowed disabled:opacity-40"
+            onClick={() => {
+              setShareError('');
+              setShareStatus('');
+              setShareDialogOpen(true);
+            }}
+            title={activeRunning ? 'Wait for the current response to finish' : 'Share a read-only encrypted snapshot'}
+          >
+            Share
+          </button>}
         </header>
 
         <main className="min-h-0 overflow-y-auto flex flex-col py-1 hide-scrollbar" ref={feedRef}>
