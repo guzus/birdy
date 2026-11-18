@@ -660,6 +660,20 @@ export function MarkdownMessage({ text }: { text: string }) {
   );
 }
 
+function BirdyTimelineLink() {
+  return (
+    <a
+      href="https://birdy-timeline.guzus.xyz"
+      target="_blank"
+      rel="noreferrer"
+      aria-label="Birdy Timeline (opens in a new tab)"
+      className="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-lg border border-border px-3 text-xs font-medium text-text no-underline hover:bg-bg-2 focus-visible:outline-2 focus-visible:outline-offset-2 sm:min-h-9"
+    >
+      Birdy Timeline <span aria-hidden="true">↗</span>
+    </a>
+  );
+}
+
 function BirdyWordmark() {
   return (
     <h1 className="m-0 flex items-center gap-2 text-lg font-semibold tracking-tight text-text">
@@ -1719,9 +1733,10 @@ function BirdyApp() {
       <div className="h-full max-w-[640px] mx-auto grid grid-rows-[auto_minmax(0,1fr)] p-3 sm:p-4 gap-0">
         <header className="flex items-center justify-between py-3 border-b border-border">
           <BirdyWordmark />
-          <span className="text-[11px] text-text-dim">
-            {authBusy ? 'checking...' : ''}
-          </span>
+          <div className="flex items-center gap-2">
+            {authBusy && <span className="text-[11px] text-text-dim">checking...</span>}
+            <BirdyTimelineLink />
+          </div>
         </header>
         <InvitePanel
           inviteCode={inviteCode}
@@ -1852,7 +1867,6 @@ function BirdyApp() {
         {/* Desktop promo banner */}
         <div className="hidden md:flex items-center justify-end gap-4 px-4 py-1.5 text-[11px] text-text-dim border-b border-border/50">
           <a href="https://memtherscan.xyz" target="_blank" rel="noreferrer" className="hover:text-text transition-colors no-underline text-text-dim">memtherscan.xyz &mdash; Monitor trending memes</a>
-          <a href="https://polymarket.com/?r=s3xy" target="_blank" rel="noreferrer" className="hover:text-text transition-colors no-underline text-text-dim">Polymarket &mdash; Bet on anything</a>
         </div>
       <div className="flex-1 min-w-0 max-w-[640px] mx-auto w-full grid grid-rows-[auto_minmax(0,1fr)_auto] p-3 sm:p-4 gap-0">
         <header className="flex items-center justify-between py-3 border-b border-border">
@@ -1865,7 +1879,8 @@ function BirdyApp() {
             </button>
             <BirdyWordmark />
           </div>
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2">
+            <BirdyTimelineLink />
             <button
               type="button"
               disabled={!activeHasShareableContent || Boolean(activeRunning)}
