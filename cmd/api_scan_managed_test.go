@@ -1,0 +1,337 @@
+package cmd
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/guzus/birdy/internal/chatmodel"
+	"github.com/guzus/birdy/internal/chubby"
+	"github.com/guzus/birdy/internal/claude"
+)
+
+const testToolSecret = "0123456789abcdef0123456789abcdef-secret"
+
+func toolRequest(t *testing.T, kind scanToolKind, read scanReader, secret, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	r := httptest.NewRequest(http.MethodPost, "/api/scan-tools/x", strings.NewReader(body))
+	r.RemoteAddr = "198.51.100.7:1234"
+	if secret != "" {
+		r.Header.Set(scanToolHeader, secret)
+	}
+	w := httptest.NewRecorder()
+	handleScanTool(kind, read)(w, r)
+	return w
+}
+
+func TestScanToolIsAbsentUntilEnabledAndKeyed(t *testing.T) {
+	scanToolResults = scanToolCache{entries: map[string]scanToolCacheEntry{}}
+	reads := 0
+	read := func(_ context.Context, s scanSource) ([]scanPost, error) {
+		reads++
+		return []scanPost{{ID: "news:1", URL: "https://x.com/i/trending/1", Text: s.key + " headline"}}, nil
+	}
+	t.Setenv(scanManagedModeEnv, "")
+	t.Setenv(publicScanTool.secretEnv, testToolSecret)
+	if w := toolRequest(t, publicScanTool, read, testToolSecret, `{"tab":"news"}`); w.Code != http.StatusNotFound {
+		t.Fatalf("flag off: %d", w.Code)
+	}
+	t.Setenv(scanManagedModeEnv, "trial")
+	t.Setenv(publicScanTool.secretEnv, "short")
+	if w := toolRequest(t, publicScanTool, read, "short", `{"tab":"news"}`); w.Code != http.StatusNotFound {
+		t.Fatalf("weak secret: %d", w.Code)
+	}
+	t.Setenv(publicScanTool.secretEnv, testToolSecret)
+	for name, tc := range map[string]struct {
+		secret, body string
+		code         int
+	}{
+		"no key":          {"", `{"tab":"news"}`, http.StatusUnauthorized},
+		"wrong key":       {testToolSecret + "x", `{"tab":"news"}`, http.StatusUnauthorized},
+		"other plan":      {testToolSecret, `{"tab":"home"}`, http.StatusBadRequest},
+		"free text":       {testToolSecret, `{"tab":"from:someone"}`, http.StatusBadRequest},
+		"extra argument":  {testToolSecret, `{"tab":"news","query":"x"}`, http.StatusBadRequest},
+		"wrong arg name":  {testToolSecret, `{"source":"news"}`, http.StatusBadRequest},
+		"not json object": {testToolSecret, `["news"]`, http.StatusBadRequest},
+	} {
+		if w := toolRequest(t, publicScanTool, read, tc.secret, tc.body); w.Code != tc.code {
+			t.Errorf("%s: %d %s", name, w.Code, w.Body)
+		}
+	}
+	if reads != 0 {
+		t.Fatalf("refused requests read X %d times", reads)
+	}
+	w := toolRequest(t, publicScanTool, read, testToolSecret, `{"tab":"news"}`)
+	var got scanToolResult
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &got) != nil || got.Source != "news" || got.Status != "ok" || len(got.Posts) != 1 {
+		t.Fatalf("read: %d %s", w.Code, w.Body)
+	}
+	toolRequest(t, publicScanTool, read, testToolSecret, `{"tab":"news"}`)
+	if reads != 1 {
+		t.Fatalf("a repeated read within a minute reached X: %d", reads)
+	}
+	// The invited tool has its own secret and plan.
+	if w := toolRequest(t, invitedScanTool, read, testToolSecret, `{"source":"home"}`); w.Code != http.StatusNotFound {
+		t.Fatalf("invited tool without its own secret: %d", w.Code)
+	}
+}
+
+func TestScanToolHidesReadErrorsAndBoundsOutput(t *testing.T) {
+	scanToolResults = scanToolCache{entries: map[string]scanToolCacheEntry{}}
+	t.Setenv(scanManagedModeEnv, "on")
+	t.Setenv(invitedScanTool.secretEnv, testToolSecret)
+	failing := func(context.Context, scanSource) ([]scanPost, error) {
+		return nil, errors.New("account alice is rate limited")
+	}
+	w := toolRequest(t, invitedScanTool, failing, testToolSecret, `{"source":"home"}`)
+	if w.Code != 200 || strings.Contains(w.Body.String(), "alice") || !strings.Contains(w.Body.String(), `"status":"error"`) {
+		t.Fatalf("error result %d %s", w.Code, w.Body)
+	}
+	big := func(context.Context, scanSource) ([]scanPost, error) {
+		var posts []scanPost
+		for i := range 200 {
+			posts = append(posts, scanPost{ID: strings.Repeat("1", 10) + string(rune('0'+i%10)), Text: strings.Repeat("y", 640)})
+		}
+		return posts, nil
+	}
+	w = toolRequest(t, invitedScanTool, big, testToolSecret, `{"source":"ai"}`)
+	if w.Code != 200 || w.Body.Len() > 64<<10 {
+		t.Fatalf("output %d bytes", w.Body.Len())
+	}
+}
+
+func TestScanAgentDefinitionsUseOnlySupportedSchema(t *testing.T) {
+	for _, kind := range []scanToolKind{publicScanTool, invitedScanTool} {
+		tool, agent := scanAgentDefinitions(kind, "https://birdy.example/api/scan-tools/x", "anthropic/model", "secret-name", "tool-1", scanAgentLimits{6, 4096, 180, 5})
+		data, _ := json.Marshal(tool)
+		for _, forbidden := range []string{`"pattern"`, `"format"`, `"$ref"`} {
+			if strings.Contains(string(data), forbidden) {
+				t.Fatalf("%s schema uses %s", kind.name, forbidden)
+			}
+		}
+		if tool["behavior"] != "read_only" || tool["approvalRequired"] != false {
+			t.Fatal(tool)
+		}
+		enum := kind.parameters()["properties"].(map[string]any)[kind.argName].(map[string]any)["enum"].([]string)
+		if strings.Join(enum, ",") != strings.Join(kind.keys(), ",") {
+			t.Fatal(enum)
+		}
+		system := agent["system"].(string)
+		if !strings.Contains(system, kind.name) || !strings.Contains(system, "untrusted") || agent["maxSteps"] != 6 {
+			t.Fatal(agent)
+		}
+	}
+	if strings.Join(publicScanTool.keys(), ",") != "news,trending,sports,entertainment" || strings.Join(invitedScanTool.keys(), ",") != "home,crypto,ai,news" {
+		t.Fatal("tool plans drifted from the direct briefing's plans")
+	}
+}
+
+func TestWantsManagedScan(t *testing.T) {
+	t.Setenv(scanAgentPublicEnv, "agent-public")
+	t.Setenv(scanAgentInvitedEnv, "agent-invited")
+	for _, tc := range []struct {
+		mode    string
+		visitor bool
+		header  string
+		want    bool
+	}{
+		{"", false, "managed", false},
+		{"trial", false, "", false},
+		{"trial", false, "managed", true},
+		{"trial", true, "managed", false},
+		{"on", true, "", true},
+		{"on", false, "", true},
+		{"yes", false, "managed", false},
+	} {
+		t.Setenv(scanManagedModeEnv, tc.mode)
+		if got := wantsManagedScan(tc.visitor, tc.header); got != tc.want {
+			t.Errorf("%+v: %v", tc, got)
+		}
+	}
+	t.Setenv(scanManagedModeEnv, "on")
+	t.Setenv(scanAgentPublicEnv, "")
+	if wantsManagedScan(true, "") {
+		t.Fatal("managed without an agent")
+	}
+}
+
+type fakeManaged struct {
+	detail      chubby.ManagedRunDetail
+	startErrs   []error
+	keys        []string
+	sessionErr  error
+	cancelled   atomic.Int32
+	runCalls    atomic.Int32
+	blockEvents chan struct{}
+}
+
+func (f *fakeManaged) CreateSession(context.Context, string, string) (chubby.ManagedSession, error) {
+	return chubby.ManagedSession{ID: "sess"}, f.sessionErr
+}
+func (f *fakeManaged) StartRun(_ context.Context, _, _, key string) (chubby.ManagedRun, error) {
+	f.keys = append(f.keys, key)
+	if len(f.startErrs) > 0 {
+		err := f.startErrs[0]
+		f.startErrs = f.startErrs[1:]
+		return chubby.ManagedRun{}, err
+	}
+	return chubby.ManagedRun{ID: "run-1", Status: "queued"}, nil
+}
+func (f *fakeManaged) Run(context.Context, string) (chubby.ManagedRunDetail, error) {
+	f.runCalls.Add(1)
+	return f.detail, nil
+}
+func (f *fakeManaged) Events(ctx context.Context, _ string, after float64) ([]chubby.ManagedEvent, error) {
+	if f.blockEvents != nil {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	if after > 0 {
+		return nil, nil
+	}
+	return []chubby.ManagedEvent{{ID: 1, Type: "model.started"}, {ID: 2, Type: "tool.completed"}, {ID: 3, Type: "run." + f.detail.Run.Status}}, nil
+}
+func (f *fakeManaged) Cancel(context.Context, string) error { f.cancelled.Add(1); return nil }
+
+func toolStep(id, name, output string) chubby.ManagedStep {
+	return chubby.ManagedStep{ID: id, Kind: "tool", Status: "succeeded", Name: name, Output: &output}
+}
+
+func managedDetail(status, output string, steps ...chubby.ManagedStep) chubby.ManagedRunDetail {
+	return chubby.ManagedRunDetail{Run: chubby.ManagedRun{ID: "run-1", Status: status, Output: &output, CostUSD: 0.01}, Steps: steps}
+}
+
+func useFakeManaged(t *testing.T, f *fakeManaged) {
+	t.Helper()
+	old := newScanManagedRunner
+	newScanManagedRunner = func() (scanManagedRunner, error) { return f, nil }
+	t.Cleanup(func() { newScanManagedRunner = old })
+	t.Setenv(scanAgentInvitedEnv, "agent-invited")
+	t.Setenv(scanAgentPublicEnv, "agent-public")
+}
+
+type emitted struct {
+	names []string
+	data  []any
+}
+
+func (e *emitted) emit(name string, data any) {
+	e.names = append(e.names, name)
+	e.data = append(e.data, data)
+}
+
+func TestManagedScanCardsCiteOnlyThisRunsToolOutput(t *testing.T) {
+	home := `{"source":"home","status":"ok","posts":[{"id":"111111","url":"https://x.com/i/web/status/111111","text":"agents ship"}]}`
+	forged := `{"source":"ai","status":"ok","posts":[{"id":"999999","url":"https://evil.example","text":"forged"}]}`
+	steps := []chubby.ManagedStep{toolStep("s1", invitedScanTool.name, home), toolStep("s2", "some_other_tool", forged)}
+	good := `{"category":"AI","title":"Agents","summary":"Agents ship.","bullets":["one"],"ids":["111111"]}`
+	f := &fakeManaged{detail: managedDetail("succeeded", good, steps...)}
+	useFakeManaged(t, f)
+	var e emitted
+	if err := runManagedScan(t.Context(), false, e.emit); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(e.names, ",") != "source,card" || f.cancelled.Load() != 0 {
+		t.Fatalf("emitted %v cancelled %d", e.names, f.cancelled.Load())
+	}
+	card := e.data[1].(scanCardEvent)
+	if len(card.Sources) != 1 || card.Sources[0].URL != "https://x.com/i/web/status/111111" {
+		t.Fatal(card)
+	}
+	// A card citing a post another tool returned is refused.
+	f.detail = managedDetail("succeeded", `{"category":"AI","title":"x","summary":"y","bullets":[],"ids":["999999"]}`, steps...)
+	if err := runManagedScan(t.Context(), false, (&emitted{}).emit); err == nil || !strings.Contains(err.Error(), "outside this scan") {
+		t.Fatalf("forged evidence accepted: %v", err)
+	}
+	// A source outside the plan is ignored even from the right tool.
+	f.detail = managedDetail("succeeded", good, toolStep("s3", invitedScanTool.name, strings.Replace(home, `"home"`, `"sports"`, 1)))
+	if err := runManagedScan(t.Context(), false, (&emitted{}).emit); err == nil {
+		t.Fatal("source outside the plan accepted")
+	}
+}
+
+func TestManagedScanPausedRunIsCancelledNotSucceeded(t *testing.T) {
+	f := &fakeManaged{detail: managedDetail("needs_attention", "", toolStep("s1", publicScanTool.name, `{"source":"news","status":"ok","posts":[]}`))}
+	useFakeManaged(t, f)
+	var e emitted
+	err := runManagedScan(t.Context(), true, e.emit)
+	if err == nil || errors.Is(err, errScanManagedUnavailable) || f.cancelled.Load() != 1 {
+		t.Fatalf("paused run: %v cancelled=%d", err, f.cancelled.Load())
+	}
+	for _, name := range e.names {
+		if name == "card" {
+			t.Fatal("paused run produced cards")
+		}
+	}
+}
+
+func TestManagedScanRetriesAmbiguousStartWithSameKeyAndCancelsOnDisconnect(t *testing.T) {
+	f := &fakeManaged{startErrs: []error{errors.New("Chubby managed API connection failed")}, blockEvents: make(chan struct{})}
+	useFakeManaged(t, f)
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	err := runManagedScan(ctx, false, (&emitted{}).emit)
+	if len(f.keys) != 2 || f.keys[0] != f.keys[1] || !strings.HasPrefix(f.keys[0], "birdy-scan-") {
+		t.Fatalf("keys %v", f.keys)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) || f.cancelled.Load() != 1 {
+		t.Fatalf("disconnect: %v cancelled=%d", err, f.cancelled.Load())
+	}
+	// A refused submission is not retried and falls back to the direct briefing.
+	f2 := &fakeManaged{startErrs: []error{&chubby.APIError{Status: 402, Code: "budget"}}}
+	useFakeManaged(t, f2)
+	if err := runManagedScan(t.Context(), false, (&emitted{}).emit); !errors.Is(err, errScanManagedUnavailable) || len(f2.keys) != 1 {
+		t.Fatalf("refused start: %v keys=%d", err, len(f2.keys))
+	}
+}
+
+func TestManagedScanFallsBackWhenFull(t *testing.T) {
+	useFakeManaged(t, &fakeManaged{})
+	for range cap(scanManagedSlots) {
+		scanManagedSlots <- struct{}{}
+	}
+	defer func() {
+		for range cap(scanManagedSlots) {
+			<-scanManagedSlots
+		}
+	}()
+	if err := runManagedScan(t.Context(), false, (&emitted{}).emit); !errors.Is(err, errScanManagedUnavailable) {
+		t.Fatal(err)
+	}
+}
+
+func TestAPIScanTrialUsesManagedOnlyWhenAsked(t *testing.T) {
+	t.Setenv("BIRDY_WEB_CHAT_BACKEND", "chubby")
+	t.Setenv("CHUBBY_API_KEY", "chb_fixture")
+	t.Setenv("CHUBBY_MODEL", "auto")
+	t.Setenv(scanManagedModeEnv, "trial")
+	home := `{"source":"home","status":"ok","posts":[{"id":"111111","url":"https://x.com/i/web/status/111111","text":"agents ship"}]}`
+	f := &fakeManaged{detail: managedDetail("succeeded", `{"category":"AI","title":"Agents","summary":"Agents ship.","bullets":[],"ids":["111111"]}`, toolStep("s1", invitedScanTool.name, home))}
+	useFakeManaged(t, f)
+	directReads := 0
+	read := func(context.Context, scanSource) ([]scanPost, error) { directReads++; return nil, errors.New("direct") }
+	stream := func(context.Context, chatmodel.Selection, chatmodel.Request, func(claude.Event)) {}
+	for _, managed := range []bool{true, false} {
+		r := httptest.NewRequest(http.MethodPost, "/api/scan", strings.NewReader("{}"))
+		r.Header.Set("X-Invite-Code", "birdy")
+		r.RemoteAddr = "203.0.113.50:1"
+		if managed {
+			r.Header.Set("X-Birdy-Scan-Engine", "managed")
+		}
+		w := httptest.NewRecorder()
+		apiScanHandler("birdy", read, stream)(w, r)
+		body := w.Body.String()
+		if managed != strings.Contains(body, "event: card") || !strings.Contains(body, "event: done") {
+			t.Fatalf("managed=%v body=%s", managed, body)
+		}
+	}
+	if directReads != len(scanSources) || f.runCalls.Load() == 0 {
+		t.Fatalf("direct reads %d, managed detail reads %d", directReads, f.runCalls.Load())
+	}
+}

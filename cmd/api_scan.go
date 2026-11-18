@@ -235,6 +235,16 @@ func apiScanHandler(invite string, read scanReader, stream chatmodel.StreamFunc)
 			}
 			flusher.Flush()
 		}
+		if wantsManagedScan(visitor, r.Header.Get("X-Birdy-Scan-Engine")) {
+			err = runManagedScan(ctx, visitor, emit)
+			if !errors.Is(err, errScanManagedUnavailable) {
+				if err != nil && ctx.Err() == nil {
+					emit("error", map[string]string{"type": "error", "error": err.Error()})
+				}
+				emit("done", map[string]string{"type": "done"})
+				return
+			}
+		}
 		plan := scanSources
 		if visitor {
 			plan = publicScanSources

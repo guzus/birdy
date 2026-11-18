@@ -371,6 +371,40 @@ their model ID. An authenticated `POST /api/chat` should produce streamed text
 and a final `done` event. An `error` event indicates the chat failed even
 when the HTTP request returned 200.
 
+#### Managed briefings (optional, off by default)
+
+The briefing (`/api/scan`) can instead run as a Chubby managed agent: Chubby's
+worker calls two read-only tool endpoints on the web host, and the agent writes
+the cards. Birdy relays each source as its tool step completes and accepts only
+cards that cite posts this run's own tool steps returned.
+
+- `BIRDY_SCAN_MANAGED`: unset (off), `trial` (tool endpoints live; only an
+  invited request with `X-Birdy-Scan-Engine: managed` uses the agent), or `on`
+  (every briefing). Off, the tool endpoints answer 404.
+- `BIRDY_SCAN_TOOL_SECRET_PUBLIC`, `BIRDY_SCAN_TOOL_SECRET_INVITED`: random
+  values of at least 32 characters, one per tool. Each endpoint answers 404
+  while its secret is unset.
+- `BIRDY_SCAN_AGENT_PUBLIC`, `BIRDY_SCAN_AGENT_INVITED`: the agent IDs.
+
+`POST /api/scan-tools/public` takes `{"tab": ...}` (the four Explore tabs);
+`POST /api/scan-tools/invited` takes `{"source": ...}` (`home`, `crypto`, `ai`,
+`news`). Both require the `X-Birdy-Tool-Key` header and read each source at most
+once a minute. Register each agent once, with the same environment as the web
+host, using an exact `CHUBBY_MODEL`:
+
+```bash
+birdy scan-agent register --kind public --host https://your-birdy-host.example
+birdy scan-agent register --kind invited --host https://your-birdy-host.example
+```
+
+It stores the tool secret in Chubby, registers the tool, creates the agent
+(6 model steps, 4096 output tokens, 180 s, $5 per run by default) and prints
+the IDs. A run's budget must cover one model step's reservation, which Chubby
+sizes from the model's whole context window. At most three managed briefings
+run at once; beyond that, or when a run cannot start, the briefing falls back
+to the direct path. A briefing whose viewer disconnects, or that pauses for
+attention, is cancelled.
+
 ### 4. Add persistent volume
 
 Mount a Railway volume at:
