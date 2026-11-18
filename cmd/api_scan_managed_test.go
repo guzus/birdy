@@ -30,7 +30,13 @@ func toolRequest(t *testing.T, kind scanToolKind, read scanReader, secret, body 
 	return w
 }
 
+func resetScanToolState() {
+	scanToolResults = scanToolCache{entries: map[string]scanToolCacheEntry{}}
+	scanToolLimiter = newRateLimiter(1_000_000, time.Minute)
+}
+
 func TestScanToolIsAbsentUntilEnabledAndKeyed(t *testing.T) {
+	resetScanToolState()
 	scanToolResults = scanToolCache{entries: map[string]scanToolCacheEntry{}}
 	reads := 0
 	read := func(_ context.Context, s scanSource) ([]scanPost, error) {
@@ -83,6 +89,7 @@ func TestScanToolIsAbsentUntilEnabledAndKeyed(t *testing.T) {
 }
 
 func TestScanToolHidesReadErrorsAndBoundsOutput(t *testing.T) {
+	resetScanToolState()
 	scanToolResults = scanToolCache{entries: map[string]scanToolCacheEntry{}}
 	t.Setenv(scanManagedModeEnv, "on")
 	t.Setenv(invitedScanTool.secretEnv, testToolSecret)
@@ -314,8 +321,8 @@ func TestAPIScanTrialUsesManagedOnlyWhenAsked(t *testing.T) {
 	home := `{"source":"home","status":"ok","posts":[{"id":"111111","url":"https://x.com/i/web/status/111111","text":"agents ship"}]}`
 	f := &fakeManaged{detail: managedDetail("succeeded", `{"category":"AI","title":"Agents","summary":"Agents ship.","bullets":[],"ids":["111111"]}`, toolStep("s1", invitedScanTool.name, home))}
 	useFakeManaged(t, f)
-	directReads := 0
-	read := func(context.Context, scanSource) ([]scanPost, error) { directReads++; return nil, errors.New("direct") }
+	var directReads atomic.Int32 // the direct briefing reads sources concurrently
+	read := func(context.Context, scanSource) ([]scanPost, error) { directReads.Add(1); return nil, errors.New("direct") }
 	stream := func(context.Context, chatmodel.Selection, chatmodel.Request, func(claude.Event)) {}
 	for _, managed := range []bool{true, false} {
 		r := httptest.NewRequest(http.MethodPost, "/api/scan", strings.NewReader("{}"))
@@ -331,7 +338,7 @@ func TestAPIScanTrialUsesManagedOnlyWhenAsked(t *testing.T) {
 			t.Fatalf("managed=%v body=%s", managed, body)
 		}
 	}
-	if directReads != len(scanSources) || f.runCalls.Load() == 0 {
-		t.Fatalf("direct reads %d, managed detail reads %d", directReads, f.runCalls.Load())
+	if int(directReads.Load()) != len(scanSources) || f.runCalls.Load() == 0 {
+		t.Fatalf("direct reads %d, managed detail reads %d", directReads.Load(), f.runCalls.Load())
 	}
 }
