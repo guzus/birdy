@@ -46,7 +46,7 @@ The TUI features:
 
 ## Birdy Web
 
-Birdy Web is the invite-gated React interface served by `birdy host`. It is
+Birdy Web is the React interface served by `birdy host`. Its invited workspace is
 built for X-hitchhiking agents: a user asks for a timeline scan, research, or a
 deep dive, then chooses an available server-registered model. Claude works
 inside a disposable Bird Box sandbox when configured; Codex and OpenCode Go run
@@ -119,7 +119,7 @@ timeout; the sandbox TTL is the cleanup backstop if deletion cannot reach E2B.
 
 ### HTTP API
 
-The static app at `/` and `/healthz` are public. General API operations
+The static app at `/` and `/healthz` are public. By default, workspace API operations
 authenticate with `X-Invite-Code: <code>` or `Authorization: Bearer <code>`;
 the harness endpoint instead requires its own per-install bearer token. `/ws`
 upgrades first, then requires the invite code in its initial auth message. JSON
@@ -145,7 +145,7 @@ the source links on each summary card. **Refresh scan** keeps the previous
 cards visible during the next scan. If a source fails, the scan identifies it
 and uses the remaining evidence.
 
-The scan endpoint authenticates with the same invite bearer as chat. It sends
+An invited scan uses the same invite bearer as chat. It sends
 a single tool-free synthesis request when at least one linked item is available.
 Each card's source URLs come from those fetched items. For custom installations
 using the Codex CLI, the web client keeps its existing chat-based scan because
@@ -215,7 +215,17 @@ birdy will print the local URL:
 http://127.0.0.1:8787
 ```
 
-Users must enter an invite code to use the APIs or PTY TUI.
+By default the site opens at the invite screen. The **Birdy Timeline** button opens the public topic directory from either the invite screen or the workspace.
+
+#### Opening the website to visitors
+
+Set `BIRDY_WEB_PUBLIC=1` on the web host and restart it to enable guest access. Keep `BIRDY_HOST_INVITE_CODE` configured for the invited workspace. The public scan and chat require the configured Chubby backend (`BIRDY_WEB_CHAT_BACKEND=chubby` and its existing model credentials). Remove `BIRDY_WEB_PUBLIC` and restart to return to invite-only access.
+
+From a fresh browser, **Scan public trends** reads the News, Trending, Sports and Entertainment Explore tabs. Visitors can discuss those results with tool-free chat. **Use invite** opens the workspace for personalized timelines, account commands and share management. The terminal requires its invite. The public and invited views keep separate browser histories.
+
+The web host allows 120 dynamic requests per IP per minute, including up to 20 combined chat/scan starts and 60 command operations. Batched commands consume one slot per operation. At most two model streams run at once per IP and 16 per host. A per-IP limit returns HTTP 429 with `Retry-After`. The separately authenticated harness has its own quotas. Limits are local to the host process.
+
+By default the socket peer identifies the client. Behind a reverse proxy, set `BIRDY_HOST_TRUSTED_PROXIES` to the exact proxy IPs or CIDRs. For a Cloudflare Tunnel behind a trusted proxy, also set `BIRDY_HOST_CLOUDFLARE_TUNNELS` to its tunnel hop. The host uses Cloudflare’s client IP header only when both hops match. Update these settings if the ingress addresses change.
 
 Notes:
 - Set invite code with `--invite-code` or `BIRDY_HOST_INVITE_CODE`.
