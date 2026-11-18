@@ -53,8 +53,10 @@ func scanAgentFor(visitor bool) (string, scanToolKind) {
 
 // wantsManagedScan decides per request; a false answer keeps today's path.
 func wantsManagedScan(visitor bool, engineHeader string) bool {
-	agent, _ := scanAgentFor(visitor)
-	if agent == "" {
+	agent, kind := scanAgentFor(visitor)
+	// Without its tool's secret the agent can read nothing, and a started run
+	// would only fail; keep the direct briefing instead.
+	if agent == "" || kind.toolSecret() == "" {
 		return false
 	}
 	switch scanManagedMode() {

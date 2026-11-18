@@ -82,6 +82,15 @@ func (k scanToolKind) toolSecret() string {
 	if len(secret) < scanToolMinSecret {
 		return ""
 	}
+	// One shared value would let either audience's agent read the other's
+	// sources, so a reused secret disables both tools.
+	other := invitedScanTool
+	if k.secretEnv == invitedScanTool.secretEnv {
+		other = publicScanTool
+	}
+	if strings.TrimSpace(os.Getenv(other.secretEnv)) == secret {
+		return ""
+	}
 	return secret
 }
 

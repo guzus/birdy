@@ -146,6 +146,8 @@ func TestScanAgentDefinitionsUseOnlySupportedSchema(t *testing.T) {
 func TestWantsManagedScan(t *testing.T) {
 	t.Setenv(scanAgentPublicEnv, "agent-public")
 	t.Setenv(scanAgentInvitedEnv, "agent-invited")
+	t.Setenv(publicScanTool.secretEnv, testToolSecret+"-public")
+	t.Setenv(invitedScanTool.secretEnv, testToolSecret+"-invited")
 	for _, tc := range []struct {
 		mode    string
 		visitor bool
@@ -166,6 +168,14 @@ func TestWantsManagedScan(t *testing.T) {
 		}
 	}
 	t.Setenv(scanManagedModeEnv, "on")
+	t.Setenv(invitedScanTool.secretEnv, "")
+	if wantsManagedScan(false, "") {
+		t.Fatal("managed without the tool's secret")
+	}
+	t.Setenv(invitedScanTool.secretEnv, testToolSecret+"-public")
+	if wantsManagedScan(false, "") || wantsManagedScan(true, "") || publicScanTool.toolSecret() != "" {
+		t.Fatal("one secret shared by both tools was accepted")
+	}
 	t.Setenv(scanAgentPublicEnv, "")
 	if wantsManagedScan(true, "") {
 		t.Fatal("managed without an agent")
@@ -225,6 +235,8 @@ func useFakeManaged(t *testing.T, f *fakeManaged) {
 	t.Cleanup(func() { newScanManagedRunner = old })
 	t.Setenv(scanAgentInvitedEnv, "agent-invited")
 	t.Setenv(scanAgentPublicEnv, "agent-public")
+	t.Setenv(publicScanTool.secretEnv, testToolSecret+"-public")
+	t.Setenv(invitedScanTool.secretEnv, testToolSecret+"-invited")
 }
 
 type emitted struct {
