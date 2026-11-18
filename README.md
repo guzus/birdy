@@ -849,6 +849,22 @@ The same view is available to Go callers as `tweet.FullTweet` via
 
 ## Go library (`pkg/tweet`)
 
+For a public post by ID or X status URL, set `NoCookie: true`. Birdy serves a fresh cached post or fetches it from X on a cache miss.
+
+```go
+reader, err := tweet.NewReader(tweet.ReaderOptions{NoCookie: true})
+if err != nil {
+    return err
+}
+post, err := reader.Read(ctx, "https://x.com/jack/status/20")
+if err != nil {
+    return err
+}
+fmt.Println(post.Text, post.Author.Username, post.URL())
+```
+
+Import `github.com/guzus/birdy/pkg/tweet`. This mode returns the public post ID, text, and author. Other `Tweet` fields retain their zero values. The SDK reads no account files or cookies. A missing public post returns HTTP 404 through `*tweet.PublicPostError`. For a 429, `tweet.IsRateLimited(err)` reports true and `PublicPostError.RetryAfter` gives the server's suggested wait. Pass `tweet.ReaderOptions{}` for the native account-backed reader.
+
 Embed birdy in a Go service to read tweets without shelling out to the CLI or
 running `birdy host`. Reads are implemented **natively in Go** against X's
 GraphQL API, so this path needs no Node.js and no bird CLI.

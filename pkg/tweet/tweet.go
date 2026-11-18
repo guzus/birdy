@@ -14,6 +14,9 @@
 //
 //	BIRDY_ACCOUNTS=[{"name":"main","auth_token":"...","ct0":"..."}]
 //
+// To read individual public posts without X cookies, construct a Reader with
+// ReaderOptions{NoCookie: true}. It fetches them through Birdy’s public post cache.
+//
 // # Stability
 //
 // The identifiers and struct fields in this package are covered by birdy's
@@ -26,6 +29,7 @@ package tweet
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -243,9 +247,11 @@ func (c *Client) Thread(ctx context.Context, ref string) ([]Tweet, error) {
 }
 
 // IsRateLimited reports whether err represents an X rate limit, including a
-// GraphQL error delivered inside an HTTP-200 response. Wrapped errors work.
+// GraphQL error delivered inside an HTTP-200 response, or a 429 from the
+// public post server. Wrapped errors work.
 func IsRateLimited(err error) bool {
-	return xapi.IsRateLimited(err)
+	var publicErr *PublicPostError
+	return xapi.IsRateLimited(err) || (errors.As(err, &publicErr) && publicErr.StatusCode == 429)
 }
 
 // withAccount picks an account, runs fn against it, and records the outcome.
