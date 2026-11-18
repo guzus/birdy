@@ -151,10 +151,13 @@ func TestStreamNoToolsOmitsXCredentialsAndBirdyPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read env: %v", err)
 	}
-	env := string(envBytes)
-	for _, secret := range []string{"BIRDY_ACCOUNTS=", "BIRDY_HARNESS_ACCOUNTS=", "BIRDY_HOST_INVITE_CODE=", "BIRDY_HOST_TOKEN=", "BIRDY_HARNESS_TOKEN_HASHES=", "AUTH_TOKEN=", "CT0=", "TWITTER_AUTH_TOKEN=", "TWITTER_CT0=", "OPENCODE_API_KEY=", "CHUBBY_API_KEY="} {
-		if strings.Contains(env, secret) {
-			t.Fatalf("no-tools bird-box retained %q in %q", secret, env)
+	// Match whole variable names, and never print the environment: it holds
+	// the developer's own credentials.
+	for _, line := range strings.Split(string(envBytes), "\n") {
+		for _, secret := range []string{"BIRDY_ACCOUNTS=", "BIRDY_HARNESS_ACCOUNTS=", "BIRDY_HOST_INVITE_CODE=", "BIRDY_HOST_TOKEN=", "BIRDY_HARNESS_TOKEN_HASHES=", "AUTH_TOKEN=", "CT0=", "TWITTER_AUTH_TOKEN=", "TWITTER_CT0=", "OPENCODE_API_KEY=", "CHUBBY_API_KEY="} {
+			if strings.HasPrefix(line, secret) {
+				t.Fatalf("no-tools bird-box retained %s", strings.TrimSuffix(secret, "="))
+			}
 		}
 	}
 }
