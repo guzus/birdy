@@ -17,6 +17,7 @@ type turnResult struct {
 	calls  []toolCall
 	finish string
 	tokens *int64
+	cost   *float64
 }
 
 type choice struct {
@@ -82,7 +83,8 @@ func (s *turnResult) consume(data string, emit func(claude.Event)) error {
 		Error   json.RawMessage `json:"error"`
 		Choices []choice        `json:"choices"`
 		Usage   *struct {
-			Total *int64 `json:"total_tokens"`
+			Total *int64   `json:"total_tokens"`
+			Cost  *float64 `json:"cost"`
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal([]byte(data), &event); err != nil {
@@ -96,6 +98,7 @@ func (s *turnResult) consume(data string, emit func(claude.Event)) error {
 			return errors.New("Chubby returned invalid stream usage")
 		}
 		s.tokens = event.Usage.Total
+		s.cost = event.Usage.Cost
 		return nil
 	}
 	if len(event.Choices) != 1 || event.Choices[0].Index == nil || *event.Choices[0].Index != 0 || s.finish != "" {

@@ -3,10 +3,13 @@ package chubby
 import (
 	"context"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -187,5 +190,42 @@ func TestStreamCancellation(t *testing.T) {
 		if e.Type != claude.EventDone {
 			t.Fatal(e)
 		}
+	}
+}
+
+func TestStreamUsesConfiguredRelayCA(t *testing.T) {
+	s := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		frame(w, textFrame)
+		finish(w, "stop")
+		frame(w, `{"choices":[],"usage":{"total_tokens":1,"cost":0.00001}}`)
+		frame(w, "[DONE]")
+	}))
+	defer s.Close()
+	configure(t, s)
+	cert := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: s.Certificate().Raw})
+	certFile := filepath.Join(t.TempDir(), "relay.pem")
+	if err := os.WriteFile(certFile, cert, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CHUBBY_CA_FILE", certFile)
+	if err := ValidateConfig(); err != nil {
+		t.Fatal(err)
+	}
+	var events []claude.Event
+	Stream(t.Context(), "ping", "", nil, func(e claude.Event) { events = append(events, e) })
+	if len(events) != 2 || events[0].Text != "answer" || events[1].Type != claude.EventDone {
+		t.Fatal(events)
+	}
+	if err := os.WriteFile(certFile, []byte("broken"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if ValidateConfig() == nil {
+		t.Fatal("invalid CA accepted")
+	}
+	t.Setenv("CHUBBY_CA_FILE", "")
+	t.Setenv("CHUBBY_BASE_URL", "http://remote.invalid/v1")
+	if ValidateConfig() == nil {
+		t.Fatal("cleartext remote endpoint accepted")
 	}
 }

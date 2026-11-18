@@ -246,7 +246,11 @@ func (c *client) turn(ctx context.Context, req request, id string, emit func(cla
 	}
 	result, err := readStream(res.Body, emit)
 	if err == nil && result.tokens != nil {
-		log.Printf("[chubby] request_id=%s total_tokens=%d", rid, *result.tokens)
+		if result.cost != nil {
+			log.Printf("[chubby] request_id=%s total_tokens=%d cost_usd=%g", rid, *result.tokens, *result.cost)
+		} else {
+			log.Printf("[chubby] request_id=%s total_tokens=%d", rid, *result.tokens)
+		}
 	}
 	return result, err
 }
