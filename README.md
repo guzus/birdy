@@ -65,8 +65,8 @@ request an invite code.
 
 The web app provides:
 
-- **Timeline scans** — the selected model explores home, search, and news feeds, then turns
-  the results into source-linked alpha cards.
+- **Timeline scans** — open a post as soon as it arrives from home, search, or news.
+  The hosted model summarizes the fetched items into cards with links to their sources.
 - **Streaming chat and Deep Dive** — `/api/chat` streams model text and birdy
   tool calls to the browser over server-sent events (SSE).
 - **Browser-local persistence** — chat/card history is saved in that browser's
