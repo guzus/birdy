@@ -6,6 +6,7 @@ export const maxSharePlaintextBytes = 350 * 1024;
 export type SharedCard = {
   category: 'CRYPTO' | 'AI' | 'TRENDING' | 'SIGNAL' | 'RESEARCH';
   title: string;
+  summary?: string;
   bullets: string[];
   sources: string[];
   timestamp: string;
@@ -38,6 +39,7 @@ type ConversationLike = {
   cards: Array<{
     category: SharedCard['category'];
     title: string;
+    summary?: string;
     bullets: string[];
     sources: string[];
     timestamp: Date | string;
@@ -83,6 +85,7 @@ export function buildShareSnapshot(conversation: ConversationLike): ShareSnapsho
   const cards = conversation.cards.slice(0, 100).map(card => ({
     category: card.category,
     title: card.title.slice(0, 500),
+    ...(card.summary ? { summary: card.summary.slice(0, 10_000) } : {}),
     bullets: card.bullets.slice(0, 100).map(bullet => bullet.slice(0, 10_000)),
     sources: card.sources.slice(0, 100).map(source => source.slice(0, 2_000)),
     timestamp: new Date(card.timestamp).toISOString(),
@@ -138,6 +141,7 @@ function isShareSnapshot(value: unknown): value is ShareSnapshot {
     const typed = card as Partial<SharedCard>;
     return ['CRYPTO', 'AI', 'TRENDING', 'SIGNAL', 'RESEARCH'].includes(typed.category ?? '')
       && typeof typed.title === 'string'
+      && (typed.summary === undefined || typeof typed.summary === 'string')
       && typeof typed.timestamp === 'string'
       && Array.isArray(typed.bullets) && typed.bullets.every(item => typeof item === 'string')
       && Array.isArray(typed.sources) && typed.sources.every(item => typeof item === 'string');

@@ -1,5 +1,7 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
+import { readScanStream, scanPermalink, scanSourceLabels } from './scan';
+import type { ScanPost, ScanSource } from './scan';
 import { parseMarkdownBlocks } from './markdown';
 import {
   createChatRequest,
@@ -57,11 +59,16 @@ type AlphaCard = {
   id: string;
   category: CardCategory;
   title: string;
+  summary?: string;
   bullets: string[];
   sources: string[];
   timestamp: Date;
   rawMarkdown: string;
 };
+
+type ScanPreview = { source: ScanSource; post: ScanPost };
+type ScanOutcome = { preview?: ScanPreview; previousPreview?: boolean; failed: ScanSource[]; notice?: string };
+type LiveScan = ScanOutcome & { completed: number; cards: AlphaCard[]; legacy: boolean };
 
 type FeedItem =
   | { kind: 'card'; card: AlphaCard }
@@ -72,6 +79,7 @@ type Conversation = {
   title: string;
   chatItems: (FeedItem & { kind: 'chat' })[];
   cards: AlphaCard[];
+  scan?: ScanOutcome;
   createdAt: number;
   updatedAt: number;
   modelId: string;
@@ -729,6 +737,7 @@ function AlphaCardView({
         <span className="font-mono">{timeAgo(card.timestamp)}</span>
       </div>
       <h3 className="m-0 text-base font-semibold leading-snug text-text">{card.title}</h3>
+      {card.summary && <p className="m-0 text-[13px] leading-relaxed text-text-muted">{card.summary}</p>}
       {card.bullets.length > 0 && (
         <ul className="m-0 pl-4 flex flex-col gap-0.5">
           {card.bullets.map((b, i) => (
@@ -736,15 +745,7 @@ function AlphaCardView({
           ))}
         </ul>
       )}
-      {card.sources.length > 0 && (
-        <div className="flex flex-wrap gap-1.5">
-          {card.sources.map((s) => (
-            <span key={s} className="font-mono text-[11px] text-text-dim">
-              {s}
-            </span>
-          ))}
-        </div>
-      )}
+      {card.sources.length > 0 && <ScanSources sources={card.sources} />}
       <button
         className="self-start text-text-dim text-xs font-medium underline underline-offset-2 cursor-pointer font-[inherit] bg-transparent border-none p-0 hover:text-text transition-colors disabled:cursor-not-allowed disabled:opacity-40"
         disabled={!toolsAvailable}
@@ -765,28 +766,23 @@ function sanitizeError(raw: string): string {
   return trimmed;
 }
 
-function ScanIndicator({ tools, onCancel }: { tools: string[]; onCancel: () => void }) {
-  return (
-    <div className="py-8 flex flex-col items-center gap-3">
-      <div className="w-2 h-2 rounded-full bg-text-dim animate-pulse-dot" />
-      <span className="text-[13px] text-text-dim">Scanning...</span>
-      {tools.length > 0 && (
-        <div className="flex flex-wrap gap-1.5 justify-center">
-          {tools.map((t) => (
-            <code key={t} className="font-mono text-[10px] py-0.5 px-1.5 text-text-dim">
-              {t}
-            </code>
-          ))}
-        </div>
-      )}
-      <button
-        onClick={onCancel}
-        className="text-[12px] text-text-dim underline underline-offset-2 bg-transparent border-none cursor-pointer font-[inherit] hover:text-text"
-      >
-        Cancel
-      </button>
-    </div>
-  );
+function ScanSources({ sources }: { sources: string[] }) {
+  return <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-text-dim">
+    {sources.map((source, i) => scanPermalink(source) ? (
+      <a key={source} href={source} target="_blank" rel="noreferrer" className="underline underline-offset-2 hover:text-text">
+        {sources.length === 1 ? 'View source on X' : `Source ${i + 1} on X`}
+      </a>
+    ) : <span key={source}>{source}</span>)}
+  </div>;
+}
+
+function ScanPreviewView({ source, post }: ScanPreview) {
+  if (!scanPermalink(post.url)) return null;
+  return <article className="border-b border-border py-4 flex flex-col gap-2">
+    <div className="text-xs text-text-dim">{scanSourceLabels[source]}{post.author && ` · ${post.author}`}</div>
+    <p className="m-0 text-sm text-text leading-relaxed whitespace-pre-line break-words">{post.text}</p>
+    <a href={post.url} target="_blank" rel="noreferrer" className="self-start text-xs text-text-dim underline underline-offset-2 hover:text-text">{source === 'news' ? 'Open on X' : 'Open post on X'}</a>
+  </article>;
 }
 
 export function Composer({
@@ -901,6 +897,7 @@ function SharedCardView({ card }: { card: SharedCard }) {
         <span className="font-mono">{timeAgo(new Date(card.timestamp))}</span>
       </div>
       <h2 className="m-0 text-base font-semibold leading-snug text-text">{card.title}</h2>
+      {card.summary && <p className="m-0 text-[13px] leading-relaxed text-text-muted">{card.summary}</p>}
       {card.bullets.length > 0 && (
         <ul className="m-0 pl-4 flex flex-col gap-0.5">
           {card.bullets.map((bullet, index) => (
@@ -908,13 +905,7 @@ function SharedCardView({ card }: { card: SharedCard }) {
           ))}
         </ul>
       )}
-      {card.sources.length > 0 && (
-        <div className="flex flex-wrap gap-1.5">
-          {card.sources.map((source, index) => (
-            <span key={`${source}-${index}`} className="font-mono text-[11px] text-text-dim">{source}</span>
-          ))}
-        </div>
-      )}
+      {card.sources.length > 0 && <ScanSources sources={card.sources} />}
     </article>
   );
 }
@@ -1035,7 +1026,7 @@ function BirdyApp() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [prompt, setPrompt] = useState('');
   const [runningByConv, setRunningByConv] = useState<Record<string, RunningKind>>({});
-  const [scanToolsByConv, setScanToolsByConv] = useState<Record<string, string[]>>({});
+  const [liveScans, setLiveScans] = useState<Record<string, LiveScan>>({});
   const [chatModels, setChatModels] = useState<ChatModel[]>(fallbackChatModels);
   const [catalogDefaultModelId, setCatalogDefaultModelId] = useState(defaultChatModelId);
   const [modelCatalogStatus, setModelCatalogStatus] = useState('');
@@ -1051,7 +1042,9 @@ function BirdyApp() {
   const activeRunning = activeConvId ? runningByConv[activeConvId] : undefined;
   const scanning = activeRunning === 'scan';
   const genBusy = activeRunning === 'chat';
-  const scanTools = activeConvId ? (scanToolsByConv[activeConvId] ?? []) : [];
+  const liveScan = activeConvId ? liveScans[activeConvId] : undefined;
+  const scanInfo = liveScan || activeConv?.scan;
+  const priorPreview = (scanning && !liveScan?.preview) || scanInfo?.previousPreview ? activeConv?.scan?.preview : undefined;
   const activeModelId = effectiveConversationModelId(activeConv?.modelId, catalogDefaultModelId);
   const pickerModels = modelsWithSavedSelection(chatModels, activeModelId);
   const activeModel = pickerModels.find(model => model.id === activeModelId) as ChatModel;
@@ -1094,8 +1087,8 @@ function BirdyApp() {
     });
   }, []);
 
-  const clearConvScanTools = useCallback((id: string) => {
-    setScanToolsByConv(prev => {
+  const clearLiveScan = useCallback((id: string) => {
+    setLiveScans(prev => {
       if (!prev[id]) return prev;
       const next = { ...prev };
       delete next[id];
@@ -1107,16 +1100,16 @@ function BirdyApp() {
     if (streamAbortRefs.current.get(id) !== controller) return;
     streamAbortRefs.current.delete(id);
     clearConvRunning(id);
-    clearConvScanTools(id);
-  }, [clearConvRunning, clearConvScanTools]);
+    clearLiveScan(id);
+  }, [clearConvRunning, clearLiveScan]);
 
   const abortConvStream = useCallback((id: string) => {
     const controller = streamAbortRefs.current.get(id);
     controller?.abort();
     streamAbortRefs.current.delete(id);
     clearConvRunning(id);
-    clearConvScanTools(id);
-  }, [clearConvRunning, clearConvScanTools]);
+    clearLiveScan(id);
+  }, [clearConvRunning, clearLiveScan]);
 
   useEffect(() => {
     inviteCodeRef.current = inviteCode;
@@ -1274,55 +1267,80 @@ function BirdyApp() {
     const convId = target.id;
     abortConvStream(convId);
     setConvRunning(convId, 'scan');
-    clearConvScanTools(convId);
 
     const controller = new AbortController();
     streamAbortRefs.current.set(convId, controller);
 
-    let accumulated = '';
-
-    const applyCards = (parsed: AlphaCard[]) => {
-      if (parsed.length > 0) updateConv(convId, c => ({ ...c, cards: parsed, updatedAt: Date.now() }));
+    const legacy = activeModel.provider === 'OpenAI Codex';
+    let draft: LiveScan = { completed: 0, cards: [], failed: [], legacy };
+    const display = () => {
+      const current = draft;
+      setLiveScans(prev => ({ ...prev, [convId]: current }));
     };
-
+    display();
+    feedRef.current?.scrollTo({ top: 0 });
     try {
-      await streamChat(SCAN_PROMPT, modelId, {
-        signal: controller.signal,
-        onToken: (text) => {
+      if (legacy) {
+        let error = '';
+        let complete = false;
+        const markdown = await streamChat(SCAN_PROMPT, modelId, {
+          signal: controller.signal, onToken() {}, onSnapshot() {}, onTool() {}, onDone() { complete = true; },
+          onError(message) { error = message; },
+        });
+        if (error) throw new Error(error);
+        if (!complete) throw new Error('The scan ended before it finished.');
+        draft = { ...draft, cards: parseCardsFromMarkdown(markdown) };
+      } else {
+        const response = await fetch('/api/scan', {
+          method: 'POST', signal: controller.signal,
+          headers: { 'Content-Type': 'application/json', 'X-Invite-Code': inviteCodeRef.current.trim() },
+          body: JSON.stringify({ model: modelId }),
+        });
+        if (response.status === 401) {
+          setAuthed(false);
+          setAuthStatus('Code expired.');
+          throw new Error('Code expired.');
+        }
+        if (!response.ok || !response.body) throw new Error(`Scan unavailable (${response.status}).`);
+        await readScanStream(response.body, event => {
           if (controller.signal.aborted) return;
-          accumulated += text;
-        },
-        onSnapshot: (text) => {
-          if (controller.signal.aborted) return;
-          accumulated = text;
-        },
-        onTool: (command) => {
-          if (controller.signal.aborted) return;
-          setScanToolsByConv((prev) => {
-            const tools = prev[convId] ?? [];
-            if (tools.includes(command)) return prev;
-            return { ...prev, [convId]: [...tools, command] };
-          });
-        },
-        onDone: (fullText) => {
-          if (controller.signal.aborted) return;
-          applyCards(parseCardsFromMarkdown(fullText));
-          finishConvStream(convId, controller);
-        },
-        onError: () => {
-          if (controller.signal.aborted) return;
-          if (accumulated) applyCards(parseCardsFromMarkdown(accumulated));
-          finishConvStream(convId, controller);
-        },
-      });
+          if (event.type === 'source') {
+            draft = { ...draft, completed: draft.completed + 1 };
+            if (event.status === 'error') draft.failed = [...draft.failed, event.source];
+            else if (event.posts.length && (!draft.preview || event.source === 'home')) {
+              draft.preview = { source: event.source, post: event.posts[0] };
+            }
+          } else if (event.type === 'card') {
+            const sources = event.sources.map(p => p.url);
+            const card: AlphaCard = {
+              id: `card-${crypto.randomUUID()}`, category: event.category, title: event.title,
+              summary: event.summary, bullets: event.bullets, sources, timestamp: new Date(),
+              rawMarkdown: [event.title, event.summary, ...event.bullets, ...sources].join('\n'),
+            };
+            draft = { ...draft, cards: [...draft.cards, card] };
+          } else return;
+          display();
+        });
+      }
+      if (controller.signal.aborted) return;
+      const scanned = draft.cards;
+      const scan = { preview: draft.preview, failed: draft.failed,
+        notice: scanned.length ? undefined : 'This scan returned no summary cards.' };
+      updateConv(convId, c => ({
+        ...c, scan: !scanned.length && !scan.preview && c.scan?.preview
+          ? { ...scan, preview: c.scan.preview, previousPreview: true } : scan,
+        cards: scanned.length ? scanned : c.cards, updatedAt: Date.now(),
+      }));
     } catch (err) {
       if (controller.signal.aborted) return;
-      if (accumulated) applyCards(parseCardsFromMarkdown(accumulated));
-      finishConvStream(convId, controller);
+      const scan = { preview: draft.preview, failed: draft.failed,
+        notice: err instanceof Error ? err.message : 'The scan could not finish.' };
+      updateConv(convId, c => ({ ...c, scan: !scan.preview && c.scan?.preview
+        ? { ...scan, preview: c.scan.preview, previousPreview: true } : scan }));
     } finally {
       finishConvStream(convId, controller);
     }
-  }, [scanning, genBusy, activeModelReady, activeModel.id, streamChat, ensureConv, updateConv, abortConvStream, setConvRunning, clearConvScanTools, finishConvStream]);
+  }, [scanning, genBusy, activeModelReady, activeModel.provider, streamChat, ensureConv, updateConv, abortConvStream, setConvRunning, finishConvStream]);
 
   const cancelScan = useCallback(() => {
     if (!activeConvId) return;
@@ -1545,10 +1563,10 @@ function BirdyApp() {
   }, [runningByConv]);
 
   useEffect(() => {
-    if (feedRef.current) {
+    if (feedRef.current && !scanning && chatItems.length) {
       feedRef.current.scrollTop = feedRef.current.scrollHeight;
     }
-  }, [cards, chatItems, scanning]);
+  }, [chatItems]);
 
   const handleNewChat = useCallback(() => {
     const newConv: Conversation = {
@@ -1865,9 +1883,26 @@ function BirdyApp() {
         </header>
 
         <main className="min-h-0 overflow-y-auto flex flex-col py-1 hide-scrollbar" ref={feedRef}>
-          {scanning && <ScanIndicator tools={scanTools} onCancel={cancelScan} />}
-
-          {!scanning && cards.length === 0 && chatItems.length === 0 && (
+          {scanning && (
+            <div className="py-3 flex items-center gap-3 text-xs text-text-dim">
+              <span className="w-2 h-2 rounded-full bg-text-dim animate-pulse-dot" />
+              <span role="status">{liveScan?.legacy ? 'Scanning timeline…' : liveScan?.completed === 4
+                ? 'Summarizing sources…' : `Fetching sources · ${liveScan?.completed || 0}/4`}</span>
+              <button className="ml-auto bg-transparent border-none cursor-pointer text-text underline" onClick={cancelScan}>Cancel</button>
+            </div>
+          )}
+          {!scanning && (scanInfo || cards.length > 0 || chatItems.length > 0) && (
+            <button className="self-start my-3 text-xs text-text-dim hover:text-text underline underline-offset-2 bg-transparent border-none cursor-pointer disabled:opacity-40"
+              disabled={genBusy || !activeModelReady} onClick={() => void runScan()}>
+              {scanInfo || cards.length > 0 ? 'Refresh scan' : 'Scan Timeline'}
+            </button>
+          )}
+          {scanInfo && scanInfo.failed.length > 0 && <p role="status" className="my-2 text-xs text-text-muted">
+            Partial scan · Unavailable: {scanInfo.failed.map(key => scanSourceLabels[key]).join(', ')}
+          </p>}
+          {scanInfo?.notice && <p role="status" className="my-2 text-sm text-text-muted">{scanInfo.notice}</p>}
+          {scanInfo?.preview && !scanInfo.previousPreview && <ScanPreviewView {...scanInfo.preview} />}
+          {!scanning && !scanInfo && cards.length === 0 && chatItems.length === 0 && (
             <div className="flex flex-col items-center justify-center h-[300px] gap-4">
               <p className="m-0 text-text-dim text-sm">Start a conversation or scan your timeline.</p>
               <button
@@ -1880,9 +1915,12 @@ function BirdyApp() {
               </button>
             </div>
           )}
+          {liveScan?.cards.map(card => <AlphaCardView key={card.id} card={card} onDeepDive={handleDeepDive} toolsAvailable={false} />)}
+          {(scanning || scanInfo?.notice) && (cards.length > 0 || priorPreview) && <h2 className="mt-4 mb-0 text-xs font-medium text-text-muted">Previous scan</h2>}
+          {priorPreview && <ScanPreviewView {...priorPreview} />}
 
           {cards.map((card) => (
-            <AlphaCardView key={card.id} card={card} onDeepDive={handleDeepDive} toolsAvailable={activeModelReady} />
+            <AlphaCardView key={card.id} card={card} onDeepDive={handleDeepDive} toolsAvailable={activeModelReady && !scanning && !genBusy} />
           ))}
 
           {chatItems.map((item) => (
