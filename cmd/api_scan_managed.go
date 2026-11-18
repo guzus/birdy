@@ -42,8 +42,14 @@ type scanManagedRunner interface {
 	StartRun(context.Context, string, string, string) (chubby.ManagedRun, error)
 	Run(context.Context, string) (chubby.ManagedRunDetail, error)
 	Events(context.Context, string, float64) ([]chubby.ManagedEvent, error)
+	EventsPage(context.Context, string, float64, string, int) (chubby.EventsPage, error)
 	Cancel(context.Context, string) error
 }
+
+// scanManagedWait is how long one events read may wait for news. It stays well
+// under the client's 30 s timeout, and each waiting read holds one of the
+// relay's slots.
+const scanManagedWait = 15
 
 var newScanManagedRunner = func() (scanManagedRunner, error) { return chubby.NewManaged() }
 
@@ -232,6 +238,8 @@ type scanManagedMetrics struct {
 	runID, status                      string
 	started                            time.Time
 	firstModel, firstSource, firstCard time.Duration
+	firstDelta                         time.Duration
+	firstTextAt                        string
 	steps                              int
 	server                             string
 	costUSD, stepReserveUSD            float64
@@ -241,13 +249,13 @@ type scanManagedMetrics struct {
 
 func (m *scanManagedMetrics) log() {
 	ms := func(d time.Duration) int64 { return d.Milliseconds() }
-	log.Printf("[scan-managed] run=%s status=%s wall_ms=%d first_model_ms=%d first_source_ms=%d first_card_ms=%d steps=%d cost_usd=%g step_reserve_usd=%g unknown_cost=%v input=%g cache_read=%g cache_write=%g server=[%s]",
-		m.runID, m.status, ms(time.Since(m.started)), ms(m.firstModel), ms(m.firstSource), ms(m.firstCard), m.steps, m.costUSD, m.stepReserveUSD, m.unknownCost, m.inputTokens, m.cacheRead, m.cacheWrite, m.server)
+	log.Printf("[scan-managed] run=%s status=%s wall_ms=%d first_model_ms=%d first_source_ms=%d first_delta_ms=%d first_card_ms=%d steps=%d cost_usd=%g step_reserve_usd=%g unknown_cost=%v input=%g cache_read=%g cache_write=%g server=[%s]",
+		m.runID, m.status, ms(time.Since(m.started)), ms(m.firstModel), ms(m.firstSource), ms(m.firstDelta), ms(m.firstCard), m.steps, m.costUSD, m.stepReserveUSD, m.unknownCost, m.inputTokens, m.cacheRead, m.cacheWrite, m.server)
 }
 
 // serverTimeline reads Chubby's own event timestamps, relative to the run's
 // queueing, so latency is not measured with Birdy's poll interval.
-func serverTimeline(events []chubby.ManagedEvent) (string, float64) {
+func serverTimeline(events []chubby.ManagedEvent, firstTextAt string) (string, float64) {
 	var queued time.Time
 	firsts := map[string]time.Duration{}
 	var order []string
@@ -276,9 +284,12 @@ func serverTimeline(events []chubby.ManagedEvent) (string, float64) {
 			}
 		}
 	}
-	parts := make([]string, 0, len(order))
+	parts := make([]string, 0, len(order)+1)
 	for _, t := range order {
 		parts = append(parts, fmt.Sprintf("%s=%dms", t, firsts[t].Milliseconds()))
+	}
+	if at, err := time.Parse(time.RFC3339Nano, firstTextAt); err == nil && !queued.IsZero() {
+		parts = append(parts, fmt.Sprintf("first_text=%dms", at.Sub(queued).Milliseconds()))
 	}
 	return strings.Join(parts, " "), reserve
 }
@@ -392,12 +403,39 @@ func runManagedScan(ctx context.Context, visitor bool, emit scanEmitter) error {
 		return nil
 	}
 
+	readDetail := func() (chubby.ManagedRunDetail, error) {
+		var d chubby.ManagedRunDetail
+		err := readWithRetry(ctx, func() (err error) {
+			d, err = m.Run(ctx, run.ID)
+			return err
+		})
+		if err != nil && ctx.Err() == nil {
+			log.Printf("[scan-managed] run=%s detail: %v", run.ID, err)
+			err = errors.New("The briefing service is unavailable.")
+		}
+		return d, err
+	}
+	// Cards stream from the answer: the model step that starts after all of
+	// the run's tool steps finished. Its text is parsed as it arrives, against
+	// evidence read once when that step's first text shows up.
+	answer := &scanAnswer{emit: func(name string, data any) {
+		if name == "card" && metrics.firstCard == 0 {
+			metrics.firstCard = time.Since(metrics.started)
+		}
+		emit(name, data)
+	}}
+	textCursor := "1"
+	liveText := true
 	var cursor float64
 	var detail chubby.ManagedRunDetail
 	for idle := 0; ; idle++ {
-		var events []chubby.ManagedEvent
+		var page chubby.EventsPage
 		err := readWithRetry(ctx, func() (err error) {
-			events, err = m.Events(ctx, run.ID, cursor)
+			if liveText {
+				page, err = m.EventsPage(ctx, run.ID, cursor, textCursor, scanManagedWait)
+			} else {
+				page.Data, err = m.Events(ctx, run.ID, cursor)
+			}
 			return err
 		})
 		if err != nil {
@@ -407,13 +445,21 @@ func runManagedScan(ctx context.Context, visitor bool, emit scanEmitter) error {
 			log.Printf("[scan-managed] run=%s events: %v", run.ID, err)
 			return errors.New("The briefing service is unavailable.")
 		}
+		if liveText && !page.LiveText {
+			// A backend without live text: poll as before.
+			liveText = false
+		}
 		changed := false
-		for _, e := range events {
+		for _, e := range page.Data {
 			cursor = max(cursor, e.ID)
 			switch e.Type {
 			case "model.started":
 				if metrics.firstModel == 0 {
 					metrics.firstModel = time.Since(metrics.started)
+				}
+			case "model.completed":
+				if err := answer.completed(e); err != nil {
+					return err
 				}
 			case "tool.completed", "tool.failed":
 				changed = true
@@ -422,25 +468,50 @@ func runManagedScan(ctx context.Context, visitor bool, emit scanEmitter) error {
 				changed = true
 			}
 		}
+		if t := page.Text; t != nil {
+			textCursor = t.Cursor
+			if !answer.known(t.StepID) {
+				// The first text of a step: it is the answer only if every tool
+				// step of the run finished before it began.
+				d, err := readDetail()
+				if err != nil {
+					return err
+				}
+				if err := relay(d); err != nil {
+					return err
+				}
+				detail = d
+				answer.consider(t.StepID, d, buildScanEvidence(kind, sources))
+			}
+			if answer.stepID == t.StepID && answer.firstDelta == 0 && t.Delta != "" {
+				answer.firstDelta = time.Since(metrics.started)
+				metrics.firstDelta = answer.firstDelta
+			}
+			if t.FirstTextAt != nil && answer.stepID == t.StepID {
+				metrics.firstTextAt = *t.FirstTextAt
+			}
+			if err := answer.text(*t); err != nil {
+				return err
+			}
+		}
 		// Read the run when its events say something finished, and now and then
 		// regardless, so a missed event cannot stall the briefing.
-		if changed || idle%5 == 0 {
-			if err = readWithRetry(ctx, func() (err error) {
-				detail, err = m.Run(ctx, run.ID)
+		if changed || (!liveText && idle%5 == 0) || (liveText && len(page.Data) == 0 && page.Text == nil) {
+			d, err := readDetail()
+			if err != nil {
 				return err
-			}); err != nil {
-				if ctx.Err() != nil {
-					return ctx.Err()
-				}
-				log.Printf("[scan-managed] run=%s detail: %v", run.ID, err)
-				return errors.New("The briefing service is unavailable.")
 			}
+			detail = d
 			if err := relay(detail); err != nil {
 				return err
 			}
 			if detail.Run.Terminal() {
 				break
 			}
+		}
+		if liveText {
+			// The long-poll did the waiting; a full page means more to read now.
+			continue
 		}
 		select {
 		case <-ctx.Done():
@@ -455,7 +526,7 @@ func runManagedScan(ctx context.Context, visitor bool, emit scanEmitter) error {
 	metrics.steps = detail.Run.StepCount
 	metrics.costUSD, metrics.unknownCost = detail.Run.CostUSD, detail.Run.UnknownCost
 	if events, err := m.Events(ctx, run.ID, 0); err == nil {
-		metrics.server, metrics.stepReserveUSD = serverTimeline(events)
+		metrics.server, metrics.stepReserveUSD = serverTimeline(events, metrics.firstTextAt)
 	}
 	for _, step := range detail.Steps {
 		if step.Kind == "model" {
@@ -476,6 +547,19 @@ func runManagedScan(ctx context.Context, visitor bool, emit scanEmitter) error {
 		return errors.New("The briefing could not be completed. Fetched sources remain available.")
 	}
 	// Evidence comes only from this run's own succeeded tool steps, in plan order.
+	evidence = buildScanEvidence(kind, sources)
+	if len(evidence) == 0 {
+		return errors.New("No source-linked items were available for this scan.")
+	}
+	if detail.Run.Output == nil {
+		return errors.New("The model returned no source-linked summary cards.")
+	}
+	// run.output is authoritative: the streamed cards must be its beginning.
+	return answer.finish(*detail.Run.Output, evidence)
+}
+
+func buildScanEvidence(kind scanToolKind, sources map[string]scanToolResult) map[string]scanPost {
+	evidence := map[string]scanPost{}
 	for _, s := range kind.plan {
 		for _, p := range sources[s.key].Posts {
 			if _, seen := evidence[p.ID]; !seen {
@@ -483,26 +567,142 @@ func runManagedScan(ctx context.Context, visitor bool, emit scanEmitter) error {
 			}
 		}
 	}
-	if len(evidence) == 0 {
-		return errors.New("No source-linked items were available for this scan.")
+	return evidence
+}
+
+var errScanAnswerChanged = errors.New("The briefing's answer changed after its cards were shown.")
+
+// scanAnswer parses the run's answer step as Chubby streams it. Cards cannot
+// be taken back from the browser, so any sign that the shown text was not the
+// answer, once a card is out, fails the briefing.
+type scanAnswer struct {
+	emit       scanEmitter
+	stepID     string          // the step being parsed, "" while none
+	seen       map[string]bool // steps already judged
+	parser     *scanSummary
+	evidence   map[string]scanPost
+	streamed   strings.Builder // the answer text parsed so far
+	stopped    bool            // its live text ended early: wait for run.output
+	firstDelta time.Duration
+}
+
+func (a *scanAnswer) known(stepID string) bool { return a.seen[stepID] }
+
+func (a *scanAnswer) cards() int {
+	if a.parser == nil {
+		return 0
 	}
-	if detail.Run.Output == nil {
-		return errors.New("The model returned no source-linked summary cards.")
+	return a.parser.cards
+}
+
+// consider judges a step on its first text: the answer starts after every tool
+// step of the run finished, and after at least one did.
+func (a *scanAnswer) consider(stepID string, d chubby.ManagedRunDetail, evidence map[string]scanPost) {
+	if a.seen == nil {
+		a.seen = map[string]bool{}
 	}
-	parser := scanSummary{evidence: evidence, emit: func(name string, data any) {
-		if name == "card" && metrics.firstCard == 0 {
-			metrics.firstCard = time.Since(metrics.started)
+	a.seen[stepID] = true
+	if a.cards() > 0 {
+		return // A later step's text after cards: completed/tools decide.
+	}
+	sequence, tools, open := -1, 0, false
+	for _, step := range d.Steps {
+		if step.ID == stepID && step.Kind == "model" {
+			sequence = step.Sequence
 		}
-		emit(name, data)
-	}}
-	parser.append(*detail.Run.Output + "\n")
-	if parser.err == nil {
-		parser.line(strings.TrimSpace(parser.pending))
 	}
-	if parser.err != nil {
-		return parser.err
+	for _, step := range d.Steps {
+		if step.Kind != "tool" {
+			continue
+		}
+		if sequence < 0 || step.Sequence > sequence {
+			continue
+		}
+		tools++
+		switch step.Status {
+		case "succeeded", "failed", "denied":
+		default:
+			open = true
+		}
 	}
-	if parser.cards == 0 {
+	if sequence < 0 || tools == 0 || open || len(evidence) == 0 {
+		return
+	}
+	a.stepID, a.evidence, a.stopped = stepID, evidence, false
+	a.streamed.Reset()
+	a.parser = &scanSummary{evidence: evidence, emit: a.emit}
+}
+
+func (a *scanAnswer) drop() error {
+	if a.cards() > 0 {
+		return errScanAnswerChanged
+	}
+	a.stepID, a.parser, a.stopped = "", nil, false
+	a.streamed.Reset()
+	return nil
+}
+
+func (a *scanAnswer) text(t chubby.RunText) error {
+	if t.StepID != a.stepID {
+		return nil
+	}
+	if t.Reset && a.streamed.Len() > 0 {
+		if a.cards() > 0 {
+			return errScanAnswerChanged
+		}
+		a.streamed.Reset()
+		a.parser = &scanSummary{evidence: a.evidence, emit: a.emit}
+	}
+	switch t.State {
+	case "tools":
+		return a.drop()
+	case "discarded", "unavailable":
+		a.stopped = true
+		return nil
+	}
+	if a.stopped || t.Delta == "" {
+		return nil
+	}
+	a.streamed.WriteString(t.Delta)
+	a.parser.append(t.Delta)
+	if t.Truncated {
+		a.stopped = true
+	}
+	return a.parser.err
+}
+
+// completed handles a model step's durable end: a step that called a tool, or
+// stopped at its limit, was not the answer.
+func (a *scanAnswer) completed(e chubby.ManagedEvent) error {
+	var data struct {
+		StepID string `json:"stepId"`
+		Answer *bool  `json:"answer"`
+	}
+	if json.Unmarshal(e.Data, &data) != nil || data.StepID != a.stepID || data.Answer == nil || *data.Answer {
+		return nil
+	}
+	return a.drop()
+}
+
+// finish checks the streamed text against the run's output and parses what
+// the stream did not deliver; with nothing streamed it parses the output.
+func (a *scanAnswer) finish(output string, evidence map[string]scanPost) error {
+	streamed := a.streamed.String()
+	if a.parser == nil || !strings.HasPrefix(output, streamed) {
+		if a.cards() > 0 {
+			return errScanAnswerChanged
+		}
+		a.parser = &scanSummary{evidence: evidence, emit: a.emit}
+		streamed = ""
+	}
+	a.parser.append(output[len(streamed):] + "\n")
+	if a.parser.err == nil {
+		a.parser.line(strings.TrimSpace(a.parser.pending))
+	}
+	if a.parser.err != nil {
+		return a.parser.err
+	}
+	if a.parser.cards == 0 {
 		return errors.New("The model returned no source-linked summary cards.")
 	}
 	return nil

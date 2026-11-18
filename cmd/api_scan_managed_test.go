@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -190,6 +191,10 @@ type fakeManaged struct {
 	cancelled   atomic.Int32
 	runCalls    atomic.Int32
 	blockEvents chan struct{}
+	detailFn    func() chubby.ManagedRunDetail
+	pageMu      sync.Mutex
+	pages       []chubby.EventsPage
+	onPage      func(remaining int)
 }
 
 func (f *fakeManaged) CreateSession(context.Context, string, string) (chubby.ManagedSession, error) {
@@ -206,6 +211,9 @@ func (f *fakeManaged) StartRun(_ context.Context, _, _, key string) (chubby.Mana
 }
 func (f *fakeManaged) Run(context.Context, string) (chubby.ManagedRunDetail, error) {
 	f.runCalls.Add(1)
+	if f.detailFn != nil {
+		return f.detailFn(), nil
+	}
 	return f.detail, nil
 }
 func (f *fakeManaged) Events(ctx context.Context, _ string, after float64) ([]chubby.ManagedEvent, error) {
@@ -219,6 +227,23 @@ func (f *fakeManaged) Events(ctx context.Context, _ string, after float64) ([]ch
 	return []chubby.ManagedEvent{{ID: 1, Type: "model.started"}, {ID: 2, Type: "tool.completed"}, {ID: 3, Type: "run." + f.detail.Run.Status}}, nil
 }
 func (f *fakeManaged) Cancel(context.Context, string) error { f.cancelled.Add(1); return nil }
+
+// EventsPage answers as a backend without live text unless pages are scripted.
+func (f *fakeManaged) EventsPage(ctx context.Context, id string, after float64, _ string, _ int) (chubby.EventsPage, error) {
+	f.pageMu.Lock()
+	if len(f.pages) > 0 {
+		page := f.pages[0]
+		f.pages = f.pages[1:]
+		if f.onPage != nil {
+			f.onPage(len(f.pages))
+		}
+		f.pageMu.Unlock()
+		return page, nil
+	}
+	f.pageMu.Unlock()
+	data, err := f.Events(ctx, id, after)
+	return chubby.EventsPage{Data: data}, err
+}
 
 func toolStep(id, name, output string) chubby.ManagedStep {
 	return chubby.ManagedStep{ID: id, Kind: "tool", Status: "succeeded", Name: name, Output: &output}
@@ -403,8 +428,8 @@ func TestServerTimelineUsesChubbyTimestamps(t *testing.T) {
 		ev(3, "model.started", "2026-11-18T07:00:01.300Z", `{"reservedUsd":2.04096}`),
 		ev(4, "model.started", "2026-11-18T07:00:09.000Z", `{"reservedUsd":2.04096}`),
 		ev(5, "run.succeeded", "2026-11-18T07:00:20.000Z", `{}`),
-	})
-	if got != "run.queued=0ms run.claimed=1250ms model.started=1300ms run.succeeded=20000ms" || reserve != 2.04096 {
+	}, "2026-11-18T07:00:12.500Z")
+	if got != "run.queued=0ms run.claimed=1250ms model.started=1300ms run.succeeded=20000ms first_text=12500ms" || reserve != 2.04096 {
 		t.Fatalf("%q %g", got, reserve)
 	}
 }
@@ -586,6 +611,11 @@ type flakyEvents struct {
 	failures []error
 }
 
+func (f *flakyEvents) EventsPage(ctx context.Context, id string, after float64, _ string, _ int) (chubby.EventsPage, error) {
+	data, err := f.Events(ctx, id, after)
+	return chubby.EventsPage{Data: data}, err
+}
+
 func (f *flakyEvents) Events(ctx context.Context, id string, after float64) ([]chubby.ManagedEvent, error) {
 	if len(f.failures) > 0 {
 		err := f.failures[0]
@@ -680,5 +710,193 @@ func TestManagedScanRefusesAnotherModelAndPausesAfterABudgetStop(t *testing.T) {
 	other := managedDetail("needs_attention", "")
 	if budgetPaused(other) {
 		t.Fatal("a non-budget pause tripped the breaker")
+	}
+}
+
+// A live-text scenario: one model step that calls the tool, the tool step,
+// then the answer step whose text arrives in pages.
+type liveScenario struct {
+	f        *fakeManaged
+	log      []string // emitted names, plus "TERMINAL" when the run is read finished
+	terminal bool
+}
+
+const (
+	liveCard1 = `{"category":"AI","title":"Agents","summary":"Agents ship.","bullets":[],"ids":["111111"]}`
+	liveCard2 = `{"category":"CRYPTO","title":"Stables","summary":"Supply grew.","bullets":[],"ids":["222222"]}`
+)
+
+func liveText(step, cursor, delta, state string, reset bool) *chubby.RunText {
+	return &chubby.RunText{StepID: step, Attempt: 1, Cursor: cursor, Delta: delta, State: state, Reset: reset}
+}
+
+func liveEvent(id float64, typ, data string) chubby.ManagedEvent {
+	return chubby.ManagedEvent{ID: id, Type: typ, Data: json.RawMessage(data)}
+}
+
+func newLiveScenario(t *testing.T, output string, pages ...chubby.EventsPage) *liveScenario {
+	t.Helper()
+	home := `{"source":"home","status":"ok","posts":[{"id":"111111","url":"https://x.com/i/web/status/111111","text":"agents ship"},{"id":"222222","url":"https://x.com/i/web/status/222222","text":"stables grew"}]}`
+	sc := &liveScenario{}
+	tool := toolStep("s1", invitedScanTool.name, home)
+	tool.Sequence = 2
+	running := chubby.ManagedRunDetail{Run: chubby.ManagedRun{ID: "run-1", Status: "running"}, Steps: []chubby.ManagedStep{
+		{ID: "m1", Sequence: 1, Kind: "model", Status: "succeeded"}, tool, {ID: "m2", Sequence: 3, Kind: "model", Status: "running"}}}
+	done := running
+	done.Run = chubby.ManagedRun{ID: "run-1", Status: "succeeded", Output: &output}
+	done.Steps = append([]chubby.ManagedStep{}, running.Steps...)
+	done.Steps[2].Status = "succeeded"
+	sc.f = &fakeManaged{pages: pages, detailFn: func() chubby.ManagedRunDetail {
+		if sc.terminal {
+			sc.log = append(sc.log, "TERMINAL")
+			return done
+		}
+		return running
+	}}
+	sc.f.onPage = func(remaining int) {
+		if remaining == 0 {
+			sc.terminal = true
+		}
+	}
+	sc.f.detail = done // what the old-backend fallback reads once pages run out
+	useFakeManaged(t, sc.f)
+	return sc
+}
+
+func (sc *liveScenario) emit(name string, _ any) { sc.log = append(sc.log, name) }
+
+func (sc *liveScenario) cards() int {
+	n := 0
+	for _, name := range sc.log {
+		if name == "card" {
+			n++
+		}
+	}
+	return n
+}
+
+func livePage(text *chubby.RunText, events ...chubby.ManagedEvent) chubby.EventsPage {
+	return chubby.EventsPage{Data: events, Text: text, LiveText: true}
+}
+
+func TestManagedScanStreamsCardsBeforeTheRunEnds(t *testing.T) {
+	output := liveCard1 + "\n" + liveCard2
+	sc := newLiveScenario(t, output,
+		livePage(nil, liveEvent(1, "model.started", `{"stepId":"m1"}`), liveEvent(2, "tool.completed", `{"stepId":"s1"}`)),
+		// The tool-calling step's own text is never parsed.
+		livePage(liveText("m1", "m1:1:t", "Let me read the sources.", "tools", true)),
+		livePage(liveText("m2", "m2:1:s", liveCard1+"\n"+liveCard2[:20], "streaming", true), liveEvent(3, "model.started", `{"stepId":"m2"}`)),
+		livePage(liveText("m2", "m2:2:a", liveCard2[20:], "answer", false)),
+		livePage(nil, liveEvent(4, "model.completed", `{"stepId":"m2","answer":true}`), liveEvent(5, "run.succeeded", `{}`)),
+	)
+	if err := runManagedScan(t.Context(), false, sc.emit); err != nil {
+		t.Fatal(err)
+	}
+	first := slices.Index(sc.log, "card")
+	terminal := slices.Index(sc.log, "TERMINAL")
+	if sc.cards() != 2 || first < 0 || terminal < 0 || first > terminal {
+		t.Fatalf("cards must stream before the run ends: %v", sc.log)
+	}
+}
+
+func TestManagedScanLiveTextResets(t *testing.T) {
+	output := liveCard1 + "\n" + liveCard2
+	before := newLiveScenario(t, output,
+		livePage(nil, liveEvent(1, "tool.completed", `{}`)),
+		livePage(liveText("m2", "m2:1:s", liveCard1[:30], "streaming", true)),
+		livePage(liveText("m2", "m2:2:s", output, "answer", true)),
+		livePage(nil, liveEvent(4, "run.succeeded", `{}`)),
+	)
+	if err := runManagedScan(t.Context(), false, before.emit); err != nil || before.cards() != 2 {
+		t.Fatalf("reset before a card restarts the parser: %v %v", err, before.log)
+	}
+	after := newLiveScenario(t, output,
+		livePage(nil, liveEvent(1, "tool.completed", `{}`)),
+		livePage(liveText("m2", "m2:1:s", liveCard1+"\n", "streaming", true)),
+		livePage(liveText("m2", "m2:2:s", output, "streaming", true)),
+	)
+	if err := runManagedScan(t.Context(), false, after.emit); !errors.Is(err, errScanAnswerChanged) || after.f.cancelled.Load() != 1 {
+		t.Fatalf("reset after a card: %v cancelled=%d", err, after.f.cancelled.Load())
+	}
+}
+
+func TestManagedScanAnswerThatTurnsIntoToolsFails(t *testing.T) {
+	output := liveCard1 + "\n" + liveCard2
+	sc := newLiveScenario(t, output,
+		livePage(nil, liveEvent(1, "tool.completed", `{}`)),
+		livePage(liveText("m2", "m2:1:s", liveCard1+"\n", "streaming", true)),
+		livePage(liveText("m2", "m2:1:t", "", "tools", false)),
+	)
+	if err := runManagedScan(t.Context(), false, sc.emit); !errors.Is(err, errScanAnswerChanged) {
+		t.Fatalf("tools after a card: %v", err)
+	}
+	completed := newLiveScenario(t, output,
+		livePage(nil, liveEvent(1, "tool.completed", `{}`)),
+		livePage(liveText("m2", "m2:1:s", liveCard1+"\n", "streaming", true)),
+		livePage(nil, liveEvent(2, "model.completed", `{"stepId":"m2","answer":false,"toolCalls":1}`)),
+	)
+	if err := runManagedScan(t.Context(), false, completed.emit); !errors.Is(err, errScanAnswerChanged) {
+		t.Fatalf("answer:false after a card: %v", err)
+	}
+	// Before any card, a step that turns to tools is simply not the answer.
+	quiet := newLiveScenario(t, output,
+		livePage(nil, liveEvent(1, "tool.completed", `{}`)),
+		livePage(liveText("m2", "m2:1:s", liveCard1[:30], "streaming", true)),
+		livePage(liveText("m2", "m2:1:t", "", "tools", false)),
+		livePage(nil, liveEvent(4, "run.succeeded", `{}`)),
+	)
+	if err := runManagedScan(t.Context(), false, quiet.emit); err != nil || quiet.cards() != 2 {
+		t.Fatalf("tools before a card: %v %v", err, quiet.log)
+	}
+}
+
+func TestManagedScanFallsBackToRunOutput(t *testing.T) {
+	output := liveCard1 + "\n" + liveCard2
+	for name, pages := range map[string][]chubby.EventsPage{
+		"discarded": {
+			livePage(nil, liveEvent(1, "tool.completed", `{}`)),
+			livePage(liveText("m2", "m2:1:s", liveCard1[:30], "streaming", true)),
+			livePage(liveText("m2", "m2:1:d", "", "discarded", false)),
+			livePage(nil, liveEvent(4, "run.succeeded", `{}`)),
+		},
+		"unavailable after a card": {
+			livePage(nil, liveEvent(1, "tool.completed", `{}`)),
+			livePage(liveText("m2", "m2:1:s", liveCard1+"\n", "streaming", true)),
+			livePage(liveText("m2", "m2:1:u", "", "unavailable", false)),
+			livePage(nil, liveEvent(4, "run.succeeded", `{}`)),
+		},
+		"old backend": {{Data: []chubby.ManagedEvent{liveEvent(1, "tool.completed", `{}`)}}},
+		"full page without text": {
+			{Data: make([]chubby.ManagedEvent, 200), LiveText: true},
+			livePage(liveText("m2", "m2:1:s", output, "answer", true), liveEvent(201, "tool.completed", `{}`)),
+			livePage(nil, liveEvent(202, "run.succeeded", `{}`)),
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			sc := newLiveScenario(t, output, pages...)
+			if err := runManagedScan(t.Context(), false, sc.emit); err != nil || sc.cards() != 2 {
+				t.Fatalf("%v %v", err, sc.log)
+			}
+		})
+	}
+}
+
+func TestManagedScanStreamedTextMustBeginTheOutput(t *testing.T) {
+	output := liveCard2 + "\n" + liveCard1
+	shown := newLiveScenario(t, output,
+		livePage(nil, liveEvent(1, "tool.completed", `{}`)),
+		livePage(liveText("m2", "m2:1:s", liveCard1+"\n", "streaming", true)),
+		livePage(nil, liveEvent(4, "run.succeeded", `{}`)),
+	)
+	if err := runManagedScan(t.Context(), false, shown.emit); !errors.Is(err, errScanAnswerChanged) {
+		t.Fatalf("output mismatch after a card: %v", err)
+	}
+	unseen := newLiveScenario(t, output,
+		livePage(nil, liveEvent(1, "tool.completed", `{}`)),
+		livePage(liveText("m2", "m2:1:s", liveCard1[:30], "streaming", true)),
+		livePage(nil, liveEvent(4, "run.succeeded", `{}`)),
+	)
+	if err := runManagedScan(t.Context(), false, unseen.emit); err != nil || unseen.cards() != 2 {
+		t.Fatalf("output mismatch before a card: %v %v", err, unseen.log)
 	}
 }

@@ -196,6 +196,55 @@ func (m *Managed) Events(ctx context.Context, id string, after float64) ([]Manag
 	return page.Data, err
 }
 
+// RunText is a model step's text as Chubby's live-text API reports it: a
+// delta after the cursor the caller passed, provisional until the run ends.
+type RunText struct {
+	StepID      string  `json:"stepId"`
+	Attempt     int     `json:"attempt"`
+	Cursor      string  `json:"cursor"`
+	Reset       bool    `json:"reset"`
+	Delta       string  `json:"delta"`
+	State       string  `json:"state"` // streaming, tools, answer, discarded, unavailable
+	FirstTextAt *string `json:"firstTextAt"`
+	Truncated   bool    `json:"truncated,omitempty"`
+}
+
+// EventsPage is one read of a run's events with live text.
+type EventsPage struct {
+	Data []ManagedEvent
+	// Text is the step text new since the cursor, or nil when nothing is.
+	Text *RunText
+	// LiveText is false against a backend without the live-text API (the
+	// response has no text key): the caller then polls as before.
+	LiveText bool
+}
+
+// EventsPage reads events after a cursor and, when textCursor is set ("1" at
+// first, then the cursor last returned), the live text. wait (0-20 s) holds the
+// read until something changes; keep it under the client's 30 s timeout.
+func (m *Managed) EventsPage(ctx context.Context, id string, after float64, textCursor string, wait int) (EventsPage, error) {
+	path := "/runs/" + url.PathEscape(id) + "/events?after=" + strconv.FormatFloat(after, 'f', -1, 64)
+	if textCursor != "" {
+		path += "&text=" + url.QueryEscape(textCursor) + "&wait=" + strconv.Itoa(max(0, min(wait, 20)))
+	}
+	var raw struct {
+		Data []ManagedEvent  `json:"data"`
+		Text json.RawMessage `json:"text"`
+	}
+	if err := m.call(ctx, http.MethodGet, path, nil, "", &raw); err != nil {
+		return EventsPage{}, err
+	}
+	page := EventsPage{Data: raw.Data, LiveText: raw.Text != nil}
+	if len(raw.Text) > 0 && string(raw.Text) != "null" {
+		var text RunText
+		if err := json.Unmarshal(raw.Text, &text); err != nil || text.StepID == "" || text.Cursor == "" {
+			return EventsPage{}, errors.New("Chubby managed API returned invalid live text")
+		}
+		page.Text = &text
+	}
+	return page, nil
+}
+
 // Cancel stops future work on a run. It cannot undo a dispatched tool call.
 func (m *Managed) Cancel(ctx context.Context, id string) error {
 	return m.call(ctx, http.MethodPost, "/runs/"+url.PathEscape(id)+"/cancel", map[string]any{}, "", nil)

@@ -81,3 +81,39 @@ func TestBaseURLIsRequired(t *testing.T) {
 		t.Fatal("managed client built without a base URL")
 	}
 }
+
+func TestEventsPageLiveText(t *testing.T) {
+	var queries []string
+	bodies := []string{
+		`{"data":[{"id":5,"type":"model.started","data":{}}],"text":{"stepId":"chst_1","attempt":1,"cursor":"chst_1:2:s","reset":true,"delta":"{\"a\"","state":"streaming","firstTextAt":"2026-11-18T08:00:01Z"}}`,
+		`{"data":[],"text":null}`,
+		`{"data":[]}`,
+		`{"data":[],"text":{"stepId":"","cursor":""}}`,
+	}
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		queries = append(queries, r.URL.RawQuery)
+		w.Write([]byte(bodies[len(queries)-1]))
+	}))
+	defer s.Close()
+	configure(t, s)
+	m, err := NewManaged()
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := m.EventsPage(t.Context(), "run-1", 4, "1", 15)
+	if err != nil || !page.LiveText || page.Text == nil || page.Text.Cursor != "chst_1:2:s" || !page.Text.Reset || page.Text.Delta != `{"a"` || len(page.Data) != 1 {
+		t.Fatalf("live page %+v %v", page, err)
+	}
+	if page, err = m.EventsPage(t.Context(), "run-1", 5, "chst_1:2:s", 99); err != nil || !page.LiveText || page.Text != nil {
+		t.Fatalf("null text %+v %v", page, err)
+	}
+	if page, err = m.EventsPage(t.Context(), "run-1", 5, "1", 15); err != nil || page.LiveText {
+		t.Fatalf("an old backend must read as no live text: %+v %v", page, err)
+	}
+	if _, err = m.EventsPage(t.Context(), "run-1", 5, "1", 15); err == nil {
+		t.Fatal("malformed text accepted")
+	}
+	if queries[0] != "after=4&text=1&wait=15" || queries[1] != "after=5&text=chst_1%3A2%3As&wait=20" {
+		t.Fatalf("queries %q", queries)
+	}
+}
