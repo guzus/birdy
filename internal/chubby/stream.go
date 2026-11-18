@@ -103,7 +103,11 @@ type client struct {
 	endpoint, key, model string
 }
 
-func fromEnv() (*client, error) {
+func fromEnv() (*client, error) { return fromEnvKey("CHUBBY_API_KEY") }
+
+// fromEnvKey is fromEnv with the service key read from keyEnv: the same base
+// URL, model and trust roots under another service identity.
+func fromEnvKey(keyEnv string) (*client, error) {
 	base := strings.TrimRight(strings.TrimSpace(os.Getenv("CHUBBY_BASE_URL")), "/")
 	if base == "" {
 		return nil, errors.New("CHUBBY_BASE_URL is required (the Chubby v1 endpoint, ending in /v1)")
@@ -113,9 +117,9 @@ func fromEnv() (*client, error) {
 		!(u.Scheme == "https" || u.Scheme == "http" && (u.Hostname() == "localhost" || net.ParseIP(u.Hostname()).IsLoopback())) {
 		return nil, errors.New("invalid CHUBBY_BASE_URL (HTTPS required outside loopback)")
 	}
-	key := strings.TrimSpace(os.Getenv("CHUBBY_API_KEY"))
+	key := strings.TrimSpace(os.Getenv(keyEnv))
 	if !strings.HasPrefix(key, "chb_") {
-		return nil, errors.New("CHUBBY_API_KEY must be a Chubby direct service key")
+		return nil, errors.New(keyEnv + " must be a Chubby service key")
 	}
 	model := strings.TrimSpace(os.Getenv("CHUBBY_MODEL"))
 	if model == "" {

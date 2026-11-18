@@ -14,8 +14,8 @@ import (
 )
 
 // birdy chat-agent register: one-time setup of the managed chat agent (trial)
-// on the web host's own Chubby service key, run from where Chubby is
-// reachable. It stores the tool's header secret in Chubby, registers the
+// on managed chat's own Chubby service key (BIRDY_CHAT_CHUBBY_API_KEY), run
+// from where Chubby is reachable. It stores the tool's header secret in Chubby, registers the
 // read-only birdy_command tool and creates the agent with the direct chat's
 // system prompt, printing IDs (never the secret).
 
@@ -63,7 +63,8 @@ func newChatAgentCmd() *cobra.Command {
 			if model == "" || model == "auto" {
 				return errors.New("CHUBBY_MODEL must name the exact model the agent runs on")
 			}
-			m, err := chubby.NewManaged()
+			// Managed chat's own key: its tool, agent and budget live there.
+			m, err := chubby.NewManagedKey(chatChubbyKeyEnv)
 			if err != nil {
 				return err
 			}

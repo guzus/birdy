@@ -420,11 +420,16 @@ the conversation's earlier turns stay in Chubby's prompt cache.
   from the briefing tools' secrets. Without it, or with the mode off,
   `POST /api/chat-tools/invited` answers 404.
 - `BIRDY_CHAT_AGENT`: the agent ID.
+- `BIRDY_CHAT_CHUBBY_API_KEY`: a Chubby service key of its own for managed
+  chat (sessions, runs, events and `chat-agent register`), with the same
+  `CHUBBY_BASE_URL` and `CHUBBY_CA_FILE`. Required: there is no fallback to
+  `CHUBBY_API_KEY`, so a chat that exhausts its budget cannot pause the
+  briefings, or the reverse.
 
 The tool takes `{"command": ..., "args": [...]}` and applies the direct chat's
 command allowlist and argument rules. It serves only tool steps of chat runs
 the same web process is running, at most 8 reads per answer, with output under
-60 KiB and the pool's account names and cookies removed. Register once, with
+60 KiB and the pool's cookies and the tool secret removed. Register once, with
 the web host's environment and an exact `CHUBBY_MODEL`:
 
 ```bash
@@ -436,7 +441,7 @@ per answer (Chubby holds each step's estimated cost against it, about
 $0.10–0.30 a step). The conversation map is
 in memory: after a restart, an edited or regenerated turn, or a conversation
 idle for 6 hours, the next turn starts a new session whose first input carries
-the browser's history. A stop on the service's budget pauses managed chats for
+the browser's history. A stop on the chat key's budget pauses managed chats for
 a while; an answer that only reached its own budget fails alone.
 `birdy chat-bench --url <host>` (with `BIRDY_BENCH_INVITE`) runs fixed prompts
 through both engines and prints the timings, tool rounds and answers as JSON.

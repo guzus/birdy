@@ -21,8 +21,12 @@ type Managed struct {
 }
 
 // NewManaged reads the same configuration as direct chat.
-func NewManaged() (*Managed, error) {
-	c, err := fromEnv()
+func NewManaged() (*Managed, error) { return NewManagedKey("CHUBBY_API_KEY") }
+
+// NewManagedKey is NewManaged on the service key held in keyEnv, for a caller
+// that runs under a separate Chubby identity and budget.
+func NewManagedKey(keyEnv string) (*Managed, error) {
+	c, err := fromEnvKey(keyEnv)
 	if err != nil {
 		return nil, err
 	}

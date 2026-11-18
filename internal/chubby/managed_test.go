@@ -134,3 +134,27 @@ func TestAPIErrorCarriesRetryAfter(t *testing.T) {
 		t.Fatalf("%#v", err)
 	}
 }
+
+// A managed client on another key env uses that key only, with the same base
+// URL, and names the variable, never its value, when it is missing.
+func TestNewManagedKeyUsesItsOwnKey(t *testing.T) {
+	var auth string
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth = r.Header.Get("Authorization")
+		w.Write([]byte(`{"id":"sess-1","agentId":"a","version":1}`))
+	}))
+	defer s.Close()
+	configure(t, s)
+	t.Setenv("BIRDY_TEST_CHAT_KEY", "")
+	if _, err := NewManagedKey("BIRDY_TEST_CHAT_KEY"); err == nil || !strings.Contains(err.Error(), "BIRDY_TEST_CHAT_KEY") || strings.Contains(err.Error(), "chb_fixture") {
+		t.Fatalf("missing key: %v", err)
+	}
+	t.Setenv("BIRDY_TEST_CHAT_KEY", "chb_chat_only")
+	m, err := NewManagedKey("BIRDY_TEST_CHAT_KEY")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.CreateSession(t.Context(), "a", "t"); err != nil || auth != "Bearer chb_chat_only" {
+		t.Fatalf("auth %q err %v", auth, err)
+	}
+}

@@ -112,9 +112,10 @@ func (f *chatFake) snapshot() (sessions int, inputs, runSess, deleted []string) 
 
 func useChatFake(t *testing.T, f *chatFake) {
 	t.Helper()
-	old := newScanManagedRunner
-	newScanManagedRunner = func() (scanManagedRunner, error) { return f, nil }
-	t.Cleanup(func() { newScanManagedRunner = old })
+	old := newChatManagedRunner
+	newChatManagedRunner = func() (scanManagedRunner, error) { return f, nil }
+	t.Cleanup(func() { newChatManagedRunner = old })
+	t.Setenv(chatChubbyKeyEnv, "chb_chat_fixture")
 	chatSessionStore = chatSessions{m: map[string]*chatSession{}}
 	t.Cleanup(func() { chatSessionStore = chatSessions{m: map[string]*chatSession{}}; chatManagedBreaker = breaker{} })
 	t.Setenv(chatManagedModeEnv, "trial")
@@ -341,16 +342,17 @@ func TestChatToolOutputIsBoundedAndRedacted(t *testing.T) {
 	w := httptest.NewRecorder()
 	handleChatTool()(w, r)
 	body := w.Body.String()
-	if w.Code != 200 || len(body) > 64<<10 || !strings.HasSuffix(body, "[output truncated]") || !strings.Contains(body, "read by [redacted]") {
+	if w.Code != 200 || len(body) > 64<<10 || !strings.HasSuffix(body, "[output truncated]") || !strings.Contains(body, "read by poolacct with [redacted] and [redacted]\n") {
 		t.Fatalf("%d len=%d head=%q", w.Code, len(body), body[:min(len(body), 120)])
 	}
-	for _, secret := range []string{"poolacct", "authtoken0123456789", testChatToolSecret} {
+	for _, secret := range []string{"authtoken0123456789", "ct0value0123456789", testChatToolSecret} {
 		if strings.Contains(body, secret) {
 			t.Fatalf("output leaks %q", secret)
 		}
 	}
-	if got := redactChatToolOutput("poolacct: poolaccts @poolacct x_poolacct poolacct.", ""); got != "[redacted]: poolaccts @[redacted] x_poolacct [redacted]." {
-		t.Fatalf("label redaction %q", got)
+	// Account labels stay, as on the direct path: a post may hold the same word.
+	if got := redactChatToolOutput("@poolacct said main ct0value0123456789abcdef", ""); got != "@poolacct said main [redacted]" {
+		t.Fatalf("redaction %q", got)
 	}
 	if !strings.HasPrefix(strings.TrimSuffix(body, "\n[output truncated]"), "read by") || strings.ContainsRune(body, '�') {
 		t.Fatal("truncation split a character")
@@ -587,6 +589,12 @@ func TestManagedChatBudgetBreaker(t *testing.T) {
 	if reason := chatManagedBlocked(model, time.Now().Add(2*time.Hour)); reason != "" {
 		t.Fatalf("breaker never closes: %q", reason)
 	}
+	// Managed chat runs only on its own key: no fallback to CHUBBY_API_KEY.
+	t.Setenv("CHUBBY_API_KEY", "chb_direct")
+	t.Setenv(chatChubbyKeyEnv, "")
+	if reason := chatManagedBlocked(model, time.Now().Add(2*time.Hour)); reason != chatChubbyKeyEnv+" is not set" {
+		t.Fatalf("without its key: %q", reason)
+	}
 	if reason := chatManagedBlocked(chatmodel.Selection{ID: "other", Backend: chatmodel.BackendChubby}, time.Now().Add(2*time.Hour)); reason == "" {
 		t.Fatal("another model ran on the agent's model")
 	}
@@ -639,6 +647,12 @@ func TestAPIChatManagedTrialRouting(t *testing.T) {
 	if direct.Load() != 2 || f.runs != 1 || w.Header().Get(chatEngineHeader) != "managed" || !strings.Contains(w.Body.String(), "answer 1") || !strings.Contains(w.Body.String(), "event: done") {
 		t.Fatalf("managed: direct=%d runs=%d %s", direct.Load(), f.runs, w.Body)
 	}
+	t.Setenv(chatChubbyKeyEnv, "")
+	w = post(false, "managed")
+	if direct.Load() != 2 || f.runs != 1 || !strings.Contains(w.Body.String(), "BIRDY_CHAT_CHUBBY_API_KEY is not set") || strings.Contains(w.Body.String(), "chb_") {
+		t.Fatalf("no chat key: direct=%d runs=%d %s", direct.Load(), f.runs, w.Body)
+	}
+	t.Setenv(chatChubbyKeyEnv, "chb_chat_fixture")
 	chatManagedBreaker.trip(time.Now())
 	w = post(false, "managed")
 	if direct.Load() != 2 || f.runs != 1 || !strings.Contains(w.Body.String(), "managed chat is unavailable: paused") || !strings.Contains(w.Body.String(), "event: done") {

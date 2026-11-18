@@ -6,8 +6,6 @@ import (
 	"os"
 	"strings"
 	"time"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/guzus/birdy/internal/birdtool"
 	"github.com/guzus/birdy/internal/store"
@@ -89,7 +87,7 @@ func chatToolStepRun(ctx context.Context, stepID string) (runID string, reads in
 	if stepID == "" || len(ids) == 0 {
 		return "", 0, false
 	}
-	m, err := newScanManagedRunner()
+	m, err := newChatManagedRunner()
 	if err != nil {
 		return "", 0, false
 	}
@@ -119,10 +117,11 @@ func chatToolStepRun(ctx context.Context, stepID string) (runID string, reads in
 	return "", 0, false
 }
 
-// redactChatToolOutput removes what must never reach a model or a trace: the
-// pool's account labels and credentials, and the tool's own secret.
+// redactChatToolOutput removes credentials that must never reach a model or a
+// trace: the pool's cookies and the tool's own secret. Like the direct chat,
+// it leaves account labels alone (posts may contain the same words).
 func redactChatToolOutput(out, secret string) string {
-	var secrets, labels []string
+	var secrets []string
 	if secret != "" {
 		secrets = append(secrets, secret)
 	}
@@ -133,41 +132,12 @@ func redactChatToolOutput(out, secret string) string {
 					secrets = append(secrets, v)
 				}
 			}
-			if len(a.Name) >= 3 {
-				labels = append(labels, a.Name)
-			}
 		}
 	}
 	for _, s := range secrets {
 		out = strings.ReplaceAll(out, s, "[redacted]")
 	}
-	// A label goes only as a whole word, so "acct" leaves "account" alone;
-	// a label that is an ordinary word is removed from post text too.
-	for _, l := range labels {
-		out = replaceWord(out, l, "[redacted]")
-	}
 	return out
-}
-
-func replaceWord(s, word, with string) string {
-	isWord := func(r rune) bool { return r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r) }
-	var b strings.Builder
-	for {
-		i := strings.Index(s, word)
-		if i < 0 {
-			b.WriteString(s)
-			return b.String()
-		}
-		before, _ := utf8.DecodeLastRuneInString(s[:i])
-		after, _ := utf8.DecodeRuneInString(s[i+len(word):])
-		b.WriteString(s[:i])
-		if (i > 0 && isWord(before)) || (i+len(word) < len(s) && isWord(after)) {
-			b.WriteString(word)
-		} else {
-			b.WriteString(with)
-		}
-		s = s[i+len(word):]
-	}
 }
 
 func handleChatTool() http.HandlerFunc {

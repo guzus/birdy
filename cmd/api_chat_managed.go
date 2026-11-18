@@ -37,11 +37,18 @@ import (
 // those of a process that exits are not.
 
 const (
-	chatAgentEnv     = "BIRDY_CHAT_AGENT"
+	chatAgentEnv = "BIRDY_CHAT_AGENT"
+	// chatChubbyKeyEnv is managed chat's own Chubby service key, so its
+	// budget and the briefings' budget cannot pause each other. There is no
+	// fallback to CHUBBY_API_KEY.
+	chatChubbyKeyEnv = "BIRDY_CHAT_CHUBBY_API_KEY"
 	chatEngineHeader = "X-Birdy-Chat-Engine"
 	chatSessionTTL   = 6 * time.Hour
 	chatSessionMax   = 500
 )
+
+// newChatManagedRunner talks to Chubby as managed chat's own service.
+var newChatManagedRunner = func() (scanManagedRunner, error) { return chubby.NewManagedKey(chatChubbyKeyEnv) }
 
 var (
 	chatManagedSlots   = make(chan struct{}, 2) // trial: each running answer holds its next step's cost on the service budget
@@ -64,6 +71,9 @@ func wantsManagedChat(visitor bool, engineHeader string) bool {
 // chatManagedBlocked names why a chat that wants the managed engine must not
 // use it now, or returns "".
 func chatManagedBlocked(model chatmodel.Selection, now time.Time) string {
+	if !strings.HasPrefix(strings.TrimSpace(os.Getenv(chatChubbyKeyEnv)), "chb_") {
+		return chatChubbyKeyEnv + " is not set"
+	}
 	models := scanClientModels()
 	if len(models) == 0 {
 		return "no default Chubby model"
@@ -317,7 +327,7 @@ func runManagedChat(ctx context.Context, turns []chatmodel.Message, client strin
 	default:
 		return errChatManagedUnavailable
 	}
-	m, err := newScanManagedRunner()
+	m, err := newChatManagedRunner()
 	if err != nil {
 		return errChatManagedUnavailable
 	}
@@ -504,8 +514,8 @@ func runManagedChat(ctx context.Context, turns []chatmodel.Message, client strin
 }
 
 // chatRunBudgetOnly reports a budget stop that only this answer's own limit
-// caused. Only a stop on the service's budget pauses managed chats: one long
-// answer must not stop everyone's.
+// caused. Only a stop on managed chat's own service budget (its separate key)
+// pauses managed chats: one long answer must not stop everyone's.
 func chatRunBudgetOnly(d chubby.ManagedRunDetail) bool {
 	for _, e := range d.Events {
 		if e.Type != "budget.blocked" {
