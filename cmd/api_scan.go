@@ -211,7 +211,7 @@ func apiScanHandler(invite string, read scanReader, stream chatmodel.StreamFunc)
 		w.Header().Set("X-Birdy-Model-ID", model.ID)
 		flusher.Flush()
 		emit := func(name string, data any) {
-			if ctx.Err() != nil {
+			if r.Context().Err() != nil {
 				return
 			}
 			b, err := json.Marshal(data)
@@ -395,6 +395,9 @@ func (p *scanSummary) line(line string) {
 			sources = append(sources, post)
 			seen[id] = true
 		}
+	}
+	if card.Bullets == nil {
+		card.Bullets = []string{}
 	}
 	p.cards++
 	p.emit("card", scanCardEvent{"card", card.scanCard, sources})
