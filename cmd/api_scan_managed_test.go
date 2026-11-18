@@ -535,3 +535,144 @@ func TestManagedScanReportsEachSourceOnceAndCapsToolSteps(t *testing.T) {
 		t.Fatalf("looping agent: %v cancelled=%d events=%v", err, f.cancelled.Load(), e.names)
 	}
 }
+
+func TestScanToolMarksASourceAlreadyReturnedInTheSameRun(t *testing.T) {
+	resetScanToolState()
+	t.Setenv(scanManagedModeEnv, "trial")
+	t.Setenv(invitedScanTool.secretEnv, testToolSecret)
+	home := `{"source":"home","status":"ok","posts":[{"id":"111111","url":"https://x.com/i/web/status/111111","text":"agents ship"}]}`
+	first := toolStep("s1", invitedScanTool.name, home)
+	first.Sequence = 2
+	calling := chubby.ManagedStep{ID: "s2", Sequence: 4, Kind: "tool", Status: "running", Name: invitedScanTool.name}
+	f := &fakeManaged{detail: managedDetail("running", "", first, calling)}
+	useFakeManaged(t, f)
+	t.Setenv(invitedScanTool.secretEnv, testToolSecret)
+	scanManagedActive.add("run-1")
+	t.Cleanup(func() { scanManagedActive.remove("run-1") })
+	reads := 0
+	read := func(context.Context, scanSource) ([]scanPost, error) {
+		reads++
+		return []scanPost{{ID: "222222", URL: "https://x.com/i/web/status/222222", Text: "fresh"}}, nil
+	}
+	call := func(step, body string) scanToolResult {
+		r := httptest.NewRequest(http.MethodPost, "/api/scan-tools/invited", strings.NewReader(body))
+		r.Header.Set(scanToolHeader, testToolSecret)
+		r.Header.Set("Idempotency-Key", step)
+		w := httptest.NewRecorder()
+		handleScanTool(invitedScanTool, read)(w, r)
+		var got scanToolResult
+		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &got) != nil {
+			t.Fatalf("%d %s", w.Code, w.Body)
+		}
+		return got
+	}
+	if got := call("s2", `{"source":"home"}`); got.Status != "already_returned" || len(got.Posts) != 0 || reads != 0 {
+		t.Fatalf("repeat in one run: %+v reads=%d", got, reads)
+	}
+	if got := call("s2", `{"source":"ai"}`); got.Status != "ok" || reads != 1 {
+		t.Fatalf("a new source in the run: %+v", got)
+	}
+	if got := call("chst_other_run", `{"source":"home"}`); got.Status != "ok" {
+		t.Fatalf("a step of no active run: %+v", got)
+	}
+	// The marker is never evidence.
+	if _, ok := parseScanToolResult(`{"source":"home","status":"already_returned","posts":[]}`, invitedScanTool); ok {
+		t.Fatal("already_returned parsed as a source result")
+	}
+}
+
+type flakyEvents struct {
+	*fakeManaged
+	failures []error
+}
+
+func (f *flakyEvents) Events(ctx context.Context, id string, after float64) ([]chubby.ManagedEvent, error) {
+	if len(f.failures) > 0 {
+		err := f.failures[0]
+		f.failures = f.failures[1:]
+		return nil, err
+	}
+	return f.fakeManaged.Events(ctx, id, after)
+}
+
+func TestManagedScanRetriesATransientEventsReadOnly(t *testing.T) {
+	home := `{"source":"home","status":"ok","posts":[{"id":"111111","url":"https://x.com/i/web/status/111111","text":"agents ship"}]}`
+	good := `{"category":"AI","title":"Agents","summary":"Agents ship.","bullets":[],"ids":["111111"]}`
+	for name, tc := range map[string]struct {
+		failures []error
+		ok       bool
+	}{
+		"dropped connection": {[]error{errors.New("Chubby managed API connection failed")}, true},
+		"two 503s":           {[]error{&chubby.APIError{Status: 503}, &chubby.APIError{Status: 502}}, true},
+		"run not found":      {[]error{&chubby.APIError{Status: 404}}, false},
+		"three failures":     {[]error{errors.New("x"), errors.New("x"), errors.New("x")}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := &flakyEvents{fakeManaged: &fakeManaged{detail: managedDetail("succeeded", good, toolStep("s1", invitedScanTool.name, home))}, failures: tc.failures}
+			old := newScanManagedRunner
+			newScanManagedRunner = func() (scanManagedRunner, error) { return f, nil }
+			t.Cleanup(func() { newScanManagedRunner = old })
+			t.Setenv(scanAgentInvitedEnv, "agent-invited")
+			err := runManagedScan(t.Context(), false, (&emitted{}).emit)
+			if (err == nil) != tc.ok {
+				t.Fatalf("err=%v", err)
+			}
+		})
+	}
+}
+
+func TestManagedScanRefusesAnotherModelAndPausesAfterABudgetStop(t *testing.T) {
+	t.Setenv("BIRDY_WEB_CHAT_BACKEND", "chubby")
+	t.Setenv("CHUBBY_API_KEY", "chb_fixture")
+	t.Setenv("CHUBBY_MODEL", "anthropic/claude-sonnet-5-5")
+	t.Setenv("BIRDY_SCAN_MANAGED_BREAKER_MINUTES", "10")
+	t.Cleanup(func() { scanManagedBreaker = breaker{} })
+	now := time.Now()
+	def := chatmodel.ClientModels()[0]
+	if reason := scanManagedBlocked(def, now); reason != "" {
+		t.Fatalf("default model refused: %s", reason)
+	}
+	if reason := scanManagedBlocked(chatmodel.Selection{ID: "codex", Backend: chatmodel.BackendCodex}, now); !strings.Contains(reason, "not the managed agent's model") {
+		t.Fatalf("other model: %q", reason)
+	}
+
+	budget := "Budget cannot reserve the maximum estimated cost of the next model call."
+	paused := managedDetail("needs_attention", "")
+	paused.Run.Error = &budget
+	paused.Events = []chubby.ManagedEvent{{ID: 9, Type: "budget.blocked"}}
+	f := &fakeManaged{detail: paused}
+	useFakeManaged(t, f)
+	if err := runManagedScan(t.Context(), false, (&emitted{}).emit); err == nil || f.cancelled.Load() != 1 {
+		t.Fatalf("budget pause: %v cancelled=%d", err, f.cancelled.Load())
+	}
+	reason := scanManagedBlocked(def, now.Add(time.Minute))
+	if !strings.Contains(reason, "paused after a budget stop") {
+		t.Fatalf("breaker not open: %q", reason)
+	}
+	if scanManagedBlocked(def, now.Add(11*time.Minute)) != "" {
+		t.Fatal("breaker did not close after its window")
+	}
+	// A trial request is told why, never given a direct briefing.
+	t.Setenv(scanManagedModeEnv, "trial")
+	t.Setenv(invitedScanTool.secretEnv, testToolSecret)
+	var directReads atomic.Int32
+	read := func(context.Context, scanSource) ([]scanPost, error) {
+		directReads.Add(1)
+		return nil, errors.New("direct")
+	}
+	r := httptest.NewRequest(http.MethodPost, "/api/scan", strings.NewReader("{}"))
+	r.Header.Set("X-Invite-Code", "birdy")
+	r.Header.Set("X-Birdy-Scan-Engine", "managed")
+	r.RemoteAddr = "203.0.113.52:1"
+	w := httptest.NewRecorder()
+	apiScanHandler("birdy", read, func(context.Context, chatmodel.Selection, chatmodel.Request, func(claude.Event)) {})(w, r)
+	if directReads.Load() != 0 || !strings.Contains(w.Body.String(), "paused after a budget stop") {
+		t.Fatalf("trial during the pause: reads=%d %s", directReads.Load(), w.Body)
+	}
+	// A budget-free pause (an uncertain tool) does not trip it.
+	scanManagedBreaker = breaker{}
+	other := managedDetail("needs_attention", "")
+	if budgetPaused(other) {
+		t.Fatal("a non-budget pause tripped the breaker")
+	}
+}

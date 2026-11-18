@@ -218,6 +218,12 @@ func handleScanTool(kind scanToolKind, read scanReader) http.HandlerFunc {
 			writeJSON(w, http.StatusBadRequest, apiError{Error: "unsupported source"})
 			return
 		}
+		// A second call for a source in one run gets a marker, not the posts
+		// again: they are already in the agent's context.
+		if scanToolAlreadyReturned(r.Context(), kind, r.Header.Get("Idempotency-Key"), source.key) {
+			writeJSON(w, http.StatusOK, scanToolResult{Source: source.key, Status: "already_returned", Posts: []scanPost{}})
+			return
+		}
 		result := scanToolResults.get(r.Context(), kind.name, source, read, time.Now())
 		writeJSON(w, http.StatusOK, boundScanToolResult(result))
 	}

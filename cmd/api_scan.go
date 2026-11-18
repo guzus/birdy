@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"slices"
@@ -235,7 +236,21 @@ func apiScanHandler(invite string, read scanReader, stream chatmodel.StreamFunc)
 			}
 			flusher.Flush()
 		}
-		if wantsManagedScan(visitor, r.Header.Get("X-Birdy-Scan-Engine")) {
+		managed := wantsManagedScan(visitor, r.Header.Get("X-Birdy-Scan-Engine"))
+		if managed {
+			if reason := scanManagedBlocked(model, time.Now()); reason != "" {
+				log.Printf("[scan-managed] not used: %s", reason)
+				managed = false
+				// A trial request named the managed engine: say why, never
+				// substitute a direct briefing.
+				if scanManagedMode() == "trial" {
+					emit("error", map[string]string{"type": "error", "error": "The managed briefing is unavailable: " + reason + "."})
+					emit("done", map[string]string{"type": "done"})
+					return
+				}
+			}
+		}
+		if managed {
 			err = runManagedScan(ctx, visitor, emit)
 			// A trial request asked for the managed engine by name: never hand it
 			// a direct briefing it could mistake for a managed one.
