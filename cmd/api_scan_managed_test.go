@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -418,5 +419,49 @@ func TestManagedScanNeverFallsBackWhenARunMayExist(t *testing.T) {
 				t.Fatal("the replay changed its key")
 			}
 		})
+	}
+}
+
+func TestScanToolCacheSharesReadsAndHoldsFailures(t *testing.T) {
+	c := scanToolCache{entries: map[string]scanToolCacheEntry{}}
+	src := scanSource{key: "home"}
+	now := time.Unix(1000, 0)
+	var reads atomic.Int32
+	release := make(chan struct{})
+	slow := func(context.Context, scanSource) ([]scanPost, error) {
+		reads.Add(1)
+		<-release
+		return []scanPost{{ID: "1"}}, nil
+	}
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Go(func() {
+			if r := c.get(t.Context(), "t", src, slow, now); r.Status != "ok" || len(r.Posts) != 1 {
+				t.Error(r)
+			}
+		})
+	}
+	time.Sleep(20 * time.Millisecond)
+	close(release)
+	wg.Wait()
+	if reads.Load() != 1 {
+		t.Fatalf("concurrent calls read %d times", reads.Load())
+	}
+	failing := func(context.Context, scanSource) ([]scanPost, error) {
+		reads.Add(1)
+		return nil, errors.New("rate limited")
+	}
+	reads.Store(0)
+	for range 32 { // one model step may call a tool 32 times
+		if r := c.get(t.Context(), "t", scanSource{key: "ai"}, failing, now); r.Status != "error" {
+			t.Fatal(r)
+		}
+	}
+	if reads.Load() != 1 {
+		t.Fatalf("a failing source was read %d times", reads.Load())
+	}
+	c.get(t.Context(), "t", scanSource{key: "ai"}, failing, now.Add(scanToolErrorTTL))
+	if reads.Load() != 2 {
+		t.Fatalf("a failure was held past its TTL: %d reads", reads.Load())
 	}
 }

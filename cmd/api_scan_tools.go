@@ -100,8 +100,9 @@ type scanToolResult struct {
 }
 
 type scanToolCache struct {
-	mu      sync.Mutex
-	entries map[string]scanToolCacheEntry
+	mu       sync.Mutex
+	entries  map[string]scanToolCacheEntry
+	inflight map[string]chan struct{}
 }
 
 type scanToolCacheEntry struct {
@@ -111,16 +112,47 @@ type scanToolCacheEntry struct {
 
 var scanToolResults = scanToolCache{entries: map[string]scanToolCacheEntry{}}
 
-// get reads a source at most once a minute: a run may call a source twice,
-// and every public visitor reads the same Explore tabs.
+// A failed read is kept briefly too: a model retrying a failing source must
+// not pull a fresh account from the pool on every call.
+const scanToolErrorTTL = 10 * time.Second
+
+// get reads a source at most once a minute (once per 10 s after a failure):
+// a run may call a source twice, and every public visitor reads the same
+// Explore tabs. Concurrent calls for one source share a single read.
 func (c *scanToolCache) get(ctx context.Context, tool string, s scanSource, read scanReader, now time.Time) scanToolResult {
 	key := tool + "\x00" + s.key
-	c.mu.Lock()
-	if e, ok := c.entries[key]; ok && now.Sub(e.at) < scanToolCacheTTL {
+	for {
+		c.mu.Lock()
+		if e, ok := c.entries[key]; ok {
+			ttl := scanToolCacheTTL
+			if e.result.Status != "ok" {
+				ttl = scanToolErrorTTL
+			}
+			if now.Sub(e.at) < ttl {
+				c.mu.Unlock()
+				return e.result
+			}
+		}
+		wait, busy := c.inflight[key]
+		if !busy {
+			if c.inflight == nil {
+				c.inflight = map[string]chan struct{}{}
+			}
+			done := make(chan struct{})
+			c.inflight[key] = done
+			c.mu.Unlock()
+			return c.fill(ctx, key, s, read, now, done)
+		}
 		c.mu.Unlock()
-		return e.result
+		select {
+		case <-wait:
+		case <-ctx.Done():
+			return scanToolResult{Source: s.key, Status: "error", Posts: []scanPost{}}
+		}
 	}
-	c.mu.Unlock()
+}
+
+func (c *scanToolCache) fill(ctx context.Context, key string, s scanSource, read scanReader, now time.Time, done chan struct{}) scanToolResult {
 	posts, err := read(ctx, s)
 	result := scanToolResult{Source: s.key, Status: "ok", Posts: posts}
 	if err != nil {
@@ -129,11 +161,11 @@ func (c *scanToolCache) get(ctx context.Context, tool string, s scanSource, read
 	if result.Posts == nil {
 		result.Posts = []scanPost{}
 	}
-	if result.Status == "ok" {
-		c.mu.Lock()
-		c.entries[key] = scanToolCacheEntry{at: now, result: result}
-		c.mu.Unlock()
-	}
+	c.mu.Lock()
+	c.entries[key] = scanToolCacheEntry{at: now, result: result}
+	delete(c.inflight, key)
+	close(done)
+	c.mu.Unlock()
 	return result
 }
 
