@@ -97,7 +97,7 @@ func newChatAgentCmd() *cobra.Command {
 	register.Flags().IntVar(&limits.maxOutputTokens, "max-output-tokens", 4096, "output tokens per model step")
 	register.Flags().IntVar(&limits.timeoutSeconds, "timeout-seconds", 300, "answer deadline")
 	register.Flags().StringVar(&limits.reasoningEffort, "reasoning-effort", "low", "model reasoning effort (none, low, medium, high); empty keeps the provider default")
-	register.Flags().Float64Var(&limits.budgetUSD, "budget-usd", 5, "per-answer model budget; each step reserves a full context window at the top input price")
+	register.Flags().Float64Var(&limits.budgetUSD, "budget-usd", 1, "per-answer model budget; Chubby holds each step's estimated cost against it")
 	root := &cobra.Command{Use: "chat-agent", Short: "Manage Birdy Web's managed chat agent (trial)", Hidden: true}
 	root.AddCommand(register)
 	return root

@@ -399,8 +399,8 @@ birdy scan-agent register --kind invited --host https://your-birdy-host.example
 
 It stores the tool secret in Chubby, registers the tool, creates the agent
 (6 model steps, 4096 output tokens, 180 s, $5 per run by default) and prints
-the IDs. A run's budget must cover one model step's reservation, which Chubby
-sizes from the model's whole context window. At most three managed briefings
+the IDs. A run's budget must cover the hold Chubby places for each model
+step, sized to that step's request. At most three managed briefings
 run at once; beyond that, or when a run cannot start, the briefing falls back
 to the direct path. A briefing whose viewer disconnects, or that pauses for
 attention, is cancelled.
@@ -431,8 +431,9 @@ the web host's environment and an exact `CHUBBY_MODEL`:
 birdy chat-agent register --host https://your-birdy-host.example
 ```
 
-Defaults: 8 model steps, 4096 output tokens, 300 s, low reasoning effort, $5
-per answer (a step reserves a whole context window). The conversation map is
+Defaults: 8 model steps, 4096 output tokens, 300 s, low reasoning effort, $1
+per answer (Chubby holds each step's estimated cost against it, about
+$0.10–0.30 a step). The conversation map is
 in memory: after a restart, an edited or regenerated turn, or a conversation
 idle for 6 hours, the next turn starts a new session whose first input carries
 the browser's history. A stop on the service's budget pauses managed chats for

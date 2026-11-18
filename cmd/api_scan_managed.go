@@ -31,8 +31,8 @@ const (
 	scanManagedPoll     = 700 * time.Millisecond
 )
 
-// At most this many managed briefings at once: each model step holds a
-// budget reservation sized for the model's whole context window.
+// At most this many managed briefings at once: each model step holds its
+// estimated cost on the service budget while it runs.
 var scanManagedSlots = make(chan struct{}, 3)
 
 var errScanManagedUnavailable = errors.New("managed briefing unavailable")

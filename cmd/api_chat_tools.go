@@ -173,13 +173,11 @@ func replaceWord(s, word, with string) string {
 func handleChatTool() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
+		// Off, unset or a wrong or missing secret all look the same: the
+		// endpoint cannot be told apart from one that does not exist.
 		secret := chatToolSecret()
-		if secret == "" {
+		if secret == "" || !secretMatches(r.Header.Get(scanToolHeader), secret) {
 			http.NotFound(w, r)
-			return
-		}
-		if !secretMatches(r.Header.Get(scanToolHeader), secret) {
-			writeJSON(w, http.StatusUnauthorized, apiError{Error: "unauthorized"})
 			return
 		}
 		if r.Method != http.MethodPost {

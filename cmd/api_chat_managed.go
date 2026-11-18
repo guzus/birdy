@@ -44,7 +44,7 @@ const (
 )
 
 var (
-	chatManagedSlots   = make(chan struct{}, 2) // trial: each running answer holds a step reservation on the service budget
+	chatManagedSlots   = make(chan struct{}, 2) // trial: each running answer holds its next step's cost on the service budget
 	chatManagedBreaker breaker
 	chatSessionStore   = chatSessions{m: map[string]*chatSession{}}
 

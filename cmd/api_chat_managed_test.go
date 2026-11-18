@@ -250,8 +250,15 @@ func TestChatToolGate(t *testing.T) {
 		t.Fatalf("unknown run: %d calls=%d", w.Code, calls.Load())
 	}
 	chatManagedActive.add("run-live")
-	if w := call("POST", "wrong-"+testChatToolSecret, "tool-2", good); w.Code != http.StatusUnauthorized {
+	// A wrong or missing secret looks like no endpoint at all.
+	if w := call("POST", "wrong-"+testChatToolSecret, "tool-2", good); w.Code != http.StatusNotFound {
 		t.Fatalf("wrong secret: %d", w.Code)
+	}
+	if w := call("POST", "", "tool-2", good); w.Code != http.StatusNotFound {
+		t.Fatalf("missing secret: %d", w.Code)
+	}
+	if w := call("GET", "", "tool-2", ""); w.Code != http.StatusNotFound {
+		t.Fatalf("GET without secret: %d", w.Code)
 	}
 	if w := call("GET", testChatToolSecret, "tool-2", ""); w.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("GET: %d", w.Code)
