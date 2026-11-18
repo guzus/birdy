@@ -266,7 +266,7 @@ func assertUsableBinary(path string) error {
 
 // buildEnv creates the environment for the bird subprocess.
 func buildEnv(account *store.Account) []string {
-	env := processenv.Without(os.Environ(), "OPENCODE_API_KEY")
+	env := processenv.Without(os.Environ(), "OPENCODE_API_KEY", "CHUBBY_API_KEY")
 
 	filtered := make([]string, 0, len(env))
 	for _, e := range env {

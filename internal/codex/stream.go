@@ -108,7 +108,7 @@ func BuildArgs(prompt, model, birdyCmd string) []string {
 func Stream(ctx context.Context, prompt, model, birdyCmd string, emit func(claude.Event)) {
 	args := BuildArgs(prompt, model, birdyCmd)
 	cmd := exec.CommandContext(ctx, "codex", args...)
-	cmd.Env = processenv.Without(os.Environ(), "OPENCODE_API_KEY")
+	cmd.Env = processenv.Without(os.Environ(), "OPENCODE_API_KEY", "CHUBBY_API_KEY")
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

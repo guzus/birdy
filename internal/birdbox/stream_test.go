@@ -130,6 +130,7 @@ func TestStreamNoToolsOmitsXCredentialsAndBirdyPermissions(t *testing.T) {
 	t.Setenv("TWITTER_AUTH_TOKEN", "legacy-x-auth")
 	t.Setenv("TWITTER_CT0", "legacy-x-csrf")
 	t.Setenv("OPENCODE_API_KEY", "other-provider-secret")
+	t.Setenv("CHUBBY_API_KEY", "chubby-canary")
 
 	StreamNoTools(context.Background(), "untrusted", "sonnet", "system", func(claude.Event) {})
 	argsBytes, err := os.ReadFile(argsPath)
@@ -151,7 +152,7 @@ func TestStreamNoToolsOmitsXCredentialsAndBirdyPermissions(t *testing.T) {
 		t.Fatalf("read env: %v", err)
 	}
 	env := string(envBytes)
-	for _, secret := range []string{"BIRDY_ACCOUNTS=", "BIRDY_HARNESS_ACCOUNTS=", "BIRDY_HOST_INVITE_CODE=", "BIRDY_HOST_TOKEN=", "BIRDY_HARNESS_TOKEN_HASHES=", "AUTH_TOKEN=", "CT0=", "TWITTER_AUTH_TOKEN=", "TWITTER_CT0=", "OPENCODE_API_KEY="} {
+	for _, secret := range []string{"BIRDY_ACCOUNTS=", "BIRDY_HARNESS_ACCOUNTS=", "BIRDY_HOST_INVITE_CODE=", "BIRDY_HOST_TOKEN=", "BIRDY_HARNESS_TOKEN_HASHES=", "AUTH_TOKEN=", "CT0=", "TWITTER_AUTH_TOKEN=", "TWITTER_CT0=", "OPENCODE_API_KEY=", "CHUBBY_API_KEY="} {
 		if strings.Contains(env, secret) {
 			t.Fatalf("no-tools bird-box retained %q in %q", secret, env)
 		}

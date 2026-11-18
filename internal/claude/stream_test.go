@@ -51,6 +51,7 @@ func TestNoToolsEnvironmentRemovesXAndHarnessSecrets(t *testing.T) {
 		"PATH=/usr/bin",
 		"ANTHROPIC_API_KEY=model-provider-secret",
 		"OPENCODE_API_KEY=other-provider-secret",
+		"CHUBBY_API_KEY=chubby-canary",
 		"BIRDY_ACCOUNTS=x-cookie-pool",
 		"BIRDY_HARNESS_ACCOUNTS=harness-x-cookie-pool",
 		"BIRDY_HOST_INVITE_CODE=shared-invite",
@@ -65,7 +66,7 @@ func TestNoToolsEnvironmentRemovesXAndHarnessSecrets(t *testing.T) {
 	if !strings.Contains(got, "ANTHROPIC_API_KEY=model-provider-secret") || !strings.Contains(got, "PATH=/usr/bin") {
 		t.Fatalf("required model environment removed: %q", got)
 	}
-	for _, secret := range []string{"BIRDY_ACCOUNTS=", "BIRDY_HARNESS_ACCOUNTS=", "BIRDY_HOST_INVITE_CODE=", "BIRDY_HOST_TOKEN=", "BIRDY_HARNESS_TOKEN_HASHES=", "AUTH_TOKEN=", "CT0=", "TWITTER_AUTH_TOKEN=", "TWITTER_CT0=", "OPENCODE_API_KEY="} {
+	for _, secret := range []string{"BIRDY_ACCOUNTS=", "BIRDY_HARNESS_ACCOUNTS=", "BIRDY_HOST_INVITE_CODE=", "BIRDY_HOST_TOKEN=", "BIRDY_HARNESS_TOKEN_HASHES=", "AUTH_TOKEN=", "CT0=", "TWITTER_AUTH_TOKEN=", "TWITTER_CT0=", "OPENCODE_API_KEY=", "CHUBBY_API_KEY="} {
 		if strings.Contains(got, secret) {
 			t.Fatalf("sensitive runtime environment retained %q in %q", secret, got)
 		}

@@ -28,7 +28,7 @@ func RunOnce(ctx context.Context, prompt, systemPrompt, model, birdyCmd string) 
 	}
 
 	cmd := exec.CommandContext(ctx, "claude", args...)
-	cmd.Env = processenv.Without(os.Environ(), "OPENCODE_API_KEY")
+	cmd.Env = processenv.Without(os.Environ(), "OPENCODE_API_KEY", "CHUBBY_API_KEY")
 	var out, errBuf bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errBuf

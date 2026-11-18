@@ -182,7 +182,7 @@ func Stream(ctx context.Context, prompt, model, birdyCmd string, emit func(Event
 	cmd := exec.CommandContext(ctx, "claude", args...)
 	// A tool-capable Claude session needs Birdy's X environment, but never the
 	// credential for an unrelated model provider.
-	cmd.Env = processenv.Without(os.Environ(), "OPENCODE_API_KEY")
+	cmd.Env = processenv.Without(os.Environ(), "OPENCODE_API_KEY", "CHUBBY_API_KEY")
 	StreamCommand(ctx, cmd, emit)
 }
 
@@ -216,7 +216,7 @@ func withoutSensitiveRuntimeEnv(env []string) []string {
 	return processenv.Without(env,
 		"AUTH_TOKEN", "CT0", "TWITTER_AUTH_TOKEN", "TWITTER_CT0",
 		"BIRDY_ACCOUNTS", "BIRDY_HARNESS_ACCOUNTS", "BIRDY_HOST_INVITE_CODE",
-		"BIRDY_HOST_TOKEN", "BIRDY_HARNESS_TOKEN_HASHES", "OPENCODE_API_KEY")
+		"BIRDY_HOST_TOKEN", "BIRDY_HARNESS_TOKEN_HASHES", "OPENCODE_API_KEY", "CHUBBY_API_KEY")
 }
 
 // StreamCommand parses Claude Code stream-json output from cmd. Callers can

@@ -15,6 +15,7 @@ func TestBuildEnvReplacesCredentialVars(t *testing.T) {
 	t.Setenv("TWITTER_AUTH_TOKEN", "legacy-auth")
 	t.Setenv("TWITTER_CT0", "legacy-ct0")
 	t.Setenv("OPENCODE_API_KEY", "must-not-reach-bird")
+	t.Setenv("CHUBBY_API_KEY", "must-not-reach-bird")
 	t.Setenv("KEEP_ME", "still-here")
 
 	env := buildEnv(&store.Account{
@@ -35,8 +36,8 @@ func TestBuildEnvReplacesCredentialVars(t *testing.T) {
 	if strings.Contains(joined, "TWITTER_CT0=legacy-ct0") {
 		t.Fatalf("expected stale TWITTER_CT0 to be removed, got %q", joined)
 	}
-	if strings.Contains(joined, "OPENCODE_API_KEY=") {
-		t.Fatalf("OpenCode credential reached bird subprocess: %q", joined)
+	if strings.Contains(joined, "OPENCODE_API_KEY=") || strings.Contains(joined, "CHUBBY_API_KEY=") {
+		t.Fatalf("unrelated provider credential reached bird subprocess: %q", joined)
 	}
 	if !strings.Contains(joined, "AUTH_TOKEN=new-auth") || !strings.Contains(joined, "CT0=new-ct0") {
 		t.Fatalf("expected new credentials in env, got %q", joined)

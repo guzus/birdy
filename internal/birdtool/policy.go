@@ -21,3 +21,8 @@ func APIAllowed(command string) bool {
 func ModelCommands() []string {
 	return slices.Clone(modelCommands)
 }
+
+// ChubbyCommands lists the hosted tools that read public X content.
+func ChubbyCommands() []string {
+	return []string{"about", "home", "news", "read", "replies", "search", "thread", "user-tweets"}
+}
