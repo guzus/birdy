@@ -7,7 +7,8 @@ test('the privacy notice states what the usage counts keep', () => {
   const markup = renderToStaticMarkup(<PrivacyPage />);
   for (const text of [
     'Usage counts',
-    "Usage counts are off unless the site's operator turns them on. When they are on",
+    'Usage counts are off unless the site',
+    'operator turns them on. When they are on',
     'chat, scan briefings and commands',
     'the engine that answered',
     'salted hash (HMAC-SHA256) of the IP address',
