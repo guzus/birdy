@@ -237,6 +237,11 @@ func apiScanHandler(invite string, read scanReader, stream chatmodel.StreamFunc)
 		}
 		if wantsManagedScan(visitor, r.Header.Get("X-Birdy-Scan-Engine")) {
 			err = runManagedScan(ctx, visitor, emit)
+			// A trial request asked for the managed engine by name: never hand it
+			// a direct briefing it could mistake for a managed one.
+			if errors.Is(err, errScanManagedUnavailable) && scanManagedMode() == "trial" {
+				err = errors.New("The managed briefing could not start.")
+			}
 			if !errors.Is(err, errScanManagedUnavailable) {
 				if err != nil && ctx.Err() == nil {
 					emit("error", map[string]string{"type": "error", "error": err.Error()})

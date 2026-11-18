@@ -45,7 +45,7 @@ func scanAgentDefinitions(kind scanToolKind, endpoint, model, secretName, toolID
 }
 
 func newScanAgentCmd() *cobra.Command {
-	var kindName, hostURL string
+	var kindName, hostURL, toolID string
 	limits := scanAgentLimits{}
 	register := &cobra.Command{
 		Use:   "register",
@@ -79,29 +79,32 @@ func newScanAgentCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(cmd.Context(), 2*time.Minute)
 			defer cancel()
 			secretName := strings.ReplaceAll(kind.name, "_", "-") + "-key"
-			if err := m.PutSecret(ctx, secretName, secret); err != nil {
-				return fmt.Errorf("store tool secret: %w", err)
-			}
-			tool, _ := scanAgentDefinitions(kind, u.String(), model, secretName, "", limits)
-			toolID, err := m.RegisterTool(ctx, tool)
-			if err != nil {
-				return fmt.Errorf("register tool: %w", err)
+			if toolID == "" {
+				if err := m.PutSecret(ctx, secretName, secret); err != nil {
+					return fmt.Errorf("store tool secret: %w", err)
+				}
+				tool, _ := scanAgentDefinitions(kind, u.String(), model, secretName, "", limits)
+				if toolID, err = m.RegisterTool(ctx, tool); err != nil || toolID == "" {
+					return fmt.Errorf("register tool (list the service's tools before retrying; definitions are immutable): %v", err)
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "tool %s\n", toolID)
 			}
 			_, agent := scanAgentDefinitions(kind, u.String(), model, secretName, toolID, limits)
 			agentID, version, err := m.CreateAgent(ctx, agent)
 			if err != nil {
-				return fmt.Errorf("create agent (tool %s is registered): %w", toolID, err)
+				return fmt.Errorf("create agent (tool %s is registered; rerun with --tool-id %s): %w", toolID, toolID, err)
 			}
 			env := scanAgentInvitedEnv
 			if kindName == "public" {
 				env = scanAgentPublicEnv
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "tool %s\nagent %s version %d\nset %s=%s on the web host\n", toolID, agentID, version, env, agentID)
+			fmt.Fprintf(cmd.OutOrStdout(), "agent %s version %d (tool %s)\nset %s=%s on the web host\n", agentID, version, toolID, env, agentID)
 			return nil
 		},
 	}
 	register.Flags().StringVar(&kindName, "kind", "", "public or invited")
 	register.Flags().StringVar(&hostURL, "host", "", "the web host's public https URL")
+	register.Flags().StringVar(&toolID, "tool-id", "", "an already registered tool: only create the agent")
 	register.Flags().IntVar(&limits.maxSteps, "max-steps", len(scanSources)+2, "model steps per run")
 	register.Flags().IntVar(&limits.maxOutputTokens, "max-output-tokens", 4096, "output tokens per model step")
 	register.Flags().IntVar(&limits.timeoutSeconds, "timeout-seconds", 180, "run deadline")

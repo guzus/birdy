@@ -78,15 +78,54 @@ type scanManagedMetrics struct {
 	started                            time.Time
 	firstModel, firstSource, firstCard time.Duration
 	steps                              int
-	costUSD, reservedUSD               float64
+	server                             string
+	costUSD, stepReserveUSD            float64
 	unknownCost                        bool
 	cacheRead, cacheWrite, inputTokens float64
 }
 
 func (m *scanManagedMetrics) log() {
 	ms := func(d time.Duration) int64 { return d.Milliseconds() }
-	log.Printf("[scan-managed] run=%s status=%s wall_ms=%d first_model_ms=%d first_source_ms=%d first_card_ms=%d steps=%d cost_usd=%g reserved_usd=%g unknown_cost=%v input=%g cache_read=%g cache_write=%g",
-		m.runID, m.status, ms(time.Since(m.started)), ms(m.firstModel), ms(m.firstSource), ms(m.firstCard), m.steps, m.costUSD, m.reservedUSD, m.unknownCost, m.inputTokens, m.cacheRead, m.cacheWrite)
+	log.Printf("[scan-managed] run=%s status=%s wall_ms=%d first_model_ms=%d first_source_ms=%d first_card_ms=%d steps=%d cost_usd=%g step_reserve_usd=%g unknown_cost=%v input=%g cache_read=%g cache_write=%g server=[%s]",
+		m.runID, m.status, ms(time.Since(m.started)), ms(m.firstModel), ms(m.firstSource), ms(m.firstCard), m.steps, m.costUSD, m.stepReserveUSD, m.unknownCost, m.inputTokens, m.cacheRead, m.cacheWrite, m.server)
+}
+
+// serverTimeline reads Chubby's own event timestamps, relative to the run's
+// queueing, so latency is not measured with Birdy's poll interval.
+func serverTimeline(events []chubby.ManagedEvent) (string, float64) {
+	var queued time.Time
+	firsts := map[string]time.Duration{}
+	var order []string
+	reserve := 0.0
+	for _, e := range events {
+		at, err := time.Parse(time.RFC3339Nano, e.CreatedAt)
+		if err != nil {
+			continue
+		}
+		if e.Type == "run.queued" && queued.IsZero() {
+			queued = at
+		}
+		if queued.IsZero() {
+			continue
+		}
+		if _, seen := firsts[e.Type]; !seen {
+			firsts[e.Type] = at.Sub(queued)
+			order = append(order, e.Type)
+		}
+		if e.Type == "model.started" {
+			var data struct {
+				ReservedUSD float64 `json:"reservedUsd"`
+			}
+			if json.Unmarshal(e.Data, &data) == nil {
+				reserve = max(reserve, data.ReservedUSD)
+			}
+		}
+	}
+	parts := make([]string, 0, len(order))
+	for _, t := range order {
+		parts = append(parts, fmt.Sprintf("%s=%dms", t, firsts[t].Milliseconds()))
+	}
+	return strings.Join(parts, " "), reserve
 }
 
 // runManagedScan returns errScanManagedUnavailable before anything was
@@ -219,7 +258,10 @@ func runManagedScan(ctx context.Context, visitor bool, emit scanEmitter) error {
 	finished = detail.Run.Status == "succeeded"
 	metrics.status = detail.Run.Status
 	metrics.steps = detail.Run.StepCount
-	metrics.costUSD, metrics.reservedUSD, metrics.unknownCost = detail.Run.CostUSD, detail.Run.ReservedUSD, detail.Run.UnknownCost
+	metrics.costUSD, metrics.unknownCost = detail.Run.CostUSD, detail.Run.UnknownCost
+	if events, err := m.Events(ctx, run.ID, 0); err == nil {
+		metrics.server, metrics.stepReserveUSD = serverTimeline(events)
+	}
 	for _, step := range detail.Steps {
 		if step.Kind == "model" {
 			metrics.inputTokens += tokens(step.InputTokens)

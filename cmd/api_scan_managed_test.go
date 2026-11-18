@@ -322,7 +322,10 @@ func TestAPIScanTrialUsesManagedOnlyWhenAsked(t *testing.T) {
 	f := &fakeManaged{detail: managedDetail("succeeded", `{"category":"AI","title":"Agents","summary":"Agents ship.","bullets":[],"ids":["111111"]}`, toolStep("s1", invitedScanTool.name, home))}
 	useFakeManaged(t, f)
 	var directReads atomic.Int32 // the direct briefing reads sources concurrently
-	read := func(context.Context, scanSource) ([]scanPost, error) { directReads.Add(1); return nil, errors.New("direct") }
+	read := func(context.Context, scanSource) ([]scanPost, error) {
+		directReads.Add(1)
+		return nil, errors.New("direct")
+	}
 	stream := func(context.Context, chatmodel.Selection, chatmodel.Request, func(claude.Event)) {}
 	for _, managed := range []bool{true, false} {
 		r := httptest.NewRequest(http.MethodPost, "/api/scan", strings.NewReader("{}"))
@@ -340,5 +343,52 @@ func TestAPIScanTrialUsesManagedOnlyWhenAsked(t *testing.T) {
 	}
 	if int(directReads.Load()) != len(scanSources) || f.runCalls.Load() == 0 {
 		t.Fatalf("direct reads %d, managed detail reads %d", directReads.Load(), f.runCalls.Load())
+	}
+}
+
+func TestAPIScanTrialNeverFallsBackSilently(t *testing.T) {
+	t.Setenv("BIRDY_WEB_CHAT_BACKEND", "chubby")
+	t.Setenv("CHUBBY_API_KEY", "chb_fixture")
+	t.Setenv("CHUBBY_MODEL", "auto")
+	f := &fakeManaged{sessionErr: errors.New("no such agent")}
+	useFakeManaged(t, f)
+	var directReads atomic.Int32
+	read := func(context.Context, scanSource) ([]scanPost, error) {
+		directReads.Add(1)
+		return nil, errors.New("direct")
+	}
+	stream := func(context.Context, chatmodel.Selection, chatmodel.Request, func(claude.Event)) {}
+	for _, mode := range []string{"trial", "on"} {
+		t.Setenv(scanManagedModeEnv, mode)
+		directReads.Store(0)
+		r := httptest.NewRequest(http.MethodPost, "/api/scan", strings.NewReader("{}"))
+		r.Header.Set("X-Invite-Code", "birdy")
+		r.Header.Set("X-Birdy-Scan-Engine", "managed")
+		r.RemoteAddr = "203.0.113.51:1"
+		w := httptest.NewRecorder()
+		apiScanHandler("birdy", read, stream)(w, r)
+		fellBack := directReads.Load() > 0
+		if mode == "trial" && (fellBack || !strings.Contains(w.Body.String(), "managed briefing could not start")) {
+			t.Fatalf("trial fell back: %s", w.Body)
+		}
+		if mode == "on" && !fellBack {
+			t.Fatal("on did not fall back to the direct briefing")
+		}
+	}
+}
+
+func TestServerTimelineUsesChubbyTimestamps(t *testing.T) {
+	ev := func(id float64, typ, at, data string) chubby.ManagedEvent {
+		return chubby.ManagedEvent{ID: id, Type: typ, CreatedAt: at, Data: json.RawMessage(data)}
+	}
+	got, reserve := serverTimeline([]chubby.ManagedEvent{
+		ev(1, "run.queued", "2026-11-18T07:00:00.000Z", `{}`),
+		ev(2, "run.claimed", "2026-11-18T07:00:01.250Z", `{}`),
+		ev(3, "model.started", "2026-11-18T07:00:01.300Z", `{"reservedUsd":2.04096}`),
+		ev(4, "model.started", "2026-11-18T07:00:09.000Z", `{"reservedUsd":2.04096}`),
+		ev(5, "run.succeeded", "2026-11-18T07:00:20.000Z", `{}`),
+	})
+	if got != "run.queued=0ms run.claimed=1250ms model.started=1300ms run.succeeded=20000ms" || reserve != 2.04096 {
+		t.Fatalf("%q %g", got, reserve)
 	}
 }
