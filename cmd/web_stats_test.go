@@ -19,6 +19,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/guzus/birdy/internal/chatmodel"
+	"github.com/guzus/birdy/internal/claude"
 	"github.com/guzus/birdy/internal/store"
 	"github.com/jackc/pgx/v5"
 )
@@ -386,5 +388,50 @@ func TestWebStatsWriterRole(t *testing.T) {
 	}
 	if n != 2 || events != 2 {
 		t.Errorf("n = %d, events = %d; want 2 and 2", n, events)
+	}
+}
+
+// The scan handler labels a public visitor's scan visitor-scan, not
+// invited, and an invited one scan.
+func TestWebStatsScanSurfaces(t *testing.T) {
+	t.Setenv("BIRDY_WEB_CHAT_BACKEND", "chubby")
+	t.Setenv("CHUBBY_API_KEY", "chb_test")
+	t.Setenv("CHUBBY_MODEL", "auto")
+	t.Setenv("BIRDY_WEB_PUBLIC", "1")
+	sink := &memWebSink{}
+	s := withWebStats(t, sink, "salt")
+	h := apiScanHandler("invite", func(context.Context, scanSource) ([]scanPost, error) {
+		return []scanPost{{ID: "22", URL: "https://x.com/i/web/status/22", Text: "sourced"}}, nil
+	}, func(_ context.Context, _ chatmodel.Selection, _ chatmodel.Request, emit func(claude.Event)) {
+		emit(claude.Event{Type: claude.EventToken, Text: `{"category":"SIGNAL","title":"T","summary":"S","bullets":["more"],"ids":["22"]}`})
+		emit(claude.Event{Type: claude.EventDone})
+	})
+	for i, token := range []string{"", "invite", "wrong"} {
+		r := httptest.NewRequest(http.MethodPost, "/api/scan", strings.NewReader("{}"))
+		r.RemoteAddr = "192.0.2." + strconv.Itoa(10+i) + ":123"
+		if token != "" {
+			r.Header.Set("Authorization", "Bearer "+token)
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		want := map[string]int{"": 200, "invite": 200, "wrong": 401}[token]
+		if w.Code != want {
+			t.Fatalf("token %q: status %d, want %d", token, w.Code, want)
+		}
+	}
+	if err := s.flush(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	b := sink.batches[0]
+	day := s.day()
+	if b.uses[webUseKey{day, webSurfaceVisitorScan, webEngineDirect}] != 1 || b.uses[webUseKey{day, webSurfaceScan, webEngineDirect}] != 1 || len(b.uses) != 2 {
+		t.Errorf("uses = %v", b.uses)
+	}
+	invited := map[bool]int{}
+	for _, inv := range b.clients {
+		invited[inv]++
+	}
+	if invited[true] != 1 || invited[false] != 1 {
+		t.Errorf("clients invited/visitor = %v (the wrong token must not be counted)", invited)
 	}
 }
