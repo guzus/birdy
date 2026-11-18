@@ -131,6 +131,7 @@ func handleAPIMultiCommand(inviteCode string) http.HandlerFunc {
 		if !commandLimiter.admit(w, r, len(req.Operations)) {
 			return
 		}
+		recordWebUse(r, webSurfaceCommand, webEngineNone, true)
 
 		// Per-batch concurrency hint (client-controlled). Capped at the
 		// process-wide ceiling. Even when this is high, the goroutines also

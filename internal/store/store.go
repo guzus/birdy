@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -307,6 +308,22 @@ func (s *Store) RecordUsage(name string) error {
 	return fmt.Errorf("account %q not found", name)
 }
 
+// rateLimitObserver, when set, hears every rate limit recorded in this
+// process, whether or not the store is later saved (see
+// SetRateLimitObserver).
+var rateLimitObserver atomic.Pointer[func()]
+
+// SetRateLimitObserver registers f to be called once per RecordRateLimit in
+// this process; nil removes it. It is told only that a limit was hit, never
+// which account. Rate limits recorded by child processes are not seen.
+func SetRateLimitObserver(f func()) {
+	if f == nil {
+		rateLimitObserver.Store(nil)
+		return
+	}
+	rateLimitObserver.Store(&f)
+}
+
 // RecordRateLimit stamps the most recent 429 and increments the per-account
 // rate-limit counter. Used by the quota-aware rotation strategy to avoid
 // repicking an account that just hit a limit, and by `birdy budget` to
@@ -320,6 +337,9 @@ func (s *Store) RecordRateLimit(name string) error {
 		if s.Accounts[i].Name == name {
 			s.Accounts[i].LastRateLimitedAt = time.Now()
 			s.Accounts[i].RateLimitCount++
+			if f := rateLimitObserver.Load(); f != nil {
+				(*f)()
+			}
 			return nil
 		}
 	}
