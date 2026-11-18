@@ -444,7 +444,14 @@ idle for 6 hours, the next turn starts a new session whose first input carries
 the browser's history. A stop on the chat key's budget pauses managed chats for
 a while; an answer that only reached its own budget fails alone.
 `birdy chat-bench --url <host>` (with `BIRDY_BENCH_INVITE`) runs fixed prompts
-through both engines and prints the timings, tool rounds and answers as JSON.
+through both engines and prints the timings, tool rounds and answers as JSON;
+`--prompts 1,3,6` runs only the search-heavy ones.
+
+The agent's system prompt is the direct chat's plus a search discipline
+(several phrasings before concluding, then read the thread, within the read
+cap). A prompt change takes effect as a new agent version: rerun register with
+`--agent-id <BIRDY_CHAT_AGENT> --tool-id <tool>`, which creates and deploys
+it. New conversations get it; running sessions keep the version they began on.
 
 ### 4. Add persistent volume
 

@@ -282,6 +282,22 @@ func (m *Managed) RegisterTool(ctx context.Context, tool map[string]any) (string
 	return out.ID, err
 }
 
+// CreateVersion adds a version to an agent (config is an agent definition
+// without its name) and returns its number. Sessions keep the version they
+// started on; Deploy makes it the one new sessions get.
+func (m *Managed) CreateVersion(ctx context.Context, agentID string, config map[string]any) (int, error) {
+	var out struct {
+		Version int `json:"version"`
+	}
+	err := m.call(ctx, http.MethodPost, "/agents/"+url.PathEscape(agentID)+"/versions", config, "", &out)
+	return out.Version, err
+}
+
+// Deploy makes version the agent's active version.
+func (m *Managed) Deploy(ctx context.Context, agentID string, version int) error {
+	return m.call(ctx, http.MethodPost, "/agents/"+url.PathEscape(agentID)+"/deploy", map[string]int{"version": version}, "", nil)
+}
+
 func (m *Managed) CreateAgent(ctx context.Context, agent map[string]any) (string, int, error) {
 	var out struct {
 		Agent struct {

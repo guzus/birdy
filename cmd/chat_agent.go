@@ -19,6 +19,18 @@ import (
 // read-only birdy_command tool and creates the agent with the direct chat's
 // system prompt, printing IDs (never the secret).
 
+// chatAgentSystemPrompt is the direct chat's system prompt plus a search
+// discipline. The direct chat may run up to 12 model turns; the agent has 8
+// reads and 8 steps, and in the trial it gave up on "find a thread" after two
+// reads where the direct chat searched six times.
+const chatAgentSystemPrompt = chubbyChatSystemPrompt + `
+
+When asked to find a post, thread or discussion, search thoroughly before answering:
+- Run several searches (usually two to four) with different phrasings: the user's words, likely key terms or hashtags, and X search operators such as "exact phrase", from:handle, min_faves:100 or lang:en. Use -n 20.
+- Compare the candidates by relevance and engagement, then read the best one with thread (or replies) before you describe it.
+- Never conclude that nothing exists after a single search. If nothing fits after several, say what you searched for.
+- You have at most 8 reads per answer, and each tool call is a read: plan them, stop when you have enough, and leave a read for the thread.`
+
 func chatAgentDefinitions(endpoint, model, secretName, toolID string, limits scanAgentLimits) (tool, agent map[string]any) {
 	tool = map[string]any{
 		"name":        chatToolName,
@@ -29,7 +41,7 @@ func chatAgentDefinitions(endpoint, model, secretName, toolID string, limits sca
 		"secretBindings": []map[string]string{{"header": scanToolHeader, "secretName": secretName}},
 	}
 	agent = map[string]any{
-		"name": "birdy-chat-invited", "model": model, "system": chubbyChatSystemPrompt, "toolIds": []string{toolID},
+		"name": "birdy-chat-invited", "model": model, "system": chatAgentSystemPrompt, "toolIds": []string{toolID},
 		"maxSteps": limits.maxSteps, "maxOutputTokens": limits.maxOutputTokens,
 		"budgetUsd": limits.budgetUSD, "timeoutSeconds": limits.timeoutSeconds,
 	}
@@ -40,12 +52,15 @@ func chatAgentDefinitions(endpoint, model, secretName, toolID string, limits sca
 }
 
 func newChatAgentCmd() *cobra.Command {
-	var hostURL, toolID string
+	var hostURL, toolID, agentID string
 	limits := scanAgentLimits{}
 	register := &cobra.Command{
 		Use:   "register",
 		Short: "Register the managed chat tool and agent with Chubby (one-time setup)",
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if agentID != "" && toolID == "" {
+				return errors.New("--agent-id needs --tool-id: a new version keeps the agent's tool")
+			}
 			u, err := url.Parse(strings.TrimRight(hostURL, "/") + chatToolPath)
 			if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
 				return errors.New("--host must be the web host's public https URL")
@@ -82,6 +97,20 @@ func newChatAgentCmd() *cobra.Command {
 				fmt.Fprintf(cmd.OutOrStdout(), "tool %s\n", toolID)
 			}
 			_, agent := chatAgentDefinitions(u.String(), model, secretName, toolID, limits)
+			if agentID != "" {
+				// A new version of the agent the web host already runs: new
+				// conversations get it, running sessions keep theirs.
+				delete(agent, "name")
+				version, err := m.CreateVersion(ctx, agentID, agent)
+				if err != nil {
+					return fmt.Errorf("create version: %w", err)
+				}
+				if err := m.Deploy(ctx, agentID, version); err != nil {
+					return fmt.Errorf("deploy version %d (created, not active): %w", version, err)
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "agent %s version %d deployed (tool %s); %s is unchanged\n", agentID, version, toolID, chatAgentEnv)
+				return nil
+			}
 			agentID, version, err := m.CreateAgent(ctx, agent)
 			if err != nil {
 				return fmt.Errorf("create agent (tool %s is registered; rerun with --tool-id %s): %w", toolID, toolID, err)
@@ -92,6 +121,7 @@ func newChatAgentCmd() *cobra.Command {
 	}
 	register.Flags().StringVar(&hostURL, "host", "", "the web host's public https URL")
 	register.Flags().StringVar(&toolID, "tool-id", "", "an already registered tool: only create the agent")
+	register.Flags().StringVar(&agentID, "agent-id", "", "the existing agent: create and deploy a new version of it (needs --tool-id)")
 	// The direct chat allows 12 model turns; a trial answer rarely needs more
 	// than three reads.
 	register.Flags().IntVar(&limits.maxSteps, "max-steps", 8, "model steps per answer")

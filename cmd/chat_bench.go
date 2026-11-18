@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -112,8 +113,28 @@ func runChatBench(ctx context.Context, base, invite string, engine string, promp
 	return res
 }
 
+// chatBenchPick parses --prompts ("1,3,6") into the prompt numbers to run;
+// empty selects every prompt.
+func chatBenchPick(only string) (map[int]bool, error) {
+	pick := map[int]bool{}
+	if strings.TrimSpace(only) == "" {
+		for i := range chatBenchPrompts {
+			pick[i+1] = true
+		}
+		return pick, nil
+	}
+	for _, f := range strings.Split(only, ",") {
+		n, err := strconv.Atoi(strings.TrimSpace(f))
+		if err != nil || n < 1 || n > len(chatBenchPrompts) {
+			return nil, fmt.Errorf("--prompts: %q is not a prompt number (1-%d)", f, len(chatBenchPrompts))
+		}
+		pick[n] = true
+	}
+	return pick, nil
+}
+
 func newChatBenchCmd() *cobra.Command {
-	var base, engines, followUp string
+	var base, engines, followUp, only string
 	var gap time.Duration
 	cmd := &cobra.Command{
 		Use:    "chat-bench",
@@ -124,8 +145,15 @@ func newChatBenchCmd() *cobra.Command {
 			if invite == "" || base == "" {
 				return errors.New("set BIRDY_BENCH_INVITE and --url")
 			}
+			pick, err := chatBenchPick(only)
+			if err != nil {
+				return err
+			}
 			out := json.NewEncoder(cmd.OutOrStdout())
 			for i, prompt := range chatBenchPrompts {
+				if !pick[i+1] {
+					continue
+				}
 				for _, engine := range strings.Split(engines, ",") {
 					turns := []map[string]string{{"role": "user", "content": prompt}}
 					for {
@@ -150,6 +178,7 @@ func newChatBenchCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&base, "url", "", "the Birdy host, e.g. https://birdy.guzus.xyz")
 	cmd.Flags().StringVar(&engines, "engines", "direct,managed", "engines to compare, in order")
+	cmd.Flags().StringVar(&only, "prompts", "", "run only these prompt numbers, e.g. 1,3,6 (the search-heavy ones); empty runs all")
 	cmd.Flags().StringVar(&followUp, "follow-up", "Summarize that in two sentences.", "a second turn after each answer; empty skips it")
 	cmd.Flags().DurationVar(&gap, "gap", 5*time.Second, "pause between answers (the host rate-limits chat per address)")
 	return cmd
