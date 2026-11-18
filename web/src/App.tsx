@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
+import { PrivacyPage, privacyPath } from './privacy';
 import { readScanStream, scanPermalink, scanSourceLabels } from './scan';
 import type { ScanPost, ScanSource } from './scan';
 import { parseMarkdownBlocks } from './markdown';
@@ -662,7 +663,7 @@ export function MarkdownMessage({ text }: { text: string }) {
   );
 }
 
-function RelatedLinks() {
+export function RelatedLinks() {
   const linkClass = 'inline-flex min-h-11 items-center gap-1 text-text-dim no-underline hover:text-text focus-visible:outline-2 focus-visible:outline-offset-2 md:min-h-7';
   return (
     <nav aria-label="Related sites" className="flex shrink-0 items-center justify-end gap-4 border-b border-border/50 px-4 text-[11px]">
@@ -672,6 +673,7 @@ function RelatedLinks() {
       <a href="https://birdy-timeline.guzus.xyz" target="_blank" rel="noreferrer" className={linkClass} aria-label="Birdy Timeline (opens in a new tab)">
         Birdy Timeline <span aria-hidden="true">↗</span>
       </a>
+      <a href={privacyPath} className={linkClass}>Privacy</a>
     </nav>
   );
 }
@@ -1019,6 +1021,7 @@ export function SharedSnapshotView({ snapshot, expiresAt }: { snapshot: ShareSna
 }
 
 export function App() {
+  if (window.location.pathname === privacyPath) return <PrivacyPage />;
   if (window.location.pathname.startsWith(shareRoutePrefix)) {
     return <SharedConversationPage shareId={parseSharePath(window.location.pathname)} />;
   }

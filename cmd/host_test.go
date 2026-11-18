@@ -593,3 +593,16 @@ func TestHostedTUIEnvironmentExcludesOpenCodeCredential(t *testing.T) {
 		t.Fatalf("hosted TUI environment isolation failed; names: %v", envcheck.Names(got))
 	}
 }
+
+func TestHostedWebServesPrivacyNotice(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<!doctype html><div id=root></div>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h := makeHostedWebHandler(dir)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/privacy", nil))
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `id=root`) {
+		t.Fatalf("/privacy = %d %q, want the web client", rr.Code, rr.Body.String())
+	}
+}
