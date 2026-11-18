@@ -1,6 +1,7 @@
 package processenv
 
 import (
+	"github.com/guzus/birdy/internal/envcheck"
 	"slices"
 	"testing"
 )
@@ -10,6 +11,6 @@ func TestWithoutRemovesOnlyExactVariableNames(t *testing.T) {
 	got := Without(original, "OPENCODE_API_KEY")
 	want := []string{"PATH=/bin", "OPENCODE_API_KEY_SUFFIX=keep"}
 	if !slices.Equal(got, want) || len(original) != 3 {
-		t.Fatalf("Without() = %#v, original=%#v", got, original)
+		t.Fatalf("Without() kept %v from %v", envcheck.Names(got), envcheck.Names(original))
 	}
 }

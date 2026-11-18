@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/guzus/birdy/internal/envcheck"
 )
 
 func TestEnsureHostInviteCodeUsesFlag(t *testing.T) {
@@ -582,13 +583,13 @@ func shellQuote(v string) string {
 }
 
 func TestHostedTUIEnvironmentExcludesOpenCodeCredential(t *testing.T) {
-	got := strings.Join(hostedTUIEnvironment([]string{
+	got := hostedTUIEnvironment([]string{
 		"PATH=/bin",
 		"OPENCODE_API_KEY=model-provider-secret",
 		"CHUBBY_API_KEY=hosted-provider-secret",
 		"BIRDY_ACCOUNTS=required-tui-account-pool",
-	}), "\n")
-	if strings.Contains(got, "OPENCODE_API_KEY=") || strings.Contains(got, "CHUBBY_API_KEY=") || !strings.Contains(got, "BIRDY_ACCOUNTS=required-tui-account-pool") {
-		t.Fatalf("hosted TUI environment isolation failed: %q", got)
+	})
+	if accounts, _ := envcheck.Value(got, "BIRDY_ACCOUNTS"); envcheck.Has(got, "OPENCODE_API_KEY") || envcheck.Has(got, "CHUBBY_API_KEY") || accounts != "required-tui-account-pool" {
+		t.Fatalf("hosted TUI environment isolation failed; names: %v", envcheck.Names(got))
 	}
 }

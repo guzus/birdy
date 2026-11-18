@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/guzus/birdy/internal/envcheck"
 	"github.com/guzus/birdy/internal/processenv"
 )
 
@@ -62,31 +63,29 @@ func TestNoToolsEnvironmentRemovesXAndHarnessSecrets(t *testing.T) {
 		"TWITTER_AUTH_TOKEN=legacy-x-auth",
 		"TWITTER_CT0=legacy-x-csrf",
 	}
-	got := strings.Join(withoutSensitiveRuntimeEnv(env), "\n")
-	if !strings.Contains(got, "ANTHROPIC_API_KEY=model-provider-secret") || !strings.Contains(got, "PATH=/usr/bin") {
-		t.Fatalf("required model environment removed: %q", got)
+	got := withoutSensitiveRuntimeEnv(env)
+	if v, _ := envcheck.Value(got, "ANTHROPIC_API_KEY"); v != "model-provider-secret" || !envcheck.Has(got, "PATH") {
+		t.Fatalf("required model environment removed; names left: %v", envcheck.Names(got))
 	}
-	for _, secret := range []string{"BIRDY_ACCOUNTS=", "BIRDY_HARNESS_ACCOUNTS=", "BIRDY_HOST_INVITE_CODE=", "BIRDY_HOST_TOKEN=", "BIRDY_HARNESS_TOKEN_HASHES=", "AUTH_TOKEN=", "CT0=", "TWITTER_AUTH_TOKEN=", "TWITTER_CT0=", "OPENCODE_API_KEY=", "CHUBBY_API_KEY="} {
-		if strings.Contains(got, secret) {
-			t.Fatalf("sensitive runtime environment retained %q in %q", secret, got)
-		}
+	if leaked := envcheck.Present(got, "BIRDY_ACCOUNTS", "BIRDY_HARNESS_ACCOUNTS", "BIRDY_HOST_INVITE_CODE", "BIRDY_HOST_TOKEN", "BIRDY_HARNESS_TOKEN_HASHES", "AUTH_TOKEN", "CT0", "TWITTER_AUTH_TOKEN", "TWITTER_CT0", "OPENCODE_API_KEY", "CHUBBY_API_KEY"); len(leaked) > 0 {
+		t.Fatalf("sensitive runtime environment retained %v", leaked)
 	}
 }
 
 func TestToolCapableClaudeEnvironmentCannotReceiveOpenCodeKey(t *testing.T) {
-	got := strings.Join(processenv.Without([]string{
+	got := processenv.Without([]string{
 		"PATH=/usr/bin",
 		"BIRDY_ACCOUNTS=required-x-pool",
 		"ANTHROPIC_API_KEY=required-claude-key",
 		"OPENCODE_API_KEY=unrelated-provider-key",
-	}, "OPENCODE_API_KEY"), "\n")
-	if strings.Contains(got, "OPENCODE_API_KEY=") {
-		t.Fatalf("OpenCode credential crossed into Claude: %q", got)
+	}, "OPENCODE_API_KEY")
+	if envcheck.Has(got, "OPENCODE_API_KEY") {
+		t.Fatal("OpenCode credential crossed into Claude")
 	}
-	for _, required := range []string{"BIRDY_ACCOUNTS=required-x-pool", "ANTHROPIC_API_KEY=required-claude-key"} {
-		if !strings.Contains(got, required) {
-			t.Fatalf("required Claude environment removed: %q", got)
-		}
+	accounts, _ := envcheck.Value(got, "BIRDY_ACCOUNTS")
+	claudeKey, _ := envcheck.Value(got, "ANTHROPIC_API_KEY")
+	if accounts != "required-x-pool" || claudeKey != "required-claude-key" {
+		t.Fatalf("required Claude environment removed; names left: %v", envcheck.Names(got))
 	}
 }
 

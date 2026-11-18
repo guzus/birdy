@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/guzus/birdy/internal/claude"
+	"github.com/guzus/birdy/internal/envcheck"
 	"github.com/guzus/birdy/internal/processenv"
 )
 
@@ -78,9 +79,10 @@ func TestToolCapableBirdBoxEnvironmentCannotReceiveOpenCodeKey(t *testing.T) {
 		"BIRDY_ACCOUNTS=required-x-pool",
 		"OPENCODE_API_KEY=unrelated-provider-key",
 	}, "OPENCODE_API_KEY")
-	joined := strings.Join(env, "\n")
-	if strings.Contains(joined, "OPENCODE_API_KEY=") || !strings.Contains(joined, "E2B_API_KEY=required-e2b-key") || !strings.Contains(joined, "BIRDY_ACCOUNTS=required-x-pool") {
-		t.Fatalf("provider isolation failed: %q", joined)
+	e2b, _ := envcheck.Value(env, "E2B_API_KEY")
+	accounts, _ := envcheck.Value(env, "BIRDY_ACCOUNTS")
+	if envcheck.Has(env, "OPENCODE_API_KEY") || e2b != "required-e2b-key" || accounts != "required-x-pool" {
+		t.Fatalf("provider isolation failed; names: %v", envcheck.Names(env))
 	}
 }
 
@@ -151,14 +153,9 @@ func TestStreamNoToolsOmitsXCredentialsAndBirdyPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read env: %v", err)
 	}
-	// Match whole variable names, and never print the environment: it holds
-	// the developer's own credentials.
-	for _, line := range strings.Split(string(envBytes), "\n") {
-		for _, secret := range []string{"BIRDY_ACCOUNTS=", "BIRDY_HARNESS_ACCOUNTS=", "BIRDY_HOST_INVITE_CODE=", "BIRDY_HOST_TOKEN=", "BIRDY_HARNESS_TOKEN_HASHES=", "AUTH_TOKEN=", "CT0=", "TWITTER_AUTH_TOKEN=", "TWITTER_CT0=", "OPENCODE_API_KEY=", "CHUBBY_API_KEY="} {
-			if strings.HasPrefix(line, secret) {
-				t.Fatalf("no-tools bird-box retained %s", strings.TrimSuffix(secret, "="))
-			}
-		}
+	// A real child environment: match whole names and report names only.
+	if leaked := envcheck.Present(envcheck.Lines(string(envBytes)), "BIRDY_ACCOUNTS", "BIRDY_HARNESS_ACCOUNTS", "BIRDY_HOST_INVITE_CODE", "BIRDY_HOST_TOKEN", "BIRDY_HARNESS_TOKEN_HASHES", "AUTH_TOKEN", "CT0", "TWITTER_AUTH_TOKEN", "TWITTER_CT0", "OPENCODE_API_KEY", "CHUBBY_API_KEY"); len(leaked) > 0 {
+		t.Fatalf("no-tools bird-box retained %v", leaked)
 	}
 }
 

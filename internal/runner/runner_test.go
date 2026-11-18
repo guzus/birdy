@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/guzus/birdy/internal/envcheck"
 	"github.com/guzus/birdy/internal/store"
 )
 
@@ -22,28 +23,28 @@ func TestBuildEnvReplacesCredentialVars(t *testing.T) {
 		AuthToken: "new-auth",
 		CT0:       "new-ct0",
 	})
-	joined := strings.Join(env, "\n")
-
-	if strings.Contains(joined, "AUTH_TOKEN=old-auth") {
-		t.Fatalf("expected stale AUTH_TOKEN to be removed, got %q", joined)
+	// buildEnv starts from the real process environment: report names only.
+	if leaked := envcheck.Present(env, "TWITTER_AUTH_TOKEN", "TWITTER_CT0", "OPENCODE_API_KEY", "CHUBBY_API_KEY"); len(leaked) > 0 {
+		t.Fatalf("stale or unrelated credentials reached bird subprocess: %v", leaked)
 	}
-	if strings.Contains(joined, "CT0=old-ct0") {
-		t.Fatalf("expected stale CT0 to be removed, got %q", joined)
+	for _, name := range []string{"AUTH_TOKEN", "CT0"} {
+		count := 0
+		for _, entry := range env {
+			if strings.HasPrefix(entry, name+"=") {
+				count++
+			}
+		}
+		if count != 1 {
+			t.Fatalf("expected exactly one %s, found %d", name, count)
+		}
 	}
-	if strings.Contains(joined, "TWITTER_AUTH_TOKEN=legacy-auth") {
-		t.Fatalf("expected stale TWITTER_AUTH_TOKEN to be removed, got %q", joined)
+	auth, _ := envcheck.Value(env, "AUTH_TOKEN")
+	ct0, _ := envcheck.Value(env, "CT0")
+	if auth != "new-auth" || ct0 != "new-ct0" {
+		t.Fatal("expected the account's new credentials in env")
 	}
-	if strings.Contains(joined, "TWITTER_CT0=legacy-ct0") {
-		t.Fatalf("expected stale TWITTER_CT0 to be removed, got %q", joined)
-	}
-	if strings.Contains(joined, "OPENCODE_API_KEY=") || strings.Contains(joined, "CHUBBY_API_KEY=") {
-		t.Fatalf("unrelated provider credential reached bird subprocess: %q", joined)
-	}
-	if !strings.Contains(joined, "AUTH_TOKEN=new-auth") || !strings.Contains(joined, "CT0=new-ct0") {
-		t.Fatalf("expected new credentials in env, got %q", joined)
-	}
-	if !strings.Contains(joined, "KEEP_ME=still-here") {
-		t.Fatalf("expected unrelated env var preserved, got %q", joined)
+	if keep, _ := envcheck.Value(env, "KEEP_ME"); keep != "still-here" {
+		t.Fatalf("expected unrelated env var preserved; names: %v", envcheck.Names(env))
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/guzus/birdy/internal/claude"
+	"github.com/guzus/birdy/internal/envcheck"
 )
 
 const helperModeEnv = "BIRDY_OPENCODE_TEST_HELPER"
@@ -282,14 +283,19 @@ printf '%%s\n' '{"type":"step_finish","timestamp":3,"sessionID":"ses_fixture","p
 	if got := mustRead(t, stdinPath); got != "untrusted tweet payload" {
 		t.Fatalf("prompt was not sent only over stdin: %q", got)
 	}
-	env := mustRead(t, envPath)
-	for _, forbidden := range []string{"untrusted tweet payload", "system boundary", "ANTHROPIC_API_KEY=", "BIRDY_ACCOUNTS=", "BIRDY_HARNESS_TOKEN_HASHES=", "AUTH_TOKEN=", "OPENCODE_CONFIG_CONTENT="} {
-		if strings.Contains(env, forbidden) {
+	// A real child environment: report variable names only, never values.
+	rawEnv := mustRead(t, envPath)
+	for _, forbidden := range []string{"untrusted tweet payload", "system boundary"} {
+		if strings.Contains(rawEnv, forbidden) {
 			t.Fatalf("isolated environment leaked %q", forbidden)
 		}
 	}
-	if !strings.Contains(env, apiKeyEnv+"=fake-opencode-provider-key") || !strings.Contains(env, "OPENCODE_CONFIG=") {
-		t.Fatalf("required isolated environment missing: %q", env)
+	env := envcheck.Lines(rawEnv)
+	if leaked := envcheck.Present(env, "ANTHROPIC_API_KEY", "BIRDY_ACCOUNTS", "BIRDY_HARNESS_TOKEN_HASHES", "AUTH_TOKEN", "OPENCODE_CONFIG_CONTENT"); len(leaked) > 0 {
+		t.Fatalf("isolated environment leaked %v", leaked)
+	}
+	if key, _ := envcheck.Value(env, apiKeyEnv); key != "fake-opencode-provider-key" || !envcheck.Has(env, "OPENCODE_CONFIG") {
+		t.Fatalf("required isolated environment missing; names present: %v", envcheck.Names(env))
 	}
 	if !strings.Contains(mustRead(t, configPath), `"permission":{"*":"deny"}`) {
 		t.Fatal("copied effective config did not deny all tools")
