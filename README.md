@@ -405,6 +405,41 @@ run at once; beyond that, or when a run cannot start, the briefing falls back
 to the direct path. A briefing whose viewer disconnects, or that pauses for
 attention, is cancelled.
 
+#### Managed chat (trial, off by default)
+
+An invited chat can instead be answered by a Chubby managed agent that calls
+`birdy_command` on the web host, so the X account pool stays in Birdy. Birdy
+keeps one managed session per conversation and sends each turn as one run, so
+the conversation's earlier turns stay in Chubby's prompt cache.
+
+- `BIRDY_CHAT_MANAGED`: unset (off) or `trial`. In trial, only an invited
+  request with `X-Birdy-Chat-Engine: managed` uses the agent; public visitors
+  and every other request keep the direct path. The response's
+  `X-Birdy-Chat-Engine` header names the engine that answered.
+- `BIRDY_CHAT_TOOL_SECRET`: a random value of at least 32 characters, different
+  from the briefing tools' secrets. Without it, or with the mode off,
+  `POST /api/chat-tools/invited` answers 404.
+- `BIRDY_CHAT_AGENT`: the agent ID.
+
+The tool takes `{"command": ..., "args": [...]}` and applies the direct chat's
+command allowlist and argument rules. It serves only tool steps of chat runs
+the same web process is running, at most 8 reads per answer, with output under
+60 KiB and the pool's account names and cookies removed. Register once, with
+the web host's environment and an exact `CHUBBY_MODEL`:
+
+```bash
+birdy chat-agent register --host https://your-birdy-host.example
+```
+
+Defaults: 8 model steps, 4096 output tokens, 300 s, low reasoning effort, $5
+per answer (a step reserves a whole context window). The conversation map is
+in memory: after a restart, an edited or regenerated turn, or a conversation
+idle for 6 hours, the next turn starts a new session whose first input carries
+the browser's history. A stop on the service's budget pauses managed chats for
+a while; an answer that only reached its own budget fails alone.
+`birdy chat-bench --url <host>` (with `BIRDY_BENCH_INVITE`) runs fixed prompts
+through both engines and prints the timings, tool rounds and answers as JSON.
+
 ### 4. Add persistent volume
 
 Mount a Railway volume at:

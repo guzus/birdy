@@ -135,21 +135,23 @@ type ManagedRun struct {
 }
 
 type ManagedStep struct {
-	ID               string   `json:"id"`
-	Sequence         int      `json:"sequence"`
-	Kind             string   `json:"kind"`
-	Status           string   `json:"status"`
-	Name             string   `json:"name"`
-	ToolID           *string  `json:"toolId"`
-	Output           *string  `json:"output"`
-	RequestID        *string  `json:"requestId"`
-	TraceID          *string  `json:"traceId"`
-	CostUSD          float64  `json:"costUsd"`
-	InputTokens      *float64 `json:"inputTokens"`
-	CacheReadTokens  *float64 `json:"cacheReadTokens"`
-	CacheWriteTokens *float64 `json:"cacheWriteTokens"`
-	StartedAt        *string  `json:"startedAt"`
-	FinishedAt       *string  `json:"finishedAt"`
+	ID       string  `json:"id"`
+	Sequence int     `json:"sequence"`
+	Kind     string  `json:"kind"`
+	Status   string  `json:"status"`
+	Name     string  `json:"name"`
+	ToolID   *string `json:"toolId"`
+	// Arguments is the tool call's JSON object (tool steps only).
+	Arguments        json.RawMessage `json:"arguments"`
+	Output           *string         `json:"output"`
+	RequestID        *string         `json:"requestId"`
+	TraceID          *string         `json:"traceId"`
+	CostUSD          float64         `json:"costUsd"`
+	InputTokens      *float64        `json:"inputTokens"`
+	CacheReadTokens  *float64        `json:"cacheReadTokens"`
+	CacheWriteTokens *float64        `json:"cacheWriteTokens"`
+	StartedAt        *string         `json:"startedAt"`
+	FinishedAt       *string         `json:"finishedAt"`
 }
 
 type ManagedEvent struct {
@@ -250,6 +252,11 @@ func (m *Managed) EventsPage(ctx context.Context, id string, after float64, text
 		page.Text = &text
 	}
 	return page, nil
+}
+
+// DeleteSession removes an inactive session's conversation and run content.
+func (m *Managed) DeleteSession(ctx context.Context, id string) error {
+	return m.call(ctx, http.MethodDelete, "/sessions/"+url.PathEscape(id), nil, "", nil)
 }
 
 // Cancel stops future work on a run. It cannot undo a dispatched tool call.

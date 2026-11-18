@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -496,6 +497,24 @@ func handleAPIChat(inviteCode string) http.HandlerFunc {
 			})
 			return
 		}
+		// The managed trial: an invited chat that names the engine gets it, or
+		// an error saying why, never a direct answer in its place.
+		if wantsManagedChat(false, r.Header.Get(chatEngineHeader)) {
+			w.Header().Set(chatEngineHeader, "managed")
+			err := errors.New("The managed chat could not start.")
+			if reason := chatManagedBlocked(model, time.Now()); reason != "" {
+				log.Printf("[chat-managed] not used: %s", reason)
+				err = errors.New("The managed chat is unavailable: " + reason + ".")
+			} else if err2 := runManagedChat(ctx, turns, clientIP(r), emit); !errors.Is(err2, errChatManagedUnavailable) {
+				err = err2
+			}
+			if err != nil && ctx.Err() == nil {
+				emit(claude.Event{Type: claude.EventError, Error: err.Error()})
+			}
+			emit(claude.Event{Type: claude.EventDone})
+			return
+		}
+		w.Header().Set(chatEngineHeader, "direct")
 		exePath, err := os.Executable()
 		if err != nil || strings.TrimSpace(exePath) == "" {
 			exePath = "birdy"

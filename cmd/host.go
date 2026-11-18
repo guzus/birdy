@@ -134,6 +134,7 @@ func buildHostedMux(inviteCode string, allowedOrigins map[string]struct{}, webDi
 	mux.Handle("/api/scan-tools/public", withHostedSecurityHeaders(handleScanTool(publicScanTool, fetchScanSource)))
 	mux.Handle("/api/scan-tools/invited", withHostedSecurityHeaders(handleScanTool(invitedScanTool, fetchScanSource)))
 	mux.Handle("/api/chat", withHostedSecurityHeaders(handleAPIChat(inviteCode)))
+	mux.Handle(chatToolPath, withHostedSecurityHeaders(handleChatTool()))
 	mux.Handle("/api/harness/chat", withHostedSecurityHeaders(newHarnessChatHandlerFromEnv(inviteCode)))
 	mux.Handle("/api/shares", withHostedSecurityHeaders(handleShareCollection(inviteCode)))
 	mux.Handle("/api/shares/", withHostedSecurityHeaders(handleShareItem(inviteCode)))
