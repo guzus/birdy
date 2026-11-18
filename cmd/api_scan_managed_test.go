@@ -635,6 +635,12 @@ func TestManagedScanRefusesAnotherModelAndPausesAfterABudgetStop(t *testing.T) {
 	if reason := scanManagedBlocked(chatmodel.Selection{ID: "codex", Backend: chatmodel.BackendCodex}, now); !strings.Contains(reason, "not the managed agent's model") {
 		t.Fatalf("other model: %q", reason)
 	}
+	old := scanClientModels
+	scanClientModels = func() []chatmodel.Selection { return nil }
+	if reason := scanManagedBlocked(def, now); reason != "no default Chubby model" {
+		t.Fatalf("empty model list: %q", reason)
+	}
+	scanClientModels = old
 
 	budget := "Budget cannot reserve the maximum estimated cost of the next model call."
 	paused := managedDetail("needs_attention", "")

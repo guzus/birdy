@@ -76,7 +76,11 @@ func wantsManagedScan(visitor bool, engineHeader string) bool {
 func scanManagedBlocked(model chatmodel.Selection, now time.Time) string {
 	// The agent runs the model it was registered with (the default Chubby
 	// model); a briefing for another model must not silently run on it.
-	if def := chatmodel.ClientModels()[0]; model.Backend != chatmodel.BackendChubby || model.ID != def.ID {
+	models := scanClientModels()
+	if len(models) == 0 {
+		return "no default Chubby model"
+	}
+	if def := models[0]; model.Backend != chatmodel.BackendChubby || model.ID != def.ID {
 		return fmt.Sprintf("model %q is not the managed agent's model", model.ID)
 	}
 	if until := scanManagedBreaker.openUntil(); now.Before(until) {
@@ -84,6 +88,8 @@ func scanManagedBlocked(model chatmodel.Selection, now time.Time) string {
 	}
 	return ""
 }
+
+var scanClientModels = chatmodel.ClientModels
 
 // scanManagedBreaker stops new managed runs for a while after one paused on
 // its budget: every further run would pause too, each holding a reservation
