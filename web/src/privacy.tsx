@@ -1,6 +1,6 @@
 // The privacy notice for this site's optional usage counts (served at
-// /privacy). The counts exist only when the operator turns them on; on the
-// hosted site they are on.
+// /privacy). The counts exist only when the operator turns them on, so the
+// notice says so: it is accurate for any instance.
 
 export const privacyPath = '/privacy';
 
@@ -13,7 +13,10 @@ export function PrivacyPage() {
           <a href="/" className="text-xs text-text-dim no-underline hover:text-text">Back to Birdy</a>
         </header>
         <h2 className="mt-0 mb-2 text-base font-semibold">Usage counts</h2>
-        <p className="my-2">To run the service, this site keeps daily counts of how it is used.</p>
+        <p className="my-2">
+          Usage counts are off unless the site's operator turns them on. When they are on, this site keeps,
+          to run the service, daily counts of how it is used:
+        </p>
         <ul className="my-2 pl-5 list-disc space-y-1.5">
           <li>
             Requests per UTC day by surface (chat, scan briefings and commands, with invited users and
