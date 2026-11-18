@@ -133,9 +133,23 @@ includes a stable error code, message, and request ID.
 | `POST /api/command` | `{"command":"search","args":["agents"]}` | JSON with `ok`, `account`, `exit_code`, `stdout`, `stderr`, and `duration_ms` |
 | `POST /api/multi-command` | `{"operations":[{"id":"one","command":"news"}]}` | Ordered per-operation results; maximum 16 operations |
 | `GET /api/chat/models` | none beyond invite authentication | Deterministically ordered registered models with `available` and `supports_birdy_tools`; `Cache-Control: no-store` |
+| `POST /api/scan` | `{"model":"sonnet"}` (model optional) | SSE with one `source` event per completed read, source-linked `card` events, an `error` on failure, and terminal `done` |
 | `POST /api/chat` | `{"prompt":"Scan for AI agent news","model":"sonnet"}` | Zero or more `snapshot`, `token`, `tool_use`, or `error` SSE events; terminal `done` |
 | `POST /api/harness/chat` | Versioned, bounded locally normalized visible-post context (see [Harness API](docs/HARNESS_API.md)) | Scoped-token SSE with `snapshot`, `token`, or sanitized `error`; terminal `done` |
 | `GET /ws` | WebSocket auth message, then terminal input/resize messages | PTY-backed TUI stream |
+
+In Birdy Web, **Scan Timeline** fetches Home (up to 20 posts), two searches
+(crypto/DeFi and AI, up to 10 posts each), and News (up to 10 items). Up to
+three reads run at a time. Open a post while the scan is running, then follow
+the source links on each summary card. **Refresh scan** keeps the previous
+cards visible during the next scan. If a source fails, the scan identifies it
+and uses the remaining evidence.
+
+The scan endpoint authenticates with the same invite bearer as chat. It sends
+a single tool-free synthesis request when at least one linked item is available.
+Each card's source URLs come from those fetched items. For custom installations
+using the Codex CLI, the web client keeps its existing chat-based scan because
+that backend does not expose tool-free synthesis.
 
 Example read-only calls:
 
