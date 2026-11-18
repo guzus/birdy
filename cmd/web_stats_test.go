@@ -6,6 +6,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"log"
 	"net"
@@ -147,28 +148,40 @@ func closedPort(t *testing.T) string {
 func TestWebClientHash(t *testing.T) {
 	salt := []byte("s")
 	for _, ip := range []string{"192.0.2.44", "2001:db8::1"} {
-		h, ok := webClientHash(salt, ip)
+		h, ok := webClientHash(salt, ip, "2026-11-19")
 		if !ok {
 			t.Fatalf("%s not hashed", ip)
 		}
 		if bytes.Contains(h[:], []byte(ip)) || bytes.Contains(h[:], net.ParseIP(ip).To4()) && net.ParseIP(ip).To4() != nil {
 			t.Errorf("hash of %s holds the address", ip)
 		}
-		mac := hmac.New(sha256.New, salt)
+		mac := hmac.New(sha256.New, webMonthKey(salt, "2026-11-19"))
 		mac.Write([]byte(ip))
 		if !bytes.Equal(h[:], mac.Sum(nil)[:16]) {
-			t.Errorf("%s: not HMAC-SHA256(salt, address)[:16]", ip)
+			t.Errorf("%s: not HMAC-SHA256(month key, address)[:16]", ip)
 		}
 	}
-	a, _ := webClientHash(salt, "192.0.2.44")
-	b, _ := webClientHash(salt, "::ffff:192.0.2.44")
+	a, _ := webClientHash(salt, "192.0.2.44", "2026-11-19")
+	b, _ := webClientHash(salt, "::ffff:192.0.2.44", "2026-11-19")
 	if a != b {
 		t.Error("a v4-mapped address hashes differently")
 	}
-	if _, ok := webClientHash(nil, "192.0.2.44"); ok {
+	// The key rotates monthly: same month, same hash; next month, another.
+	d1, _ := webClientHash(salt, "192.0.2.44", "2026-11-01")
+	m2, _ := webClientHash(salt, "192.0.2.44", "2026-12-01")
+	if d1 != a || m2 == a {
+		t.Error("the hash must hold within a UTC month and change with the month")
+	}
+	// The same test vector as the server that shares these tables:
+	// HMAC-SHA256(HMAC-SHA256("vector-salt", "birdy-client-hash:2026-11"), "192.0.2.1")[:16].
+	v, _ := webClientHash([]byte("vector-salt"), "192.0.2.1", "2026-11-19")
+	if got := hex.EncodeToString(v[:]); got != "8838202d167c1d83a6b0bde7bd6472f3" {
+		t.Errorf("test vector = %s", got)
+	}
+	if _, ok := webClientHash(nil, "192.0.2.44", "2026-11-19"); ok {
 		t.Error("hashed without a salt")
 	}
-	if _, ok := webClientHash(salt, "unknown"); ok {
+	if _, ok := webClientHash(salt, "unknown", "2026-11-19"); ok {
 		t.Error("hashed a missing address")
 	}
 }
