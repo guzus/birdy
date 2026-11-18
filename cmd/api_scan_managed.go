@@ -224,11 +224,15 @@ func readWithRetry(ctx context.Context, read func() error) error {
 	return err
 }
 
-// longPollCapped reports Chubby refusing a waiting read because the service
-// already holds its share of long-polls: not a failure, a request to come back.
+// longPollCapped reports a read refused with a request to come back: Chubby
+// capping the service's waiting reads (429 long_poll_limit), or the relay
+// answering 503 with Retry-After. Neither is a failure of the briefing.
 func longPollCapped(err error) bool {
 	var apiErr *chubby.APIError
-	return errors.As(err, &apiErr) && apiErr.Status == 429 && apiErr.Code == "long_poll_limit"
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	return apiErr.Status == 429 && apiErr.Code == "long_poll_limit" || apiErr.Status == 503 && apiErr.RetryAfter > 0
 }
 
 // longPollBackoff is the capped read's Retry-After, kept within 1-10 s.

@@ -938,9 +938,19 @@ func TestManagedScanBacksOffACappedLongPoll(t *testing.T) {
 		longPollBackoff(&chubby.APIError{Status: 429, Code: "long_poll_limit"}) != time.Second {
 		t.Fatal("Retry-After is not kept within 1-10 s")
 	}
-	// Any other 429 is still a transient error with its bounded retries.
-	if longPollCapped(&chubby.APIError{Status: 429, Code: "rate_limited"}) {
-		t.Fatal("an ordinary 429 read as a capped long-poll")
+	// Any other 429, and a 503 without Retry-After, keep the bounded retries.
+	if longPollCapped(&chubby.APIError{Status: 429, Code: "rate_limited"}) || longPollCapped(&chubby.APIError{Status: 503}) {
+		t.Fatal("an ordinary 429 or a bare 503 read as a request to come back")
+	}
+}
+
+func TestManagedScanWaitsOutARelay503WithRetryAfter(t *testing.T) {
+	p, err := runPaced(t, func() (chubby.EventsPage, error) {
+		return chubby.EventsPage{}, &chubby.APIError{Status: 503, RetryAfter: time.Second}
+	})
+	// Three failed attempts would have ended the briefing; it waits instead.
+	if reads := p.reads.Load(); reads < 2 || reads > 4 || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("relay 503: reads=%d err=%v", reads, err)
 	}
 }
 
