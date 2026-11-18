@@ -84,7 +84,7 @@ export function parseChatModelCatalog(value: unknown): { defaultId: string; mode
   });
   const configuredDefault = models.find(model => model.id === record.default);
   if (!configuredDefault) throw new Error('invalid default model');
-  if (configuredDefault.available && configuredDefault.supportsBirdyTools) {
+  if (record.access === 'public' || (configuredDefault.available && configuredDefault.supportsBirdyTools)) {
     return { defaultId: configuredDefault.id, models };
   }
   if (!seen.has(defaultChatModelId)) throw new Error('unavailable default model');

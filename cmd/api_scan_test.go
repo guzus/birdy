@@ -60,7 +60,7 @@ func TestScanOverlapProgressAndGroundedSingleSynthesis(t *testing.T) {
 	events := make(chan any, 8)
 	finished := make(chan error, 1)
 	go func() {
-		finished <- runScan(ctx, chatmodel.Selection{}, read, stream, func(_ string, data any) { events <- data })
+		finished <- runScan(ctx, chatmodel.Selection{}, scanSources, read, stream, func(_ string, data any) { events <- data })
 	}()
 	names := map[string]bool{}
 	for range 3 {
@@ -124,7 +124,7 @@ func TestScanUnavailableAndInvalidEvidence(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			calls := 0
 			cards := 0
-			err := runScan(t.Context(), chatmodel.Selection{}, func(context.Context, scanSource) ([]scanPost, error) { return tc.posts, nil }, func(_ context.Context, _ chatmodel.Selection, _ chatmodel.Request, emit func(claude.Event)) {
+			err := runScan(t.Context(), chatmodel.Selection{}, scanSources, func(context.Context, scanSource) ([]scanPost, error) { return tc.posts, nil }, func(_ context.Context, _ chatmodel.Selection, _ chatmodel.Request, emit func(claude.Event)) {
 				calls++
 				emit(claude.Event{Type: claude.EventToken, Text: tc.output})
 				emit(claude.Event{Type: claude.EventDone})

@@ -18,9 +18,13 @@ import (
 	"github.com/guzus/birdy/internal/xapi"
 )
 
-type scanSource struct{ key, query string }
+type scanSource struct{ key, query, exploreTab string }
 
-var scanSources = []scanSource{{"home", ""}, {"crypto", "crypto defi"}, {"ai", "AI LLM artificial intelligence"}, {"news", ""}}
+var scanSources = []scanSource{{key: "home"}, {key: "crypto", query: "crypto defi"}, {key: "ai", query: "AI LLM artificial intelligence"}, {key: "news", exploreTab: "news"}}
+var publicScanSources = []scanSource{
+	{key: "news", exploreTab: "news"}, {key: "trending", exploreTab: "trending"},
+	{key: "sports", exploreTab: "sports"}, {key: "entertainment", exploreTab: "entertainment"},
+}
 
 type scanPost struct {
 	ID     string `json:"id"`
@@ -124,9 +128,9 @@ func fetchScanSource(ctx context.Context, source scanSource) ([]scanPost, error)
 	api.SetSkipUnreadablePosts(true)
 	const searchAndNewsCount = 10
 	var posts []scanPost
-	if source.key == "news" {
+	if source.exploreTab != "" {
 		var items []xapi.NewsItem
-		items, err = api.News(ctx, searchAndNewsCount, false, []string{"news"})
+		items, err = api.News(ctx, searchAndNewsCount, false, []string{source.exploreTab})
 		for _, item := range items {
 			link := scanNewsURL(item.URL)
 			if link == "" {
@@ -167,7 +171,8 @@ func handleAPIScan(invite string) http.HandlerFunc {
 
 func apiScanHandler(invite string, read scanReader, stream chatmodel.StreamFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !apiAuthorized(r, invite) {
+		visitor := publicWebVisitor(r)
+		if !visitor && !apiAuthorized(r, invite) {
 			writeJSON(w, http.StatusUnauthorized, apiError{Error: "unauthorized"})
 			return
 		}
@@ -188,7 +193,7 @@ func apiScanHandler(invite string, read scanReader, stream chatmodel.StreamFunc)
 			writeJSON(w, http.StatusBadRequest, apiError{Error: "invalid scan request"})
 			return
 		}
-		model, err := chatmodel.ResolveClient(request.Model)
+		model, err := resolveWebModel(request.Model, visitor)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, apiError{Error: "unsupported model"})
 			return
@@ -229,7 +234,11 @@ func apiScanHandler(invite string, read scanReader, stream chatmodel.StreamFunc)
 			}
 			flusher.Flush()
 		}
-		err = runScan(ctx, model, read, stream, emit)
+		plan := scanSources
+		if visitor {
+			plan = publicScanSources
+		}
+		err = runScan(ctx, model, plan, read, stream, emit)
 		if err != nil {
 			emit("error", map[string]string{"type": "error", "error": err.Error()})
 		}
@@ -237,14 +246,14 @@ func apiScanHandler(invite string, read scanReader, stream chatmodel.StreamFunc)
 	}
 }
 
-func runScan(ctx context.Context, model chatmodel.Selection, read scanReader, stream chatmodel.StreamFunc, emit scanEmitter) error {
-	// Fixed small queue. Start with home, and let a free worker take the fourth source.
-	jobs := make(chan scanSource, len(scanSources))
-	for _, s := range scanSources {
+func runScan(ctx context.Context, model chatmodel.Selection, plan []scanSource, read scanReader, stream chatmodel.StreamFunc, emit scanEmitter) error {
+	// Each free worker takes the next source in plan order.
+	jobs := make(chan scanSource, len(plan))
+	for _, s := range plan {
 		jobs <- s
 	}
 	close(jobs)
-	results := make(chan scanSourceEvent, len(scanSources))
+	results := make(chan scanSourceEvent, len(plan))
 	var workers sync.WaitGroup
 	for range 3 {
 		workers.Go(func() {
@@ -266,8 +275,8 @@ func runScan(ctx context.Context, model chatmodel.Selection, read scanReader, st
 		})
 	}
 	defer workers.Wait()
-	sources := make(map[string]scanSourceEvent, len(scanSources))
-	for range scanSources {
+	sources := make(map[string]scanSourceEvent, len(plan))
+	for range plan {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -286,7 +295,7 @@ func runScan(ctx context.Context, model chatmodel.Selection, read scanReader, st
 		Author string `json:"author,omitempty"`
 	}
 	var inputs []scanInput
-	for _, s := range scanSources {
+	for _, s := range plan {
 		for _, p := range sources[s.key].Posts {
 			if _, seen := evidence[p.ID]; seen {
 				continue

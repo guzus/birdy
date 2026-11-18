@@ -8,7 +8,6 @@ import {
   createQueuedChat,
   defaultChatModelId,
   effectiveConversationModelId,
-  fallbackChatModels,
   modelDisplayName,
   modelsWithSavedSelection,
   newConversationModelId,
@@ -92,9 +91,9 @@ function makeConvId() {
   return `conv-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function loadConversations(): Conversation[] {
+function loadConversations(storageKey: string): Conversation[] {
   try {
-    const raw = localStorage.getItem(conversationsKey);
+    const raw = localStorage.getItem(storageKey);
     if (raw) {
       return (JSON.parse(raw) as Conversation[]).map(c => ({
         ...c,
@@ -104,6 +103,7 @@ function loadConversations(): Conversation[] {
         chatItems: c.chatItems.map(item => item.loading ? { ...item, loading: false } : item),
       }));
     }
+    if (storageKey !== conversationsKey) return [];
     // Migrate legacy sessionStorage data
     const oldCards = sessionStorage.getItem('birdy_cards');
     const oldChat = sessionStorage.getItem('birdy_chat_items');
@@ -795,11 +795,12 @@ function ScanPreviewView({ source, post }: ScanPreview) {
   return <article className="border-b border-border py-4 flex flex-col gap-2">
     <div className="text-xs text-text-dim">{scanSourceLabels[source]}{post.author && ` · ${post.author}`}</div>
     <p className="m-0 text-sm text-text leading-relaxed whitespace-pre-line break-words">{post.text}</p>
-    <a href={post.url} target="_blank" rel="noreferrer" className="self-start text-xs text-text-dim underline underline-offset-2 hover:text-text">{source === 'news' ? 'Open on X' : 'Open post on X'}</a>
+    <a href={post.url} target="_blank" rel="noreferrer" className="self-start text-xs text-text-dim underline underline-offset-2 hover:text-text">{['home', 'ai', 'crypto'].includes(source) ? 'Open post on X' : 'Open on X'}</a>
   </article>;
 }
 
 export function Composer({
+  publicView = false,
   prompt,
   busy,
 	models,
@@ -810,6 +811,7 @@ export function Composer({
   onSend,
   onStop,
 }: {
+  publicView?: boolean;
   prompt: string;
   busy: boolean;
 	models: ChatModel[];
@@ -822,7 +824,8 @@ export function Composer({
 }) {
   const isMobile = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches;
   const selected = models.find(model => model.id === modelId);
-  const canSend = Boolean(prompt.trim() && selected?.available && selected.supportsBirdyTools);
+  const ready = selected?.available && (publicView || selected.supportsBirdyTools);
+  const canSend = Boolean(prompt.trim() && ready);
 
   return (
 	<footer className="border-t border-border pt-2 sm:pt-3 px-1">
@@ -837,14 +840,14 @@ export function Composer({
 			className="min-w-0 max-w-[250px] rounded-md border border-border bg-bg px-2 py-1.5 text-xs text-text outline-none focus:border-text disabled:cursor-not-allowed disabled:opacity-50 sm:max-w-[360px]"
 		  >
 			{models.map(model => (
-			  <option key={model.id} value={model.id} disabled={!model.available || !model.supportsBirdyTools}>
-				{modelDisplayName(model)}{model.available && model.supportsBirdyTools ? '' : ' — unavailable'}
+			  <option key={model.id} value={model.id} disabled={!model.available || (!publicView && !model.supportsBirdyTools)}>
+				{modelDisplayName(model)}{model.available && (publicView || model.supportsBirdyTools) ? '' : ' — unavailable'}
 			  </option>
 			))}
 		  </select>
 		</label>
-		<span className={`text-[10px] ${selected?.available && selected.supportsBirdyTools ? 'text-text-dim' : 'text-danger'}`} aria-live="polite">
-		  {modelStatus || (selected?.available && selected.supportsBirdyTools ? 'Birdy tools enabled' : selected?.unavailableReason || 'Choose an available model')}
+		<span className={`text-[10px] ${ready ? 'text-text-dim' : 'text-danger'}`} aria-live="polite">
+		  {modelStatus || (ready ? (publicView ? 'Chat about public headlines' : 'Birdy tools enabled') : selected?.unavailableReason || 'Choose an available model')}
 		</span>
 	  </div>
 	  <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 items-end">
@@ -1017,34 +1020,110 @@ export function App() {
   if (window.location.pathname.startsWith(shareRoutePrefix)) {
     return <SharedConversationPage shareId={parseSharePath(window.location.pathname)} />;
   }
+  if (new URLSearchParams(window.location.search).get('demo') === 'tracker') return <TrackerDemo />;
   return <BirdyApp />;
 }
 
+type WebSession = {
+  code: string;
+  publicView: boolean;
+  catalog: ReturnType<typeof parseChatModelCatalog>;
+};
+
 function BirdyApp() {
-  const showTrackerDemo = new URLSearchParams(window.location.search).get('demo') === 'tracker';
-  const [inviteCode, setInviteCode] = useState(() => {
-    const local = window.localStorage.getItem(inviteCodeKey) || '';
-    return local || readInviteCodeCookie();
-  });
-  const inviteCodeRef = useRef(inviteCode);
+  const [inviteCode, setInviteCode] = useState(() => localStorage.getItem(inviteCodeKey) || readInviteCodeCookie());
+  const [session, setSession] = useState<WebSession | null>(null);
+  const [checking, setChecking] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState('');
+  const [canReopen, setCanReopen] = useState(false);
+  const initialCode = useRef(inviteCode);
 
-  const [authBusy, setAuthBusy] = useState(false);
-  const [authStatus, setAuthStatus] = useState('Enter invite code.');
-  const [authed, setAuthed] = useState(false);
+  const openSession = useCallback(async (code: string, signal?: AbortSignal) => {
+    setBusy(true);
+    try {
+      const get = (value: string) => fetch('/api/chat/models', {
+        headers: value ? { 'X-Invite-Code': value } : undefined, signal, cache: 'no-store',
+      });
+      let response = await get(code);
+      if (response.status === 401 && code && signal) {
+        // An expired remembered invite can still open the public site.
+        code = '';
+        response = await get('');
+      }
+      if (response.status === 401) {
+        if (signal?.aborted) return;
+        setStatus(code ? 'Invalid code.' : 'Enter invite code.');
+        return;
+      }
+      if (!response.ok) throw new Error('Unable to open Birdy. Try again.');
+      const info = await response.json();
+      const catalog = parseChatModelCatalog(info);
+      const publicView = info.access === 'public';
+      if (!publicView && !code) throw new Error('Invite code required.');
+      if (signal?.aborted) return;
+      if (!publicView) {
+        localStorage.setItem(inviteCodeKey, code);
+        writeInviteCodeCookie(code);
+      }
+      setCanReopen(publicView);
+      setSession({ code, publicView, catalog });
+    } catch (err) {
+      if (!signal?.aborted) setStatus(err instanceof Error ? err.message : 'Host unreachable.');
+    } finally {
+      if (!signal?.aborted) {
+        setChecking(false);
+        setBusy(false);
+      }
+    }
+  }, []);
 
-  const [conversations, setConversations] = useState<Conversation[]>(loadConversations);
+  useEffect(() => {
+    const controller = new AbortController();
+    void openSession(initialCode.current.trim(), controller.signal);
+    return () => controller.abort();
+  }, [openSession]);
+  const showInvite = useCallback((message: string) => {
+    setSession(null);
+    setStatus(message);
+  }, []);
+  if (session) return <BirdyWorkspace key={session.publicView ? 'public' : 'invited'} session={session} onInvite={showInvite} />;
+  return (
+    <div className="h-full max-w-[640px] mx-auto grid grid-rows-[auto_minmax(0,1fr)] p-3 sm:p-4 gap-0">
+      <header className="flex items-center justify-between py-3 border-b border-border">
+        <BirdyWordmark />
+        <div className="flex items-center gap-2">
+          {busy && <span className="text-[11px] text-text-dim">checking...</span>}
+          <BirdyTimelineLink />
+        </div>
+      </header>
+      {checking ? <p role="status" className="text-sm text-text-dim">Opening Birdy…</p> : <InvitePanel
+        inviteCode={inviteCode}
+        status={status}
+        busy={busy}
+        onChange={setInviteCode}
+        onSubmit={() => void openSession(inviteCode.trim())}
+      />}
+      {!checking && (canReopen || status.includes('Try again')) && <button type="button"
+        className="mb-3 bg-transparent border-none text-xs text-text-muted hover:text-text cursor-pointer"
+        onClick={() => void openSession('')}>{canReopen ? 'Back to public trends' : 'Try again'}</button>}
+    </div>
+  );
+}
+
+function BirdyWorkspace({ session, onInvite }: { session: WebSession; onInvite: (message: string) => void }) {
+  const { publicView, catalog } = session;
+  const storageKey = publicView ? 'birdy_public_conversations' : conversationsKey;
+  const { models: chatModels, defaultId: catalogDefaultModelId } = catalog;
+  const [conversations, setConversations] = useState<Conversation[]>(() => loadConversations(storageKey));
   const [activeConvId, setActiveConvId] = useState<string | null>(() => {
-    const convs = loadConversations();
-    return convs.length > 0 ? convs[0].id : null;
+    return conversations[0]?.id ?? null;
   });
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [prompt, setPrompt] = useState('');
   const [runningByConv, setRunningByConv] = useState<Record<string, RunningKind>>({});
   const [liveScans, setLiveScans] = useState<Record<string, LiveScan>>({});
-  const [chatModels, setChatModels] = useState<ChatModel[]>(fallbackChatModels);
-  const [catalogDefaultModelId, setCatalogDefaultModelId] = useState(defaultChatModelId);
-  const [modelCatalogStatus, setModelCatalogStatus] = useState('');
-  const [savedShares, setSavedShares] = useState<Record<string, SavedShare>>(loadSavedShares);
+  const [savedShares, setSavedShares] = useState<Record<string, SavedShare>>(() => publicView ? {} : loadSavedShares());
   const [shareDialogOpen, setShareDialogOpen] = useState(false);
   const [shareBusy, setShareBusy] = useState(false);
   const [shareError, setShareError] = useState('');
@@ -1062,7 +1141,7 @@ function BirdyApp() {
   const activeModelId = effectiveConversationModelId(activeConv?.modelId, catalogDefaultModelId);
   const pickerModels = modelsWithSavedSelection(chatModels, activeModelId);
   const activeModel = pickerModels.find(model => model.id === activeModelId) as ChatModel;
-  const activeModelReady = activeModel.available && activeModel.supportsBirdyTools;
+  const activeModelReady = activeModel.available && (publicView || activeModel.supportsBirdyTools);
 
   const updateConv = useCallback((id: string, fn: (c: Conversation) => Conversation) => {
     setConversations(prev => prev.map(c => c.id === id ? fn(c) : c));
@@ -1082,7 +1161,6 @@ function BirdyApp() {
   }, [activeConvId, catalogDefaultModelId, conversations]);
 
   const streamAbortRefs = useRef(new Map<string, AbortController>());
-  const didAutoAuthRef = useRef(false);
   const shareInFlightRef = useRef(false);
   const feedRef = useRef<HTMLDivElement>(null);
   const queuedPromptRef = useRef<{ convId: string; prompt: string; modelId: string } | null>(null);
@@ -1126,59 +1204,14 @@ function BirdyApp() {
   }, [clearConvRunning, clearLiveScan]);
 
   useEffect(() => {
-    inviteCodeRef.current = inviteCode;
-  }, [inviteCode]);
+    try { localStorage.setItem(storageKey, JSON.stringify(conversations)); } catch {}
+  }, [conversations, storageKey]);
 
   useEffect(() => {
-    try { localStorage.setItem(conversationsKey, JSON.stringify(conversations)); } catch {}
-  }, [conversations]);
-
-  useEffect(() => {
-    try { localStorage.setItem(shareLinksKey, JSON.stringify(savedShares)); } catch {}
-  }, [savedShares]);
-
-  const persistInviteCode = useCallback((code: string) => {
-    window.localStorage.setItem(inviteCodeKey, code);
-    writeInviteCodeCookie(code);
-  }, []);
-
-  useEffect(() => {
-    if (!authed) {
-      setChatModels(fallbackChatModels);
-      setCatalogDefaultModelId(defaultChatModelId);
-      setModelCatalogStatus('');
-      return;
+    if (!publicView) {
+      try { localStorage.setItem(shareLinksKey, JSON.stringify(savedShares)); } catch {}
     }
-
-    const controller = new AbortController();
-    setModelCatalogStatus('Loading models…');
-    void (async () => {
-      try {
-        const response = await fetch('/api/chat/models', {
-          headers: { 'X-Invite-Code': inviteCodeRef.current.trim() },
-          signal: controller.signal,
-        });
-        if (response.status === 401) {
-          setAuthed(false);
-          setAuthStatus('Code expired.');
-          return;
-        }
-        if (!response.ok) throw new Error('model catalog unavailable');
-        const catalog = parseChatModelCatalog(await response.json());
-        if (controller.signal.aborted) return;
-        setChatModels(catalog.models);
-        setCatalogDefaultModelId(catalog.defaultId);
-        setModelCatalogStatus('');
-      } catch {
-        if (controller.signal.aborted) return;
-        setChatModels(fallbackChatModels);
-        setCatalogDefaultModelId(defaultChatModelId);
-        setModelCatalogStatus('Model list unavailable; Claude Sonnet only.');
-      }
-    })();
-
-    return () => controller.abort();
-  }, [authed]);
+  }, [savedShares, publicView]);
 
   const streamChat = useCallback(
     async (
@@ -1197,15 +1230,14 @@ function BirdyApp() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-Invite-Code': inviteCodeRef.current.trim(),
+          'X-Invite-Code': session.code,
         },
         body: JSON.stringify(createChatRequest(askPrompt, modelId)),
         signal: opts.signal,
       });
 
       if (response.status === 401) {
-        setAuthed(false);
-        setAuthStatus('Code expired.');
+        onInvite('Session expired.');
         throw new Error('unauthorized');
       }
       if (!response.ok) {
@@ -1271,7 +1303,7 @@ function BirdyApp() {
 
       return fullText;
     },
-    [],
+    [session.code, onInvite],
   );
 
   const runScan = useCallback(async () => {
@@ -1307,12 +1339,11 @@ function BirdyApp() {
       } else {
         const response = await fetch('/api/scan', {
           method: 'POST', signal: controller.signal,
-          headers: { 'Content-Type': 'application/json', 'X-Invite-Code': inviteCodeRef.current.trim() },
+          headers: { 'Content-Type': 'application/json', 'X-Invite-Code': session.code },
           body: JSON.stringify({ model: modelId }),
         });
         if (response.status === 401) {
-          setAuthed(false);
-          setAuthStatus('Code expired.');
+          onInvite('Session expired.');
           throw new Error('Code expired.');
         }
         if (!response.ok || !response.body) throw new Error(`Scan unavailable (${response.status}).`);
@@ -1334,7 +1365,7 @@ function BirdyApp() {
             draft = { ...draft, cards: [...draft.cards, card] };
           } else return;
           display();
-        });
+        }, publicView ? 'public' : 'invited');
       }
       if (controller.signal.aborted) return;
       const scanned = draft.cards;
@@ -1354,7 +1385,7 @@ function BirdyApp() {
     } finally {
       finishConvStream(convId, controller);
     }
-  }, [scanning, genBusy, activeModelReady, activeModel.provider, streamChat, ensureConv, updateConv, abortConvStream, setConvRunning, finishConvStream]);
+  }, [publicView, session.code, onInvite, scanning, genBusy, activeModelReady, activeModel.provider, streamChat, ensureConv, updateConv, abortConvStream, setConvRunning, finishConvStream]);
 
   const cancelScan = useCallback(() => {
     if (!activeConvId) return;
@@ -1372,55 +1403,6 @@ function BirdyApp() {
         updatedAt: Date.now(),
     }));
   }, [activeConvId, updateConv, abortConvStream]);
-
-  const verifyInviteCode = useCallback(
-    async (rawCode?: string) => {
-      const code = (rawCode ?? inviteCodeRef.current).trim();
-      if (!code) {
-        setAuthed(false);
-        setAuthStatus('Invite code required.');
-        return false;
-      }
-
-      setAuthBusy(true);
-      setAuthStatus('Checking code...');
-      try {
-        const response = await fetch('/api/command', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Invite-Code': code,
-          },
-          body: JSON.stringify({ command: 'check' }),
-        });
-
-        if (response.status === 401) {
-          setAuthed(false);
-          setAuthStatus('Invalid code.');
-          return false;
-        }
-
-        setAuthed(true);
-        setAuthStatus('Unlocked.');
-        persistInviteCode(code);
-        return true;
-      } catch {
-        setAuthed(false);
-        setAuthStatus('Host unreachable.');
-        return false;
-      } finally {
-        setAuthBusy(false);
-      }
-    },
-    [persistInviteCode],
-  );
-
-  useEffect(() => {
-    if (didAutoAuthRef.current) return;
-    didAutoAuthRef.current = true;
-    if (!inviteCodeRef.current.trim()) return;
-    void verifyInviteCode(inviteCodeRef.current);
-  }, [verifyInviteCode]);
 
   // No auto-scan — user triggers it manually via CTA or Refresh button.
 
@@ -1462,7 +1444,9 @@ function BirdyApp() {
       const mapItem = (fn: (item: FeedItem & { kind: 'chat' }) => FeedItem & { kind: 'chat' }) =>
         updateConv(convId, c => ({ ...c, chatItems: c.chatItems.map(i => i.id === assistantId ? fn(i) : i), updatedAt: Date.now() }));
 
-      const deepDivePrompt = `Deep dive into this topic from Twitter: "${card.title}"\n\nContext from initial scan:\n${card.rawMarkdown}\n\nInstructions:\n1. Search for more details using \`birdy search "${card.title}"\`\n2. Look for related threads and discussions\n3. Provide a thorough analysis with:\n   - What's actually happening\n   - Key players and their positions\n   - Potential implications\n   - Links to relevant tweets/threads if found\n\nBe concise but thorough.`;
+      const deepDivePrompt = publicView
+        ? `Explain this public X Explore item using the supplied material. Identify what is known and what is uncertain.\n\n${card.rawMarkdown}`
+        : `Deep dive into this topic from Twitter: "${card.title}"\n\nContext from initial scan:\n${card.rawMarkdown}\n\nInstructions:\n1. Search for more details using \`birdy search "${card.title}"\`\n2. Look for related threads and discussions\n3. Provide a thorough analysis with:\n   - What's actually happening\n   - Key players and their positions\n   - Potential implications\n   - Links to relevant tweets/threads if found\n\nBe concise but thorough.`;
 
       try {
         await streamChat(deepDivePrompt, modelId, {
@@ -1481,19 +1465,23 @@ function BirdyApp() {
         finishConvStream(convId, controller);
       }
     },
-    [genBusy, scanning, activeModelReady, activeModel, streamChat, ensureConv, updateConv, abortConvStream, setConvRunning, finishConvStream],
+    [publicView, genBusy, scanning, activeModelReady, activeModel, streamChat, ensureConv, updateConv, abortConvStream, setConvRunning, finishConvStream],
   );
 
   const buildChatPrompt = useCallback((newMessage: string, convId: string): string => {
-    const history = (conversations.find(c => c.id === convId)?.chatItems ?? [])
+    const conversation = conversations.find(c => c.id === convId);
+    const history = (conversation?.chatItems ?? [])
       .filter((item) => item.text && !item.loading)
       .slice(-10);
-    if (history.length === 0) return newMessage;
+    const scanContext = publicView && conversation?.cards.length
+      ? 'Public X Explore scan:\n' + conversation.cards.map(card => card.rawMarkdown).join('\n\n') + '\n\n'
+      : '';
+    if (history.length === 0) return scanContext + newMessage;
     const lines = history.map((item) =>
       `${item.role === 'user' ? 'User' : 'Assistant'}: ${item.text}`,
     ).join('\n\n');
-    return `Conversation so far:\n${lines}\n\nUser: ${newMessage}\n\nContinue the conversation. Respond to the latest message using the context above.`;
-  }, [conversations]);
+    return `${scanContext}Conversation so far:\n${lines}\n\nUser: ${newMessage}\n\nContinue the conversation. Respond to the latest message using the context above.`;
+  }, [conversations, publicView]);
 
   const sendMessage = useCallback(async (
     overridePrompt?: string,
@@ -1516,7 +1504,7 @@ function BirdyApp() {
     const modelId = requestedModelId
       ?? target.modelId;
     const model = chatModels.find(candidate => candidate.id === modelId);
-    if (!model?.available || !model.supportsBirdyTools) return;
+    if (!model?.available || (!publicView && !model.supportsBirdyTools)) return;
     if (runningByConv[convId]) {
       queuedPromptRef.current = createQueuedChat(convId, ask, modelId);
       if (!overridePrompt) setPrompt('');
@@ -1564,7 +1552,7 @@ function BirdyApp() {
     } finally {
       finishConvStream(convId, controller);
     }
-  }, [prompt, conversations, chatModels, catalogDefaultModelId, streamChat, buildChatPrompt, ensureConv, updateConv, runningByConv, setConvRunning, finishConvStream]);
+  }, [publicView, prompt, conversations, chatModels, catalogDefaultModelId, streamChat, buildChatPrompt, ensureConv, updateConv, runningByConv, setConvRunning, finishConvStream]);
 
   doSendRef.current = (ask: string, convId: string, modelId: string) => void sendMessage(ask, convId, modelId);
 
@@ -1594,7 +1582,7 @@ function BirdyApp() {
 
   const handleModelChange = useCallback((modelId: string) => {
     const model = chatModels.find(candidate => candidate.id === modelId);
-    if (!model?.available || !model.supportsBirdyTools) return;
+    if (!model?.available || (!publicView && !model.supportsBirdyTools)) return;
     const target = ensureConv();
     updateConv(target.id, conversation => ({
       ...conversation,
@@ -1641,12 +1629,12 @@ function BirdyApp() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-Invite-Code': inviteCodeRef.current.trim(),
+          'X-Invite-Code': session.code,
         },
         body: JSON.stringify({ owner_ref: activeConv.shareOwnerRef, envelope }),
       });
       if (response.status === 401) {
-        setAuthed(false);
+        onInvite('Your invite code expired.');
         throw new Error('Your invite code expired.');
       }
       if (!response.ok) throw new Error('Could not create the share link.');
@@ -1703,7 +1691,7 @@ function BirdyApp() {
       const response = await fetch(`/api/shares/${share.id}`, {
         method: 'DELETE',
         headers: {
-          'X-Invite-Code': inviteCodeRef.current.trim(),
+          'X-Invite-Code': session.code,
           'X-Share-Owner-Ref': activeConv.shareOwnerRef,
         },
       });
@@ -1723,31 +1711,6 @@ function BirdyApp() {
 
   const activeSavedShare = activeConv ? savedShares[activeConv.id] : undefined;
   const activeHasShareableContent = Boolean(activeConv && (activeConv.cards.length > 0 || activeConv.chatItems.some(item => !item.loading && item.text.trim())));
-
-  if (showTrackerDemo) {
-    return <TrackerDemo />;
-  }
-
-  if (!authed) {
-    return (
-      <div className="h-full max-w-[640px] mx-auto grid grid-rows-[auto_minmax(0,1fr)] p-3 sm:p-4 gap-0">
-        <header className="flex items-center justify-between py-3 border-b border-border">
-          <BirdyWordmark />
-          <div className="flex items-center gap-2">
-            {authBusy && <span className="text-[11px] text-text-dim">checking...</span>}
-            <BirdyTimelineLink />
-          </div>
-        </header>
-        <InvitePanel
-          inviteCode={inviteCode}
-          status={authStatus}
-          busy={authBusy}
-          onChange={setInviteCode}
-          onSubmit={() => void verifyInviteCode(inviteCodeRef.current)}
-        />
-      </div>
-    );
-  }
 
   return (
     <div className="h-full flex">
@@ -1881,7 +1844,8 @@ function BirdyApp() {
           </div>
           <div className="flex items-center gap-2">
             <BirdyTimelineLink />
-            <button
+            {publicView ? <button type="button" className="border-0 bg-transparent text-xs text-text-muted hover:text-text cursor-pointer"
+              onClick={() => onInvite('Enter your workspace invite code.')}>Use invite</button> : <button
               type="button"
               disabled={!activeHasShareableContent || Boolean(activeRunning)}
               className="rounded-lg border border-border bg-transparent px-3 py-1.5 text-xs font-medium text-text cursor-pointer hover:bg-bg-2 disabled:cursor-not-allowed disabled:opacity-40"
@@ -1893,7 +1857,7 @@ function BirdyApp() {
               title={activeRunning ? 'Wait for the current response to finish' : 'Share a read-only encrypted snapshot'}
             >
               Share
-            </button>
+            </button>}
           </div>
         </header>
 
@@ -1909,7 +1873,7 @@ function BirdyApp() {
           {!scanning && (scanInfo || cards.length > 0 || chatItems.length > 0) && (
             <button className="self-start my-3 text-xs text-text-dim hover:text-text underline underline-offset-2 bg-transparent border-none cursor-pointer disabled:opacity-40"
               disabled={genBusy || !activeModelReady} onClick={() => void runScan()}>
-              {scanInfo || cards.length > 0 ? 'Refresh scan' : 'Scan Timeline'}
+              {scanInfo || cards.length > 0 ? 'Refresh scan' : publicView ? 'Scan public trends' : 'Scan Timeline'}
             </button>
           )}
           {scanInfo && scanInfo.failed.length > 0 && <p role="status" className="my-2 text-xs text-text-muted">
@@ -1919,14 +1883,14 @@ function BirdyApp() {
           {scanInfo?.preview && !scanInfo.previousPreview && <ScanPreviewView {...scanInfo.preview} />}
           {!scanning && !scanInfo && cards.length === 0 && chatItems.length === 0 && (
             <div className="flex flex-col items-center justify-center h-[300px] gap-4">
-              <p className="m-0 text-text-dim text-sm">Start a conversation or scan your timeline.</p>
+              <p className="m-0 text-text-dim text-sm">{publicView ? 'Explore public X news, trends, sports, and entertainment.' : 'Start a conversation or scan your timeline.'}</p>
               <button
                 className="bg-text text-bg border-none rounded-lg font-[inherit] text-sm font-medium py-2.5 px-6 cursor-pointer hover:opacity-80 transition-opacity disabled:opacity-30 disabled:cursor-not-allowed"
                 disabled={genBusy || !activeModelReady}
                 onClick={() => void runScan()}
                 title={activeModelReady ? 'Scan with the selected model' : 'Choose an available model with Birdy tools'}
               >
-                Scan Timeline
+                {publicView ? 'Scan public trends' : 'Scan Timeline'}
               </button>
             </div>
           )}
@@ -1948,7 +1912,8 @@ function BirdyApp() {
           busy={genBusy || scanning}
           models={pickerModels}
           modelId={activeModelId}
-          modelStatus={modelCatalogStatus}
+          publicView={publicView}
+          modelStatus=""
           onChange={setPrompt}
           onModelChange={handleModelChange}
           onSend={() => void sendMessage()}

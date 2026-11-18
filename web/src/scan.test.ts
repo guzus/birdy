@@ -55,3 +55,11 @@ test('renders only supported canonical post and news permalinks', () => {
   for (const value of [home.url, 'https://x.com/i/events/123', 'https://x.com/search?q=some%20news']) expect(scanPermalink(value)).toBe(true);
   for (const value of ['https://x.com.bad/i/web/status/123', 'javascript:alert(1)', 'https://x.com/search?q=hi&to=else', 'https://x.com/i/web/status/123?x=3']) expect(scanPermalink(value)).toBe(false);
 });
+
+test('public scans accept only the public Explore tabs', async () => {
+  const events = ['news', 'trending', 'sports', 'entertainment'].map(s => source(s));
+  await readScanStream(stream([...events, { type: 'done' }]), () => {}, 'public');
+  const error = await readScanStream(stream([source('home', [home])]), () => {}, 'public')
+    .then(() => '', err => String(err));
+  expect(error).toContain('Invalid scan source');
+});

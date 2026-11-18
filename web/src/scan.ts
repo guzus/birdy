@@ -3,6 +3,9 @@ export const scanSourceLabels = {
   crypto: 'Crypto search',
   ai: 'AI search',
   news: 'News',
+  trending: 'Trending',
+  entertainment: 'Entertainment',
+  sports: 'Sports',
 } as const;
 
 export type ScanSource = keyof typeof scanSourceLabels;
@@ -34,7 +37,8 @@ function validPost(post: unknown): post is ScanPost {
     && typeof p.text === 'string' && (p.author === undefined || typeof p.author === 'string');
 }
 
-export async function readScanStream(body: ReadableStream<Uint8Array>, deliver: (event: ScanEvent) => void) {
+export async function readScanStream(body: ReadableStream<Uint8Array>, deliver: (event: ScanEvent) => void, access: 'public' | 'invited' = 'invited') {
+  const expected = access === 'public' ? ['news', 'trending', 'sports', 'entertainment'] : ['home', 'crypto', 'ai', 'news'];
   const reader = body.getReader();
   const decoder = new TextDecoder();
   const evidence = new Map<string, ScanPost>();
@@ -54,12 +58,12 @@ export async function readScanStream(body: ReadableStream<Uint8Array>, deliver: 
         const event = JSON.parse(data);
         if (event.type === 'error') throw new Error(typeof event.error === 'string' ? event.error : 'Scan failed.');
         if (event.type === 'done') {
-          if (sources.size !== Object.keys(scanSourceLabels).length) throw new Error('The scan ended before all sources returned.');
+          if (sources.size !== expected.length) throw new Error('The scan ended before all sources returned.');
           deliver({ type: 'done' });
           return;
         }
         if (event.type === 'source') {
-          if (!Object.hasOwn(scanSourceLabels, event.source) || sources.has(event.source)
+          if (!expected.includes(event.source) || sources.has(event.source)
             || !['ok', 'error'].includes(event.status) || !Array.isArray(event.posts) || !event.posts.every(validPost)) throw new Error('Invalid scan source.');
           sources.add(event.source);
           if (event.status === 'ok') for (const post of event.posts) evidence.set(post.url, post);

@@ -44,6 +44,9 @@ var hostCmd = &cobra.Command{
 		if err := chatmodel.ValidateWebConfig(); err != nil {
 			return err
 		}
+		if os.Getenv("BIRDY_WEB_PUBLIC") == "1" && chatmodel.ClientModels()[0].Backend != chatmodel.BackendChubby {
+			return errors.New("BIRDY_WEB_PUBLIC=1 requires BIRDY_WEB_CHAT_BACKEND=chubby")
+		}
 		inviteCode, err := ensureHostInviteCode(hostInviteCodeFlag)
 		if err != nil {
 			return err
@@ -60,7 +63,11 @@ var hostCmd = &cobra.Command{
 
 		fmt.Fprintf(cmd.OutOrStdout(), "birdy web host starting at %s\n", hostAddrFlag)
 		fmt.Fprintf(cmd.OutOrStdout(), "open: %s\n", hostedAccessURL(hostAddrFlag))
-		fmt.Fprintln(cmd.OutOrStdout(), "invite code required to start session")
+		if os.Getenv("BIRDY_WEB_PUBLIC") == "1" {
+			fmt.Fprintln(cmd.OutOrStdout(), "public Explore scans and tool-free chat enabled")
+		} else {
+			fmt.Fprintln(cmd.OutOrStdout(), "invite code required to start session")
+		}
 		if webDir != "" {
 			fmt.Fprintf(cmd.OutOrStdout(), "web client: %s\n", webDir)
 		}
