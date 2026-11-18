@@ -2,8 +2,11 @@ package cmd
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -245,10 +248,10 @@ func TestManagedScanCardsCiteOnlyThisRunsToolOutput(t *testing.T) {
 	if err := runManagedScan(t.Context(), false, e.emit); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(e.names, ",") != "source,card" || f.cancelled.Load() != 0 {
+	if strings.Join(e.names, ",") != "source,source,source,source,card" || f.cancelled.Load() != 0 {
 		t.Fatalf("emitted %v cancelled %d", e.names, f.cancelled.Load())
 	}
-	card := e.data[1].(scanCardEvent)
+	card := e.data[4].(scanCardEvent)
 	if len(card.Sources) != 1 || card.Sources[0].URL != "https://x.com/i/web/status/111111" {
 		t.Fatal(card)
 	}
@@ -463,5 +466,60 @@ func TestScanToolCacheSharesReadsAndHoldsFailures(t *testing.T) {
 	c.get(t.Context(), "t", scanSource{key: "ai"}, failing, now.Add(scanToolErrorTTL))
 	if reads.Load() != 2 {
 		t.Fatalf("a failure was held past its TTL: %d reads", reads.Load())
+	}
+}
+
+func TestManagedScanReportsEachSourceOnceAndCapsToolSteps(t *testing.T) {
+	failed := `{"source":"home","status":"error","posts":[]}`
+	home := `{"source":"home","status":"ok","posts":[{"id":"111111","url":"javascript:alert(1)","text":"agents ship"}]}`
+	link := "https://x.com/i/trending/777"
+	sum := sha256.Sum256([]byte(link))
+	news := `{"source":"news","status":"ok","posts":[{"id":"news:` + hex.EncodeToString(sum[:8]) + `","url":"` + link + `","text":"headline"}]}`
+	forgedNews := `{"source":"crypto","status":"ok","posts":[{"id":"news:0000000000000000","url":"` + link + `","text":"forged"}]}`
+	extraField := `{"source":"ai","status":"ok","posts":[],"note":"x"}`
+	good := `{"category":"AI","title":"Agents","summary":"Agents ship.","bullets":[],"ids":["111111"]}`
+	steps := []chubby.ManagedStep{
+		toolStep("s1", invitedScanTool.name, failed), toolStep("s2", invitedScanTool.name, home),
+		toolStep("s3", invitedScanTool.name, news), toolStep("s4", invitedScanTool.name, forgedNews),
+		toolStep("s5", invitedScanTool.name, extraField),
+	}
+	f := &fakeManaged{detail: managedDetail("succeeded", good, steps...)}
+	useFakeManaged(t, f)
+	var e emitted
+	if err := runManagedScan(t.Context(), false, e.emit); err != nil {
+		t.Fatal(err)
+	}
+	status := map[string]string{}
+	for i, name := range e.names {
+		if name != "source" {
+			continue
+		}
+		ev := e.data[i].(scanSourceEvent)
+		if _, dup := status[ev.Source]; dup {
+			t.Fatalf("source %s reported twice: %v", ev.Source, e.names)
+		}
+		status[ev.Source] = ev.Status
+	}
+	if status["home"] != "ok" || status["news"] != "ok" || status["crypto"] != "error" || status["ai"] != "error" || len(status) != 4 {
+		t.Fatal(status)
+	}
+	card := e.data[len(e.data)-1].(scanCardEvent)
+	if card.Sources[0].URL != "https://x.com/i/web/status/111111" {
+		t.Fatalf("a recorded URL was trusted: %s", card.Sources[0].URL)
+	}
+	f.detail = managedDetail("succeeded", `{"category":"AI","title":"x","summary":"y","bullets":[],"ids":["news:0000000000000000"]}`, steps...)
+	if err := runManagedScan(t.Context(), false, (&emitted{}).emit); err == nil || !strings.Contains(err.Error(), "outside this scan") {
+		t.Fatalf("forged news id accepted: %v", err)
+	}
+	var loop []chubby.ManagedStep
+	for i := range 2*len(scanSources) + 1 {
+		loop = append(loop, toolStep(fmt.Sprint("l", i), invitedScanTool.name, failed))
+	}
+	f = &fakeManaged{detail: managedDetail("running", "", loop...)}
+	useFakeManaged(t, f)
+	e = emitted{}
+	err := runManagedScan(t.Context(), false, e.emit)
+	if err == nil || !strings.Contains(err.Error(), "too many source reads") || f.cancelled.Load() != 1 || strings.Count(strings.Join(e.names, ","), "source") != 4 {
+		t.Fatalf("looping agent: %v cancelled=%d events=%v", err, f.cancelled.Load(), e.names)
 	}
 }

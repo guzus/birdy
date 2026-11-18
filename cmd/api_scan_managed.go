@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -187,31 +188,52 @@ func runManagedScan(ctx context.Context, visitor bool, emit scanEmitter) error {
 	relayed := map[string]bool{}
 	evidence := map[string]scanPost{}
 	sources := map[string]scanToolResult{}
-	relay := func(detail chubby.ManagedRunDetail) {
+	reported := map[string]bool{}
+	toolSteps := 0
+	// Each planned source reaches the browser once: a read as soon as it
+	// succeeds, a failure or a source never read only when the run is over,
+	// since a later call may still read it.
+	finishSources := func() {
+		for _, s := range kind.plan {
+			if !reported[s.key] {
+				reported[s.key] = true
+				emit("source", scanSourceEvent{"source", s.key, "error", []scanPost{}})
+			}
+		}
+	}
+	defer finishSources()
+	relay := func(detail chubby.ManagedRunDetail) error {
 		for _, step := range detail.Steps {
 			if step.Kind == "model" && metrics.firstModel == 0 && step.StartedAt != nil {
 				metrics.firstModel = time.Since(metrics.started)
 			}
-			if step.Kind != "tool" || step.Name != kind.name || step.Status != "succeeded" || step.Output == nil || relayed[step.ID] {
+			if step.Kind != "tool" || relayed[step.ID] || step.Status == "pending" || step.Status == "running" || step.Status == "waiting_approval" {
 				continue
 			}
 			relayed[step.ID] = true
-			var result scanToolResult
-			if json.Unmarshal([]byte(*step.Output), &result) != nil {
+			toolSteps++
+			if step.Name != kind.name || step.Status != "succeeded" || step.Output == nil {
 				continue
 			}
-			if _, ok := kind.source(result.Source); !ok || sources[result.Source].Status == "ok" {
+			result, ok := parseScanToolResult(*step.Output, kind)
+			if !ok || sources[result.Source].Status == "ok" {
 				continue
-			}
-			if result.Posts == nil {
-				result.Posts = []scanPost{}
 			}
 			sources[result.Source] = result
+			if result.Status != "ok" || reported[result.Source] {
+				continue
+			}
+			reported[result.Source] = true
 			if metrics.firstSource == 0 {
 				metrics.firstSource = time.Since(metrics.started)
 			}
 			emit("source", scanSourceEvent{"source", result.Source, result.Status, result.Posts})
 		}
+		// Reads are cached, but a looping agent still spends steps and time.
+		if toolSteps > 2*len(kind.plan) {
+			return errors.New("The briefing made too many source reads.")
+		}
+		return nil
 	}
 
 	var cursor float64
@@ -250,7 +272,9 @@ func runManagedScan(ctx context.Context, visitor bool, emit scanEmitter) error {
 				log.Printf("[scan-managed] run=%s detail: %v", run.ID, err)
 				return errors.New("The briefing service is unavailable.")
 			}
-			relay(detail)
+			if err := relay(detail); err != nil {
+				return err
+			}
 			if detail.Run.Terminal() {
 				break
 			}
@@ -262,6 +286,7 @@ func runManagedScan(ctx context.Context, visitor bool, emit scanEmitter) error {
 		}
 	}
 
+	finishSources()
 	finished = detail.Run.Status == "succeeded"
 	metrics.status = detail.Run.Status
 	metrics.steps = detail.Run.StepCount
@@ -314,6 +339,44 @@ func runManagedScan(ctx context.Context, visitor bool, emit scanEmitter) error {
 		return errors.New("The model returned no source-linked summary cards.")
 	}
 	return nil
+}
+
+// parseScanToolResult re-validates a recorded tool result before it becomes
+// evidence: strict fields, a planned source, and posts this host could have
+// served (tweet URLs rebuilt from IDs, news IDs that hash their URL).
+func parseScanToolResult(raw string, kind scanToolKind) (scanToolResult, bool) {
+	d := json.NewDecoder(strings.NewReader(raw))
+	d.DisallowUnknownFields()
+	var got scanToolResult
+	if d.Decode(&got) != nil || d.More() || len(got.Posts) > 100 {
+		return scanToolResult{}, false
+	}
+	if _, ok := kind.source(got.Source); !ok || got.Status != "ok" && (got.Status != "error" || len(got.Posts) != 0) {
+		return scanToolResult{}, false
+	}
+	posts := make([]scanPost, 0, len(got.Posts))
+	for _, p := range got.Posts {
+		text := scanText(p.Text, 640)
+		if text == "" || len(p.Text) > 4<<10 || len(p.Author) > 64 {
+			return scanToolResult{}, false
+		}
+		post := scanPost{ID: p.ID, Text: text, Author: scanText(p.Author, 32)}
+		if hash, ok := strings.CutPrefix(p.ID, "news:"); ok {
+			link := scanNewsURL(p.URL)
+			sum := sha256.Sum256([]byte(link))
+			if link == "" || link != p.URL || hash != hex.EncodeToString(sum[:8]) {
+				return scanToolResult{}, false
+			}
+			post.URL = link
+		} else if scanNumericID(p.ID) {
+			post.URL = "https://x.com/i/web/status/" + p.ID
+		} else {
+			return scanToolResult{}, false
+		}
+		posts = append(posts, post)
+	}
+	got.Posts = posts
+	return got, true
 }
 
 func scanStartRefused(err error) bool {
