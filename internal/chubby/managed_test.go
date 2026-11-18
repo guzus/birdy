@@ -69,3 +69,15 @@ func TestManagedClientPathsKeysAndErrors(t *testing.T) {
 		t.Fatal(seen)
 	}
 }
+
+func TestBaseURLIsRequired(t *testing.T) {
+	t.Setenv("CHUBBY_API_KEY", "chb_fixture")
+	t.Setenv("CHUBBY_CA_FILE", "")
+	t.Setenv("CHUBBY_BASE_URL", "  ")
+	if err := ValidateConfig(); err == nil || !strings.Contains(err.Error(), "CHUBBY_BASE_URL is required") {
+		t.Fatalf("missing base URL: %v", err)
+	}
+	if _, err := NewManaged(); err == nil {
+		t.Fatal("managed client built without a base URL")
+	}
+}

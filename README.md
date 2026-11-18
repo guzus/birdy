@@ -357,7 +357,7 @@ CLAUDE_CODE_OAUTH_TOKEN=replace-with-claude-code-oauth-token
 ```
 
 For Birdy Web chat through Chubby, set `BIRDY_WEB_CHAT_BACKEND=chubby`,
-`CHUBBY_BASE_URL` to the reachable Chubby v1 endpoint, and `CHUBBY_API_KEY` to
+`CHUBBY_BASE_URL` (required; there is no default) to the reachable Chubby v1 endpoint, and `CHUBBY_API_KEY` to
 a dedicated server-side direct service key. Set `CHUBBY_MODEL` to a tool-capable
 model allowed by the key, or use `auto`. On a private TLS relay, mount the
 public CA certificate and point `CHUBBY_CA_FILE` to it. Configure the key as

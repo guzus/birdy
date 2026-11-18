@@ -31,7 +31,6 @@ import (
 type ToolRunner func(context.Context, string, []string) (string, error)
 
 const (
-	defaultBase     = "https://gunux.tailc0c7fe.ts.net/office/api/chubby/v1"
 	maxTurns        = 12
 	maxTools        = 16
 	maxRequestBytes = 1 << 20
@@ -107,7 +106,7 @@ type client struct {
 func fromEnv() (*client, error) {
 	base := strings.TrimRight(strings.TrimSpace(os.Getenv("CHUBBY_BASE_URL")), "/")
 	if base == "" {
-		base = defaultBase
+		return nil, errors.New("CHUBBY_BASE_URL is required (the Chubby v1 endpoint, ending in /v1)")
 	}
 	u, err := url.Parse(base)
 	if err != nil || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" ||
