@@ -30,11 +30,14 @@ const (
 	chatToolFailed     = "Birdy could not complete this read."
 )
 
-// chatManagedMode is "" (off) or "trial": invited chats that send
-// X-Birdy-Chat-Engine: managed take the managed path.
+// chatManagedMode is "" (off), "trial" (invited chats that send
+// X-Birdy-Chat-Engine: managed take the managed path, never falling back) or
+// "on" (managed is the invited default, falling back to direct only when it
+// cannot start).
 func chatManagedMode() string {
-	if strings.TrimSpace(os.Getenv(chatManagedModeEnv)) == "trial" {
-		return "trial"
+	switch m := strings.TrimSpace(os.Getenv(chatManagedModeEnv)); m {
+	case "trial", "on":
+		return m
 	}
 	return ""
 }

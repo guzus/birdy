@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -583,19 +585,20 @@ func TestManagedChatBudgetBreaker(t *testing.T) {
 	}
 	t.Cleanup(func() { scanClientModels = old })
 	model.Backend = chatmodel.BackendChubby
-	if reason := chatManagedBlocked(model, time.Now()); !strings.Contains(reason, "paused after a budget stop") {
+	if code, reason := chatManagedBlocked(model, time.Now()); code != "breaker" || !strings.Contains(reason, "paused after a budget stop") {
 		t.Fatalf("breaker not tripped: %q", reason)
 	}
-	if reason := chatManagedBlocked(model, time.Now().Add(2*time.Hour)); reason != "" {
+	if code, reason := chatManagedBlocked(model, time.Now().Add(2*time.Hour)); code != "" {
 		t.Fatalf("breaker never closes: %q", reason)
 	}
 	// Managed chat runs only on its own key: no fallback to CHUBBY_API_KEY.
 	t.Setenv("CHUBBY_API_KEY", "chb_direct")
 	t.Setenv(chatChubbyKeyEnv, "")
-	if reason := chatManagedBlocked(model, time.Now().Add(2*time.Hour)); reason != chatChubbyKeyEnv+" is not set" {
+	if code, reason := chatManagedBlocked(model, time.Now().Add(2*time.Hour)); code != "no-key" || reason != chatChubbyKeyEnv+" is not set" {
 		t.Fatalf("without its key: %q", reason)
 	}
-	if reason := chatManagedBlocked(chatmodel.Selection{ID: "other", Backend: chatmodel.BackendChubby}, time.Now().Add(2*time.Hour)); reason == "" {
+	t.Setenv(chatChubbyKeyEnv, "chb_chat_fixture")
+	if code, _ := chatManagedBlocked(chatmodel.Selection{ID: "other", Backend: chatmodel.BackendChubby}, time.Now().Add(2*time.Hour)); code != "other-model" {
 		t.Fatal("another model ran on the agent's model")
 	}
 }
@@ -682,3 +685,169 @@ func TestChatBenchReadsTheStream(t *testing.T) {
 		t.Fatalf("%+v", r)
 	}
 }
+
+// On mode: managed by default for invited chats; direct only when managed
+// cannot start, never once it emitted anything; public stays direct; each path
+// names its engine in the header and the [chat-engine] log line.
+func TestAPIChatManagedOnMode(t *testing.T) {
+	f := &chatFake{}
+	useChatFake(t, f)
+	t.Setenv(chatManagedModeEnv, "on")
+	t.Setenv("BIRDY_WEB_CHAT_BACKEND", "chubby")
+	t.Setenv("CHUBBY_API_KEY", "chb_fixture")
+	t.Setenv("CHUBBY_MODEL", "auto")
+	t.Setenv("CHUBBY_CA_FILE", "")
+	var direct atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		direct.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"direct ok\"}}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+	t.Setenv("CHUBBY_BASE_URL", upstream.URL+"/v1")
+	var logs strings.Builder
+	var logMu sync.Mutex
+	log.SetOutput(writerFunc(func(p []byte) (int, error) { logMu.Lock(); defer logMu.Unlock(); return logs.Write(p) }))
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	lastEngineLog := func() string {
+		logMu.Lock()
+		defer logMu.Unlock()
+		lines := strings.Split(strings.TrimSpace(logs.String()), "\n")
+		for i := len(lines) - 1; i >= 0; i-- {
+			if j := strings.Index(lines[i], "[chat-engine]"); j >= 0 {
+				return lines[i][j:]
+			}
+		}
+		return ""
+	}
+	n := 0
+	post := func(visitor bool, engine string) *httptest.ResponseRecorder {
+		t.Helper()
+		if visitor {
+			t.Setenv("BIRDY_WEB_PUBLIC", "1")
+		} else {
+			t.Setenv("BIRDY_WEB_PUBLIC", "")
+		}
+		n++
+		r := httptest.NewRequest("POST", "/api/chat", strings.NewReader(fmt.Sprintf(`{"messages":[{"role":"user","content":"hello %d"}]}`, n)))
+		r.RemoteAddr = fmt.Sprintf("203.0.113.%d:1000", 100+n)
+		if !visitor {
+			r.Header.Set("X-Invite-Code", "birdy")
+		}
+		if engine != "" {
+			r.Header.Set(chatEngineHeader, engine)
+		}
+		w := httptest.NewRecorder()
+		handleAPIChat("birdy")(w, r)
+		return w
+	}
+	expect := func(name string, w *httptest.ResponseRecorder, engine, fallback, logWant, bodyWant string, directCalls int32, runs int) {
+		t.Helper()
+		if got := w.Header().Get(chatEngineHeader); got != engine {
+			t.Fatalf("%s: engine header %q", name, got)
+		}
+		if got := w.Header().Get(chatFallbackHeader); got != fallback {
+			t.Fatalf("%s: fallback header %q", name, got)
+		}
+		if logWant != "" && !strings.HasPrefix(lastEngineLog(), logWant) {
+			t.Fatalf("%s: log %q", name, lastEngineLog())
+		}
+		if !strings.Contains(w.Body.String(), bodyWant) || !strings.Contains(w.Body.String(), "event: done") {
+			t.Fatalf("%s: body %s", name, w.Body)
+		}
+		if direct.Load() != directCalls || f.runs != runs {
+			t.Fatalf("%s: direct=%d runs=%d", name, direct.Load(), f.runs)
+		}
+	}
+
+	// The default: managed, no header needed.
+	expect("default", post(false, ""), "managed", "", "[chat-engine] engine=managed mode=on fallback=- failed=-", "answer 1", 0, 1)
+	// An explicit direct request (the bench's direct engine).
+	expect("requested", post(false, "direct"), "direct", "requested-direct", "[chat-engine] engine=direct mode=on fallback=requested-direct", "direct ok", 1, 1)
+	// Public visitors stay direct whatever they send.
+	before := lastEngineLog()
+	expect("public", post(true, "managed"), "", "", "", "direct ok", 2, 1)
+	if lastEngineLog() != before {
+		t.Fatal("a public chat logged an invited engine line")
+	}
+
+	// Fallbacks before any output, each with its reason.
+	chatManagedBreaker.trip(time.Now())
+	expect("breaker", post(false, ""), "direct", "breaker", "[chat-engine] engine=direct mode=on fallback=breaker", "direct ok", 3, 1)
+	chatManagedBreaker = breaker{}
+	t.Setenv(chatChubbyKeyEnv, "")
+	expect("no key", post(false, ""), "direct", "no-key", "[chat-engine] engine=direct mode=on fallback=no-key", "direct ok", 4, 1)
+	t.Setenv(chatChubbyKeyEnv, "chb_chat_fixture")
+	t.Setenv(chatAgentEnv, "")
+	expect("no agent", post(false, ""), "direct", "no-agent", "[chat-engine] engine=direct mode=on fallback=no-agent", "direct ok", 5, 1)
+	t.Setenv(chatAgentEnv, "agent-chat")
+	for range cap(chatManagedSlots) {
+		chatManagedSlots <- struct{}{}
+	}
+	expect("no slot", post(false, ""), "direct", "no-slot", "[chat-engine] engine=direct mode=on fallback=no-slot", "direct ok", 6, 1)
+	for range cap(chatManagedSlots) {
+		<-chatManagedSlots
+	}
+	f.startErr = []error{&chubby.APIError{Status: 400, Code: "invalid_request"}}
+	expect("start refused", post(false, ""), "direct", "start-refused", "[chat-engine] engine=direct mode=on fallback=start-refused", "direct ok", 7, 1)
+	deletedEventually(t, f, "sess-2")
+
+	// No fallback once a run may exist (an ambiguous start) or text streamed.
+	f.startErr = []error{&chubby.APIError{Status: 503}, &chubby.APIError{Status: 503}}
+	expect("ambiguous start", post(false, ""), "managed", "", "[chat-engine] engine=managed mode=on fallback=- failed=run-failed", "could not start. Try again", 7, 1)
+	partial := chubby.ManagedRunDetail{Run: chubby.ManagedRun{ID: "run-2", Status: "failed"}}
+	f.script = []chatPage{
+		{page: chubby.EventsPage{Text: &chubby.RunText{StepID: "m1", Delta: "Half an ans", State: "streaming", Cursor: "c1"}}},
+		{page: chubby.EventsPage{Data: []chubby.ManagedEvent{{ID: 9, Type: "run.failed"}}}, detail: &partial},
+	}
+	w := post(false, "")
+	expect("failed after output", w, "managed", "", "[chat-engine] engine=managed mode=on fallback=- failed=run-failed", "Half an ans", 7, 2)
+	if !strings.Contains(w.Body.String(), "could not be completed") {
+		t.Fatalf("no error after partial output: %s", w.Body)
+	}
+
+	// Trial mode is unchanged: no header means direct, a blocked managed
+	// request errors instead of falling back.
+	t.Setenv(chatManagedModeEnv, "trial")
+	expect("trial default", post(false, ""), "direct", "", "[chat-engine] engine=direct mode=trial fallback=-", "direct ok", 8, 2)
+	chatManagedBreaker.trip(time.Now())
+	expect("trial blocked", post(false, "managed"), "managed", "", "[chat-engine] engine=managed mode=trial fallback=- failed=breaker", "managed chat is unavailable: paused", 8, 2)
+}
+
+func TestChatDailySummary(t *testing.T) {
+	day := time.Date(2026, 11, 19, 23, 0, 0, 0, time.UTC)
+	old := chatDaily
+	chatDaily = &chatDailyStats{fallbacks: map[string]int{}, now: func() time.Time { return day }}
+	t.Cleanup(func() { chatDaily = old })
+	var logs strings.Builder
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	logChatEngine("managed", chatRoute{managed: true}, "", "")
+	logChatEngine("managed", chatRoute{managed: true}, "run-failed", "x")
+	logChatEngine("direct", chatRoute{}, "breaker", "paused")
+	logChatEngine("direct", chatRoute{}, "no-slot", "")
+	logChatEngine("direct", chatRoute{}, "no-slot", "")
+	logChatEngine("direct", chatRoute{}, "requested-direct", "")
+	chatDailyBreakerTrip()
+	chatDailyCost(0.25)
+	chatDailyCost(0.5)
+	chatDailyPublic()
+	if strings.Contains(logs.String(), "[chat-daily]") {
+		t.Fatal("summary before the day ended")
+	}
+	day = day.Add(2 * time.Hour)
+	chatDaily.update(func() {})
+	want := "[chat-daily] day=2026-11-19 managed=2 direct=4 fallbacks=3 fallback_reasons=breaker:1,no-slot:2 breaker_trips=1 managed_failed=1 managed_cost_usd=0.7500 requested_direct=1 public=1"
+	if !strings.Contains(logs.String(), want) {
+		t.Fatalf("summary:\n%s\nwant %s", logs.String(), want)
+	}
+	logs.Reset()
+	chatDaily.update(func() {})
+	if strings.Contains(logs.String(), "[chat-daily]") {
+		t.Fatal("summary logged twice")
+	}
+}
+
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }

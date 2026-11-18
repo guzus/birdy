@@ -59,8 +59,31 @@ var (
 	errChatManagedBusy        = errors.New("This conversation is still answering. Try again when it finishes.")
 )
 
-// wantsManagedChat decides per request; false keeps the direct path. Public
-// visitors never take it.
+// chatUnavailable is errChatManagedUnavailable with the reason: a code for
+// logs and the daily summary, and a detail for the log line.
+type chatUnavailable struct{ code, detail string }
+
+func (e *chatUnavailable) Error() string { return "managed chat unavailable: " + e.code }
+func (e *chatUnavailable) Is(target error) bool {
+	return target == errChatManagedUnavailable
+}
+
+func unavailable(code, detail string) error { return &chatUnavailable{code: code, detail: detail} }
+
+// unavailableCode is the reason code of an unavailable error ("" otherwise).
+func unavailableCode(err error) (code, detail string) {
+	var u *chatUnavailable
+	if errors.As(err, &u) {
+		return u.code, u.detail
+	}
+	if errors.Is(err, errChatManagedBusy) {
+		return "busy", "the conversation is still answering"
+	}
+	return "", ""
+}
+
+// wantsManagedChat decides per request in trial mode; false keeps the direct
+// path. Public visitors never take it.
 func wantsManagedChat(visitor bool, engineHeader string) bool {
 	if visitor || strings.TrimSpace(os.Getenv(chatAgentEnv)) == "" || chatToolSecret() == "" {
 		return false
@@ -69,22 +92,56 @@ func wantsManagedChat(visitor bool, engineHeader string) bool {
 }
 
 // chatManagedBlocked names why a chat that wants the managed engine must not
-// use it now, or returns "".
-func chatManagedBlocked(model chatmodel.Selection, now time.Time) string {
+// use it now (a code and a reason), or returns "".
+func chatManagedBlocked(model chatmodel.Selection, now time.Time) (code, reason string) {
 	if !strings.HasPrefix(strings.TrimSpace(os.Getenv(chatChubbyKeyEnv)), "chb_") {
-		return chatChubbyKeyEnv + " is not set"
+		return "no-key", chatChubbyKeyEnv + " is not set"
 	}
 	models := scanClientModels()
 	if len(models) == 0 {
-		return "no default Chubby model"
+		return "no-model", "no default Chubby model"
 	}
 	if def := models[0]; model.Backend != chatmodel.BackendChubby || model.ID != def.ID {
-		return fmt.Sprintf("model %q is not the managed agent's model", model.ID)
+		return "other-model", fmt.Sprintf("model %q is not the managed agent's model", model.ID)
 	}
 	if until := chatManagedBreaker.openUntil(); now.Before(until) {
-		return "paused after a budget stop until " + until.UTC().Format(time.RFC3339)
+		return "breaker", "paused after a budget stop until " + until.UTC().Format(time.RFC3339)
 	}
-	return ""
+	return "", ""
+}
+
+// chatRoute is how one chat request is answered.
+type chatRoute struct {
+	managed bool
+	strict  bool   // trial: the request named the engine, so never fall back
+	reason  string // why direct when managed was the default ("" otherwise)
+	detail  string
+}
+
+// chatRouteFor picks the engine. Public visitors always get the direct path.
+// In trial mode only the header opts in, and the answer never falls back. In
+// on mode managed is the default for invited chats, with the header
+// "direct" as an explicit opt-out; it falls back to direct only when managed
+// cannot start.
+func chatRouteFor(visitor bool, header string, model chatmodel.Selection, now time.Time) chatRoute {
+	switch {
+	case visitor:
+		return chatRoute{}
+	case chatManagedMode() == "trial":
+		return chatRoute{managed: wantsManagedChat(false, header), strict: true}
+	case chatManagedMode() != "on":
+		return chatRoute{}
+	case header == "direct":
+		return chatRoute{reason: "requested-direct"}
+	case strings.TrimSpace(os.Getenv(chatAgentEnv)) == "":
+		return chatRoute{reason: "no-agent", detail: chatAgentEnv + " is not set"}
+	case chatToolSecret() == "":
+		return chatRoute{reason: "no-tool-secret", detail: chatToolSecretEnv + " is not set or not valid"}
+	}
+	if code, reason := chatManagedBlocked(model, now); code != "" {
+		return chatRoute{reason: code, detail: reason}
+	}
+	return chatRoute{managed: true}
 }
 
 type chatSession struct {
@@ -152,7 +209,7 @@ func (s *chatSessions) claim(key, prior string, now time.Time) (sessionID string
 		}
 		if oldest == "" {
 			delete(s.m, key)
-			return "", stale, errChatManagedUnavailable
+			return "", stale, unavailable("no-session-slot", "every tracked conversation is answering")
 		}
 		stale = append(stale, s.m[oldest].id)
 		delete(s.m, oldest)
@@ -319,17 +376,17 @@ func (c *chatStream) tools(d chubby.ManagedRunDetail) int {
 func runManagedChat(ctx context.Context, turns []chatmodel.Message, client string, emit func(claude.Event)) error {
 	agentID := strings.TrimSpace(os.Getenv(chatAgentEnv))
 	if len(turns) == 0 || turns[len(turns)-1].Role != "user" {
-		return errChatManagedUnavailable
+		return unavailable("no-turn", "the conversation does not end with a user message")
 	}
 	select {
 	case chatManagedSlots <- struct{}{}:
 		defer func() { <-chatManagedSlots }()
 	default:
-		return errChatManagedUnavailable
+		return unavailable("no-slot", fmt.Sprintf("%d managed answers running", cap(chatManagedSlots)))
 	}
 	m, err := newChatManagedRunner()
 	if err != nil {
-		return errChatManagedUnavailable
+		return unavailable("no-key", err.Error())
 	}
 	now := time.Now()
 	key := chatConversationKey(agentID, client, turns[0].Content)
@@ -353,7 +410,7 @@ func runManagedChat(ctx context.Context, turns []chatmodel.Message, client strin
 		s, err := m.CreateSession(ctx, agentID, "Birdy chat")
 		if err != nil {
 			log.Printf("[chat-managed] session: %v", err)
-			return errChatManagedUnavailable
+			return unavailable("session", "session not created")
 		}
 		sessionID = s.ID
 		return nil
@@ -388,7 +445,7 @@ func runManagedChat(ctx context.Context, turns []chatmodel.Message, client strin
 	if err != nil {
 		log.Printf("[chat-managed] start: %v", err)
 		if !mayExist {
-			return errChatManagedUnavailable
+			return unavailable("start-refused", "run start refused")
 		}
 		return errors.New("The answer could not start. Try again.")
 	}
@@ -494,6 +551,7 @@ func runManagedChat(ctx context.Context, turns []chatmodel.Message, client strin
 	metrics.status = detail.Run.Status
 	metrics.steps = detail.Run.StepCount
 	metrics.costUSD, metrics.unknownCost = detail.Run.CostUSD, detail.Run.UnknownCost
+	chatDailyCost(detail.Run.CostUSD)
 	if events, err := m.Events(ctx, run.ID, 0); err == nil {
 		metrics.server, _ = serverTimeline(events, metrics.firstTextAt)
 	}
@@ -502,6 +560,7 @@ func runManagedChat(ctx context.Context, turns []chatmodel.Message, client strin
 		if budgetPaused(detail) {
 			if !chatRunBudgetOnly(detail) {
 				until := chatManagedBreaker.trip(time.Now())
+				chatDailyBreakerTrip()
 				log.Printf("[chat-managed] run=%s stopped on the service budget; no new managed chats until %s", run.ID, until.UTC().Format(time.RFC3339))
 			}
 			return errors.New("The answer reached its spending limit.")

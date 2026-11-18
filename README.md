@@ -412,10 +412,20 @@ An invited chat can instead be answered by a Chubby managed agent that calls
 keeps one managed session per conversation and sends each turn as one run, so
 the conversation's earlier turns stay in Chubby's prompt cache.
 
-- `BIRDY_CHAT_MANAGED`: unset (off) or `trial`. In trial, only an invited
-  request with `X-Birdy-Chat-Engine: managed` uses the agent; public visitors
-  and every other request keep the direct path. The response's
-  `X-Birdy-Chat-Engine` header names the engine that answered.
+- `BIRDY_CHAT_MANAGED`: unset (off), `trial` or `on`. Public visitors always
+  keep the direct path.
+  - `trial`: only an invited request with `X-Birdy-Chat-Engine: managed` uses
+    the agent, and if it cannot, the chat gets an error saying why, never a
+    direct answer.
+  - `on`: managed is the default for invited chats (`X-Birdy-Chat-Engine:
+    direct` opts out). It falls back to the direct path only when managed
+    cannot start: the key, agent or tool secret is missing, another model is
+    selected, the breaker is open, no slot is free, the conversation is still
+    answering, or Chubby refuses the session or run before anything was
+    sent. Once a run may exist or any text was sent, a failure is an error,
+    never a second answer.
+  - The response's `X-Birdy-Chat-Engine` header names the engine that
+    answered, and `X-Birdy-Chat-Fallback` the reason when on mode fell back.
 - `BIRDY_CHAT_TOOL_SECRET`: a random value of at least 32 characters, different
   from the briefing tools' secrets. Without it, or with the mode off,
   `POST /api/chat-tools/invited` answers 404.
@@ -446,6 +456,15 @@ a while; an answer that only reached its own budget fails alone.
 `birdy chat-bench --url <host>` (with `BIRDY_BENCH_INVITE`) runs fixed prompts
 through both engines and prints the timings, tool rounds and answers as JSON;
 `--prompts 1,3,6` runs only the search-heavy ones.
+
+Every invited chat logs `[chat-engine] engine=managed|direct mode=…
+fallback=<reason>|- failed=<reason>|- detail="…"`, and once per UTC day the
+process logs `[chat-daily] day=… managed=… direct=… fallbacks=…
+fallback_reasons=breaker:1,no-slot:2 breaker_trips=… managed_failed=…
+managed_cost_usd=… requested_direct=… public=…` (since its start or the last
+summary; a restart starts it over, so the per-request lines are the record).
+Each managed answer also logs `[chat-managed]` with its run, session
+(new/resume), timings, tool rounds and cost.
 
 The agent's system prompt is the direct chat's plus a search discipline
 (several phrasings before concluding, then read the thread, within the read

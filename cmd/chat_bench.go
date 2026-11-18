@@ -40,6 +40,7 @@ type chatBenchResult struct {
 	Turn       int      `json:"turn"`
 	Engine     string   `json:"engine"`   // asked for
 	Answered   string   `json:"answered"` // X-Birdy-Chat-Engine
+	Fallback   string   `json:"fallback,omitempty"`
 	Started    string   `json:"started"`
 	FirstToken float64  `json:"first_token_s"`
 	Done       float64  `json:"done_s"`
@@ -59,9 +60,9 @@ func runChatBench(ctx context.Context, base, invite string, engine string, promp
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Invite-Code", invite)
-	if engine == "managed" {
-		req.Header.Set(chatEngineHeader, "managed")
-	}
+	// Both engines are named: with BIRDY_CHAT_MANAGED=on, a request without
+	// the header is managed by default.
+	req.Header.Set(chatEngineHeader, engine)
 	start := time.Now()
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -70,6 +71,7 @@ func runChatBench(ctx context.Context, base, invite string, engine string, promp
 	}
 	defer resp.Body.Close()
 	res.Answered = resp.Header.Get(chatEngineHeader)
+	res.Fallback = resp.Header.Get(chatFallbackHeader)
 	if resp.StatusCode != http.StatusOK {
 		res.Error = fmt.Sprintf("HTTP %d", resp.StatusCode)
 		return res
