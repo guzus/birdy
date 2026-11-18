@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -89,5 +90,63 @@ func TestPublicReaderFailures(t *testing.T) {
 				t.Errorf("cancellation: %v", err)
 			}
 		})
+	}
+}
+
+func TestPublicAPIURL(t *testing.T) {
+	for base, want := range map[string]string{
+		"":                           "https://birdy.guzus.xyz/v1/posts/",
+		"https://mirror.example/":    "https://mirror.example/v1/posts/",
+		"https://mirror.example/sub": "https://mirror.example/sub/v1/posts/",
+		"http://localhost:8080":      "http://localhost:8080/v1/posts/",
+		"http://127.0.0.1:9":         "http://127.0.0.1:9/v1/posts/",
+		"http://[::1]:9":             "http://[::1]:9/v1/posts/",
+	} {
+		got, err := publicPostsEndpoint(base)
+		if err != nil || got != want {
+			t.Errorf("%q = %q, %v; want %q", base, got, err, want)
+		}
+	}
+	for _, bad := range []string{"http://mirror.example", "ftp://mirror.example", "https://user:pw@mirror.example", "https://mirror.example/?q=1", "https://mirror.example/#x", "mirror.example", "http://10.0.0.1"} {
+		if _, err := NewReader(ReaderOptions{NoCookie: true, PublicAPIURL: bad}); err == nil {
+			t.Errorf("accepted %q", bad)
+		}
+	}
+}
+
+func TestSearchPublic(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("BIRDY_ACCOUNTS", "malformed accounts must never be opened")
+	var query string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query = r.URL.RawQuery
+		if r.URL.Path != "/v1/posts" || r.Header.Get("Cookie") != "" {
+			t.Errorf("unexpected request %s", r.URL.Path)
+		}
+		fmt.Fprint(w, `{"posts":[{"id":"21","author_handle":"a","author_name":"A","text":"one"}]}`)
+	}))
+	defer srv.Close()
+	opts := ReaderOptions{NoCookie: true, PublicAPIURL: srv.URL}
+	posts, err := SearchPublic(t.Context(), opts, " codex & co ", 5)
+	if err != nil || len(posts) != 1 || posts[0].ID != "21" || posts[0].Author.Username != "a" {
+		t.Fatalf("search = %+v, %v", posts, err)
+	}
+	if query != "limit=5&q=codex+%26+co" {
+		t.Fatalf("query %q", query)
+	}
+	for _, tt := range []struct {
+		q     string
+		limit int
+	}{{"", 5}, {strings.Repeat("x", 201), 5}, {"x", 0}, {"x", 101}} {
+		if _, err := SearchPublic(t.Context(), opts, tt.q, tt.limit); err == nil {
+			t.Errorf("accepted %q/%d", tt.q, tt.limit)
+		}
+	}
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"posts":[{"id":"0","author_handle":""}]}`)
+	}))
+	defer bad.Close()
+	if _, err := SearchPublic(t.Context(), ReaderOptions{PublicAPIURL: bad.URL}, "x", 5); err == nil {
+		t.Fatal("accepted an invalid post")
 	}
 }

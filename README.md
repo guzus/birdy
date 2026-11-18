@@ -680,6 +680,33 @@ birdy status
 birdy account list
 ```
 
+### Without accounts (`--no-cookie`)
+
+`read` and `search` can go through Birdy's hosted public post API instead of
+X: no account, no cookies, and no accounts file is read.
+
+```bash
+birdy read 20 --no-cookie --plain
+birdy read https://x.com/jack/status/20 --no-cookie --json
+birdy search "codex" --no-cookie -n 20
+BIRDY_NO_COOKIE=1 birdy read 20          # --no-cookie=false overrides the env
+```
+
+- The API returns only a post's ID, text and author, so output shows those
+  (and the post URL). Counts, dates and media are left out, not shown as
+  zeros: `--json` carries `id`, `text` and `author`; `--json-full` adds `url`
+  and `"source": "birdy-public"`.
+- `search --no-cookie` searches Birdy's public post cache (posts the server
+  has verified as public), not X search; `-n` goes up to 100.
+- A 404 means the post is not in the public cache or X refused it (deleted,
+  protected, or not visible without an account). A 429 shows the server's
+  Retry-After (60 requests a minute per IP).
+- Other commands refuse the flag. `--account`, `--bird` and `--vpn` do not
+  apply, and filters such as `--min-likes` are refused.
+- `--api-url URL` (or `BIRDY_PUBLIC_API_URL`) points at another Birdy
+  instance: https, or http on localhost. The default is
+  `https://birdy.guzus.xyz`.
+
 ## Scrape
 
 `birdy scrape` collects tweets from profiles, lists, searches, and tweet URLs
@@ -976,7 +1003,9 @@ if err != nil {
 fmt.Println(post.Text, post.Author.Username, post.URL())
 ```
 
-Import `github.com/guzus/birdy/pkg/tweet`. This mode returns the public post ID, text, and author. Other `Tweet` fields retain their zero values. The SDK reads no account files or cookies. A missing public post returns HTTP 404 through `*tweet.PublicPostError`. For a 429, `tweet.IsRateLimited(err)` reports true and `PublicPostError.RetryAfter` gives the server's suggested wait. Pass `tweet.ReaderOptions{}` for the native account-backed reader.
+Import `github.com/guzus/birdy/pkg/tweet`. This mode returns the public post ID, text, and author. Other `Tweet` fields retain their zero values. The SDK reads no account files or cookies. A missing public post returns HTTP 404 through `*tweet.PublicPostError`. For a 429, `tweet.IsRateLimited(err)` reports true and `PublicPostError.RetryAfter` gives the server's suggested wait. Pass `tweet.ReaderOptions{}` for the native account-backed reader. `ReaderOptions.PublicAPIURL` selects another instance, and
+`tweet.SearchPublic(ctx, opts, query, limit)` searches the public post cache
+(at most `tweet.MaxPublicSearch` posts).
 
 Embed birdy in a Go service to read tweets without shelling out to the CLI or
 running `birdy host`. Reads are implemented **natively in Go** against X's

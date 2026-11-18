@@ -301,6 +301,15 @@ func runRootPassthrough(cmd *cobra.Command, args []string) error {
 var passthroughHook func(cmd *cobra.Command, args []string) error
 
 func forwardToBird(cmd *cobra.Command, args []string) error {
+	// --no-cookie is decided before any account store is opened.
+	mode, rest, err := extractNoCookie(args)
+	if err != nil {
+		return err
+	}
+	if mode.on {
+		return runNoCookie(cmd, mode, rest)
+	}
+	args = rest
 	if passthroughHook != nil {
 		return passthroughHook(cmd, args)
 	}

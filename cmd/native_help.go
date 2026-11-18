@@ -282,6 +282,7 @@ func renderNativeHelp(w io.Writer, cmd *cobra.Command) {
 		fmt.Fprintln(w)
 	}
 
+	writeNoCookieHelp(w, name)
 	fmt.Fprintln(w, "Global Flags (before the command name):")
 	tw := tabwriter.NewWriter(w, 0, 0, 3, ' ', 0)
 	pf := rootCmd.PersistentFlags()
