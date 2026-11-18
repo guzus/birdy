@@ -18,6 +18,8 @@ type turnResult struct {
 	finish string
 	tokens *int64
 	cost   *float64
+	// Prompt cache use, when the endpoint reports it.
+	prompt, cacheRead, cacheWrite int64
 }
 
 type choice struct {
@@ -83,8 +85,13 @@ func (s *turnResult) consume(data string, emit func(claude.Event)) error {
 		Error   json.RawMessage `json:"error"`
 		Choices []choice        `json:"choices"`
 		Usage   *struct {
-			Total *int64   `json:"total_tokens"`
-			Cost  *float64 `json:"cost"`
+			Total   *int64   `json:"total_tokens"`
+			Cost    *float64 `json:"cost"`
+			Prompt  int64    `json:"prompt_tokens"`
+			Details struct {
+				Cached int64 `json:"cached_tokens"`
+			} `json:"prompt_tokens_details"`
+			CacheWrite int64 `json:"cache_creation_input_tokens"`
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal([]byte(data), &event); err != nil {
@@ -99,6 +106,7 @@ func (s *turnResult) consume(data string, emit func(claude.Event)) error {
 		}
 		s.tokens = event.Usage.Total
 		s.cost = event.Usage.Cost
+		s.prompt, s.cacheRead, s.cacheWrite = event.Usage.Prompt, event.Usage.Details.Cached, event.Usage.CacheWrite
 		return nil
 	}
 	if len(event.Choices) != 1 || event.Choices[0].Index == nil || *event.Choices[0].Index != 0 || s.finish != "" {

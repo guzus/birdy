@@ -134,7 +134,7 @@ includes a stable error code, message, and request ID.
 | `POST /api/multi-command` | `{"operations":[{"id":"one","command":"news"}]}` | Ordered per-operation results; maximum 16 operations |
 | `GET /api/chat/models` | none beyond invite authentication | Deterministically ordered registered models with `available` and `supports_birdy_tools`; `Cache-Control: no-store` |
 | `POST /api/scan` | `{"model":"sonnet"}` (model optional) | SSE with one `source` event per completed read, source-linked `card` events, an `error` on failure, and terminal `done` |
-| `POST /api/chat` | `{"prompt":"Scan for AI agent news","model":"sonnet"}` | Zero or more `snapshot`, `token`, `tool_use`, or `error` SSE events; terminal `done` |
+| `POST /api/chat` | `{"messages":[{"role":"user","content":"Scan for AI agent news"}],"model":"sonnet"}`, or the single-turn `{"prompt":"…"}` | Zero or more `snapshot`, `token`, `tool_use`, or `error` SSE events; terminal `done` |
 | `POST /api/harness/chat` | Versioned, bounded locally normalized visible-post context (see [Harness API](docs/HARNESS_API.md)) | Scoped-token SSE with `snapshot`, `token`, or sanitized `error`; terminal `done` |
 | `GET /ws` | WebSocket auth message, then terminal input/resize messages | PTY-backed TUI stream |
 
@@ -164,6 +164,18 @@ curl -N https://your-birdy-host.example/api/chat \
   -H 'X-Invite-Code: replace-with-invite-code' \
   -d '{"prompt":"Find the strongest AI-agent signals today","model":"sonnet"}'
 ```
+
+`/api/chat` takes either `prompt` (one turn) or `messages`, the whole
+conversation oldest first: `user` and `assistant` turns only, ending with the
+user's, at most 48 messages, 64 KiB each and 192 KiB in all. Anything else is a
+JSON `400` before SSE begins. Every turn, assistant turns included, is treated
+as untrusted client text. To let the model's prompt cache reuse the previous
+request, append each new turn and resend earlier turns exactly as first sent:
+put changing context (such as scan results) in the turn that introduces it,
+and when a long conversation must drop old turns, drop many at once rather
+than one per request. Birdy Web does this. On the Chubby backend the turns are
+sent as real messages after a fixed system prompt; CLI backends receive them
+flattened into one prompt.
 
 The client model IDs are server-owned and bounded: `sonnet` (default), `codex`,
 and `deepseek-flash`. `deepseek-flash` maps to the exact pinned runtime route

@@ -3,6 +3,8 @@ import type { ReactNode } from 'react';
 import { readScanStream, scanPermalink, scanSourceLabels } from './scan';
 import type { ScanPost, ScanSource } from './scan';
 import { parseMarkdownBlocks } from './markdown';
+import { buildChatMessages, contextToAttach, scanContext } from './chatHistory';
+import type { ChatTurn } from './chatHistory';
 import {
   createChatRequest,
   createQueuedChat,
@@ -71,7 +73,7 @@ type LiveScan = ScanOutcome & { completed: number; cards: AlphaCard[]; legacy: b
 
 type FeedItem =
   | { kind: 'card'; card: AlphaCard }
-  | { kind: 'chat'; id: string; role: 'user' | 'assistant'; text: string; loading: boolean; modelLabel?: string };
+  | { kind: 'chat'; id: string; role: 'user' | 'assistant'; text: string; loading: boolean; modelLabel?: string; context?: string; sent?: string };
 
 type Conversation = {
   id: string;
@@ -1215,7 +1217,7 @@ function BirdyWorkspace({ session, onInvite }: { session: WebSession; onInvite: 
 
   const streamChat = useCallback(
     async (
-      askPrompt: string,
+      messages: ChatTurn[],
       modelId: string,
       opts: {
         onToken: (text: string) => void;
@@ -1232,7 +1234,7 @@ function BirdyWorkspace({ session, onInvite }: { session: WebSession; onInvite: 
           'Content-Type': 'application/json',
           'X-Invite-Code': session.code,
         },
-        body: JSON.stringify(createChatRequest(askPrompt, modelId)),
+        body: JSON.stringify(createChatRequest(messages, modelId)),
         signal: opts.signal,
       });
 
@@ -1306,6 +1308,20 @@ function BirdyWorkspace({ session, onInvite }: { session: WebSession; onInvite: 
     [session.code, onInvite],
   );
 
+  // The turn being sent, carrying the scan context it introduces, if any.
+  const nextUserTurn = useCallback((convId: string, text: string, sent?: string) => {
+    const conversation = conversations.find(c => c.id === convId);
+    const context = publicView && conversation
+      ? contextToAttach(conversation.chatItems, scanContext(conversation.cards))
+      : undefined;
+    const item: FeedItem & { kind: 'chat' } = {
+      kind: 'chat', id: `u-${Date.now()}`, role: 'user', text, loading: false,
+      ...(context ? { context } : {}),
+      ...(sent !== undefined ? { sent } : {}),
+    };
+    return { item, messages: buildChatMessages(conversation?.chatItems ?? [], item) };
+  }, [conversations, publicView]);
+
   const runScan = useCallback(async () => {
     if (scanning || genBusy || !activeModelReady) return;
     const target = ensureConv();
@@ -1329,7 +1345,7 @@ function BirdyWorkspace({ session, onInvite }: { session: WebSession; onInvite: 
       if (legacy) {
         let error = '';
         let complete = false;
-        const markdown = await streamChat(SCAN_PROMPT, modelId, {
+        const markdown = await streamChat([{ role: 'user', content: SCAN_PROMPT }], modelId, {
           signal: controller.signal, onToken() {}, onSnapshot() {}, onTool() {}, onDone() { complete = true; },
           onError(message) { error = message; },
         });
@@ -1423,10 +1439,11 @@ function BirdyWorkspace({ session, onInvite }: { session: WebSession; onInvite: 
       abortConvStream(convId);
       setConvRunning(convId, 'chat');
 
-      const userItem: FeedItem & { kind: 'chat' } = {
-        kind: 'chat', id: `u-${Date.now()}`, role: 'user',
-        text: `Deep dive: ${card.title}`, loading: false,
-      };
+      const deepDivePrompt = publicView
+        ? `Explain this public X Explore item using the supplied material. Identify what is known and what is uncertain.\n\n${card.rawMarkdown}`
+        : `Deep dive into this topic from Twitter: "${card.title}"\n\nContext from initial scan:\n${card.rawMarkdown}\n\nInstructions:\n1. Search for more details using \`birdy search "${card.title}"\`\n2. Look for related threads and discussions\n3. Provide a thorough analysis with:\n   - What's actually happening\n   - Key players and their positions\n   - Potential implications\n   - Links to relevant tweets/threads if found\n\nBe concise but thorough.`;
+
+      const { item: userItem, messages } = nextUserTurn(convId, `Deep dive: ${card.title}`, deepDivePrompt);
       const assistantId = `a-${Date.now()}`;
       const assistantItem: FeedItem & { kind: 'chat' } = {
         kind: 'chat', id: assistantId, role: 'assistant', text: '', loading: true, modelLabel,
@@ -1444,12 +1461,8 @@ function BirdyWorkspace({ session, onInvite }: { session: WebSession; onInvite: 
       const mapItem = (fn: (item: FeedItem & { kind: 'chat' }) => FeedItem & { kind: 'chat' }) =>
         updateConv(convId, c => ({ ...c, chatItems: c.chatItems.map(i => i.id === assistantId ? fn(i) : i), updatedAt: Date.now() }));
 
-      const deepDivePrompt = publicView
-        ? `Explain this public X Explore item using the supplied material. Identify what is known and what is uncertain.\n\n${card.rawMarkdown}`
-        : `Deep dive into this topic from Twitter: "${card.title}"\n\nContext from initial scan:\n${card.rawMarkdown}\n\nInstructions:\n1. Search for more details using \`birdy search "${card.title}"\`\n2. Look for related threads and discussions\n3. Provide a thorough analysis with:\n   - What's actually happening\n   - Key players and their positions\n   - Potential implications\n   - Links to relevant tweets/threads if found\n\nBe concise but thorough.`;
-
       try {
-        await streamChat(deepDivePrompt, modelId, {
+        await streamChat(messages, modelId, {
           signal: controller.signal,
           onToken: (text) => { if (controller.signal.aborted) return; mapItem(i => ({ ...i, text: i.text + text })); },
           onSnapshot: (text) => { if (controller.signal.aborted) return; mapItem(i => ({ ...i, text })); },
@@ -1465,23 +1478,8 @@ function BirdyWorkspace({ session, onInvite }: { session: WebSession; onInvite: 
         finishConvStream(convId, controller);
       }
     },
-    [publicView, genBusy, scanning, activeModelReady, activeModel, streamChat, ensureConv, updateConv, abortConvStream, setConvRunning, finishConvStream],
+    [publicView, genBusy, scanning, activeModelReady, activeModel, streamChat, nextUserTurn, ensureConv, updateConv, abortConvStream, setConvRunning, finishConvStream],
   );
-
-  const buildChatPrompt = useCallback((newMessage: string, convId: string): string => {
-    const conversation = conversations.find(c => c.id === convId);
-    const history = (conversation?.chatItems ?? [])
-      .filter((item) => item.text && !item.loading)
-      .slice(-10);
-    const scanContext = publicView && conversation?.cards.length
-      ? 'Public X Explore scan:\n' + conversation.cards.map(card => card.rawMarkdown).join('\n\n') + '\n\n'
-      : '';
-    if (history.length === 0) return scanContext + newMessage;
-    const lines = history.map((item) =>
-      `${item.role === 'user' ? 'User' : 'Assistant'}: ${item.text}`,
-    ).join('\n\n');
-    return `${scanContext}Conversation so far:\n${lines}\n\nUser: ${newMessage}\n\nContinue the conversation. Respond to the latest message using the context above.`;
-  }, [conversations, publicView]);
 
   const sendMessage = useCallback(async (
     overridePrompt?: string,
@@ -1513,11 +1511,7 @@ function BirdyWorkspace({ session, onInvite }: { session: WebSession; onInvite: 
     setConvRunning(convId, 'chat');
     if (!overridePrompt) setPrompt('');
 
-    const contextPrompt = buildChatPrompt(ask, convId);
-
-    const userItem: FeedItem & { kind: 'chat' } = {
-      kind: 'chat', id: `u-${Date.now()}`, role: 'user', text: ask, loading: false,
-    };
+    const { item: userItem, messages } = nextUserTurn(convId, ask);
     const assistantId = `a-${Date.now()}`;
     const assistantItem: FeedItem & { kind: 'chat' } = {
       kind: 'chat', id: assistantId, role: 'assistant', text: '', loading: true,
@@ -1537,7 +1531,7 @@ function BirdyWorkspace({ session, onInvite }: { session: WebSession; onInvite: 
     streamAbortRefs.current.set(convId, controller);
 
     try {
-      await streamChat(contextPrompt, modelId, {
+      await streamChat(messages, modelId, {
         signal: controller.signal,
         onToken: (text) => { if (controller.signal.aborted) return; mapItem(i => ({ ...i, text: i.text + text })); },
         onSnapshot: (text) => { if (controller.signal.aborted) return; mapItem(i => ({ ...i, text })); },
@@ -1552,7 +1546,7 @@ function BirdyWorkspace({ session, onInvite }: { session: WebSession; onInvite: 
     } finally {
       finishConvStream(convId, controller);
     }
-  }, [publicView, prompt, conversations, chatModels, catalogDefaultModelId, streamChat, buildChatPrompt, ensureConv, updateConv, runningByConv, setConvRunning, finishConvStream]);
+  }, [publicView, prompt, conversations, chatModels, catalogDefaultModelId, streamChat, nextUserTurn, ensureConv, updateConv, runningByConv, setConvRunning, finishConvStream]);
 
   doSendRef.current = (ask: string, convId: string, modelId: string) => void sendMessage(ask, convId, modelId);
 

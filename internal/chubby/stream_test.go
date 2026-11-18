@@ -26,6 +26,9 @@ func configure(t *testing.T, s *httptest.Server) {
 	t.Setenv("CHUBBY_MODEL", "")
 	t.Setenv("CHUBBY_CA_FILE", "")
 }
+func ask(prompt, system string) Conversation {
+	return Conversation{System: system, Messages: []Message{{Role: "user", Content: prompt}}}
+}
 func frame(w io.Writer, payload string) { fmt.Fprintf(w, "data: %s\n\n", payload) }
 func finish(w io.Writer, reason string) {
 	frame(w, fmt.Sprintf(`{"choices":[{"index":0,"delta":{},"finish_reason":%q}]}`, reason))
@@ -79,7 +82,7 @@ func TestStreamToolAndReplay(t *testing.T) {
 	configure(t, s)
 	var events []claude.Event
 	n := 0
-	Stream(t.Context(), "request", "rules", func(_ context.Context, cmd string, args []string) (string, error) {
+	Stream(t.Context(), ask("request", "rules"), func(_ context.Context, cmd string, args []string) (string, error) {
 		n++
 		if cmd != "read" || !slices.Equal(args, []string{"12345"}) {
 			t.Fatal("wrong command")
@@ -129,7 +132,7 @@ func TestStreamRefusesUnfinishedOrUnsafeToolTurn(t *testing.T) {
 			defer s.Close()
 			configure(t, s)
 			var events []claude.Event
-			Stream(t.Context(), "request", "", func(context.Context, string, []string) (string, error) {
+			Stream(t.Context(), ask("request", ""), func(context.Context, string, []string) (string, error) {
 				t.Fatal("invalid tool was executed")
 				return "", nil
 			}, func(e claude.Event) { events = append(events, e) })
@@ -153,7 +156,7 @@ func TestNoToolAndNoRetry(t *testing.T) {
 	defer s.Close()
 	configure(t, s)
 	var events []claude.Event
-	Stream(t.Context(), "request", "", nil, func(e claude.Event) { events = append(events, e) })
+	Stream(t.Context(), ask("request", ""), nil, func(e claude.Event) { events = append(events, e) })
 	if hits.Load() != 1 || len(events) != 2 || events[0].Type != claude.EventError || !strings.Contains(events[0].Error, "409") || strings.Contains(events[0].Error, "private-message") || events[1].Type != claude.EventDone {
 		t.Fatal(events)
 	}
@@ -174,7 +177,7 @@ func TestStreamCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	events := make(chan claude.Event, 3)
-	go func() { Stream(ctx, "cancel", "", nil, func(e claude.Event) { events <- e }); close(events) }()
+	go func() { Stream(ctx, ask("cancel", ""), nil, func(e claude.Event) { events <- e }); close(events) }()
 	select {
 	case <-started:
 	case <-time.After(3 * time.Second):
@@ -213,7 +216,7 @@ func TestStreamUsesConfiguredRelayCA(t *testing.T) {
 		t.Fatal(err)
 	}
 	var events []claude.Event
-	Stream(t.Context(), "ping", "", nil, func(e claude.Event) { events = append(events, e) })
+	Stream(t.Context(), ask("ping", ""), nil, func(e claude.Event) { events = append(events, e) })
 	if len(events) != 2 || events[0].Text != "answer" || events[1].Type != claude.EventDone {
 		t.Fatal(events)
 	}
@@ -227,5 +230,106 @@ func TestStreamUsesConfiguredRelayCA(t *testing.T) {
 	t.Setenv("CHUBBY_BASE_URL", "http://remote.invalid/v1")
 	if ValidateConfig() == nil {
 		t.Fatal("cleartext remote endpoint accepted")
+	}
+}
+
+// A conversation's next turn must begin with its previous request byte for
+// byte (tools, system, earlier turns), or the provider's prompt cache misses.
+func TestNextTurnExtendsPreviousRequestExactly(t *testing.T) {
+	type wire struct {
+		Tools    json.RawMessage   `json:"tools"`
+		Messages []json.RawMessage `json:"messages"`
+	}
+	var bodies []wire
+	var raw []string
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, _ := io.ReadAll(r.Body)
+		raw = append(raw, string(data))
+		var got wire
+		if err := json.Unmarshal(data, &got); err != nil {
+			t.Error(err)
+		}
+		bodies = append(bodies, got)
+		w.Header().Set("Content-Type", "text/event-stream")
+		if len(bodies) == 1 {
+			frame(w, callFrame)
+			finish(w, "tool_calls")
+		} else {
+			frame(w, textFrame)
+			finish(w, "stop")
+		}
+		frame(w, `{"choices":[],"usage":{"total_tokens":3}}`)
+		frame(w, "[DONE]")
+	}))
+	defer s.Close()
+	configure(t, s)
+	run := func(context.Context, string, []string) (string, error) { return "tool output", nil }
+	first := Conversation{System: "rules", Messages: []Message{{Role: "user", Content: "first question"}}}
+	Stream(t.Context(), first, run, func(claude.Event) {})
+	if len(bodies) != 2 {
+		t.Fatalf("turn 1 made %d requests", len(bodies))
+	}
+	second := first
+	second.Messages = append(slices.Clone(first.Messages), Message{Role: "assistant", Content: "answer"}, Message{Role: "user", Content: "follow up"})
+	Stream(t.Context(), second, run, func(claude.Event) {})
+	if len(bodies) != 3 {
+		t.Fatalf("turn 2 made %d requests", len(bodies)-2)
+	}
+	turn1, turn2 := bodies[0], bodies[2]
+	if string(turn1.Tools) != string(turn2.Tools) || len(turn1.Tools) == 0 {
+		t.Fatal("tool definitions changed between turns")
+	}
+	if len(turn2.Messages) != len(turn1.Messages)+2 {
+		t.Fatalf("turn 2 has %d messages, turn 1 had %d", len(turn2.Messages), len(turn1.Messages))
+	}
+	for i := range turn1.Messages {
+		if string(turn1.Messages[i]) != string(turn2.Messages[i]) {
+			t.Fatalf("message %d rewritten: %s != %s", i, turn1.Messages[i], turn2.Messages[i])
+		}
+	}
+	if !strings.HasPrefix(raw[2], strings.TrimSuffix(strings.SplitN(raw[0], `"tools"`, 2)[0], "],")) {
+		t.Fatal("turn 2's body does not begin with turn 1's model and messages")
+	}
+	for _, body := range raw {
+		if strings.Contains(body, "birdy-") && strings.Contains(body, "cache") {
+			t.Fatal("cache key sent before the endpoint accepts it")
+		}
+	}
+}
+
+func TestRequestLayoutAndCacheKey(t *testing.T) {
+	conv := Conversation{System: "rules", Messages: []Message{{Role: "user", Content: "a"}, {Role: "assistant", Content: "b"}, {Role: "user", Content: "c"}}}
+	req, err := newRequest("m", conv, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roles := []string{}
+	for _, m := range req.Messages {
+		roles = append(roles, m.Role)
+	}
+	if !slices.Equal(roles, []string{"system", "user", "assistant", "user"}) {
+		t.Fatal(roles)
+	}
+	a, _ := json.Marshal(req)
+	b, _ := json.Marshal(req)
+	if string(a) != string(b) {
+		t.Fatal("request encoding is not deterministic")
+	}
+	longer := conv
+	longer.Messages = append(slices.Clone(conv.Messages), Message{Role: "assistant", Content: "d"}, Message{Role: "user", Content: "e"})
+	next, _ := newRequest("m", longer, true)
+	other, _ := newRequest("m", Conversation{System: "rules", Messages: []Message{{Role: "user", Content: "z"}}}, true)
+	if req.PromptCacheKey == "" || req.PromptCacheKey != next.PromptCacheKey || req.PromptCacheKey == other.PromptCacheKey {
+		t.Fatal("cache key is not stable per conversation")
+	}
+	for _, bad := range []Conversation{
+		{},
+		{Messages: []Message{{Role: "assistant", Content: "x"}}},
+		{Messages: []Message{{Role: "system", Content: "x"}, {Role: "user", Content: "y"}}},
+		{Messages: []Message{{Role: "tool", Content: "x"}, {Role: "user", Content: "y"}}},
+	} {
+		if _, err := newRequest("m", bad, false); err == nil {
+			t.Fatalf("accepted %#v", bad)
+		}
 	}
 }

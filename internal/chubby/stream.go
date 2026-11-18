@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
@@ -58,6 +59,24 @@ type request struct {
 	Tools         []any           `json:"tools,omitempty"`
 	Stream        bool            `json:"stream"`
 	StreamOptions map[string]bool `json:"stream_options"`
+	// PromptCacheKey is stable for one conversation. It is not sent yet: give it
+	// a json name once the inference endpoint accepts a per-conversation key.
+	PromptCacheKey string `json:"-"`
+}
+
+// Message is one conversation turn supplied by the caller, oldest first.
+type Message struct {
+	Role    string // "user" or "assistant"
+	Content string
+}
+
+// Conversation is everything one answer is generated from. Provider prompt
+// caches match an exact prefix (tools, system, then messages), so callers keep
+// System fixed and only ever append to Messages; context that changes belongs
+// in the message of the turn that introduced it.
+type Conversation struct {
+	System   string
+	Messages []Message
 }
 
 func toolDefinition() any {
@@ -119,28 +138,57 @@ func ValidateConfig() error {
 }
 
 // Stream emits Birdy's normal event sequence. A nil runner disables tools.
-func Stream(ctx context.Context, prompt, systemPrompt string, run ToolRunner, emit func(claude.Event)) {
+func Stream(ctx context.Context, conv Conversation, run ToolRunner, emit func(claude.Event)) {
 	defer emit(claude.Event{Type: claude.EventDone})
 	c, err := fromEnv()
 	if err == nil {
 		if c.http.Transport != nil {
 			defer c.http.CloseIdleConnections()
 		}
-		err = c.chat(ctx, prompt, systemPrompt, run, emit)
+		err = c.chat(ctx, conv, run, emit)
 	}
 	if err != nil && !errors.Is(ctx.Err(), context.Canceled) {
 		emit(claude.Event{Type: claude.EventError, Error: err.Error()})
 	}
 }
 
-func (c *client) chat(ctx context.Context, prompt, systemPrompt string, run ToolRunner, emit func(claude.Event)) error {
-	var req = request{Model: c.model, Stream: true, StreamOptions: map[string]bool{"include_usage": true}}
-	if systemPrompt != "" {
-		req.Messages = append(req.Messages, message{Role: "system", Content: systemPrompt})
+// newRequest lays a conversation out as tools, system, then the turns in
+// order, so the next turn's request begins with this one byte for byte.
+func newRequest(model string, conv Conversation, tools bool) (request, error) {
+	if len(conv.Messages) == 0 || conv.Messages[len(conv.Messages)-1].Role != "user" {
+		return request{}, errors.New("conversation must end with a user message")
 	}
-	req.Messages = append(req.Messages, message{Role: "user", Content: prompt})
-	if run != nil {
+	req := request{Model: model, Stream: true, StreamOptions: map[string]bool{"include_usage": true}}
+	if conv.System != "" {
+		req.Messages = append(req.Messages, message{Role: "system", Content: conv.System})
+	}
+	for _, m := range conv.Messages {
+		if m.Role != "user" && m.Role != "assistant" {
+			return request{}, errors.New("conversation has an unsupported role")
+		}
+		req.Messages = append(req.Messages, message{Role: m.Role, Content: m.Content})
+	}
+	if tools {
 		req.Tools = []any{toolDefinition()}
+	}
+	req.PromptCacheKey = cacheKey(model, conv)
+	return req, nil
+}
+
+// cacheKey names a conversation by what never changes in it: the model, the
+// system prompt and its first message.
+func cacheKey(model string, conv Conversation) string {
+	h := sha256.New()
+	for _, part := range []string{model, conv.System, conv.Messages[0].Content} {
+		fmt.Fprintf(h, "%d:%s", len(part), part)
+	}
+	return "birdy-" + hex.EncodeToString(h.Sum(nil))[:32]
+}
+
+func (c *client) chat(ctx context.Context, conv Conversation, run ToolRunner, emit func(claude.Event)) error {
+	req, err := newRequest(c.model, conv, run != nil)
+	if err != nil {
+		return err
 	}
 	var seed [16]byte
 	rand.Read(seed[:])
@@ -246,11 +294,12 @@ func (c *client) turn(ctx context.Context, req request, id string, emit func(cla
 	}
 	result, err := readStream(res.Body, emit)
 	if err == nil && result.tokens != nil {
+		cost := ""
 		if result.cost != nil {
-			log.Printf("[chubby] request_id=%s total_tokens=%d cost_usd=%g", rid, *result.tokens, *result.cost)
-		} else {
-			log.Printf("[chubby] request_id=%s total_tokens=%d", rid, *result.tokens)
+			cost = fmt.Sprintf(" cost_usd=%g", *result.cost)
 		}
+		log.Printf("[chubby] request_id=%s total_tokens=%d prompt_tokens=%d cache_read=%d cache_write=%d%s",
+			rid, *result.tokens, result.prompt, result.cacheRead, result.cacheWrite, cost)
 	}
 	return result, err
 }

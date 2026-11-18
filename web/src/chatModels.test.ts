@@ -35,7 +35,8 @@ test('rejects duplicate, malformed, and unregistered defaults', () => {
 });
 
 test('creates the exact bounded API request without client provider fields', () => {
-  expect(createChatRequest('hello', 'deepseek-flash')).toEqual({ prompt: 'hello', model: 'deepseek-flash' });
+  expect(createChatRequest([{ role: 'user', content: 'hello' }], 'deepseek-flash'))
+    .toEqual({ messages: [{ role: 'user', content: 'hello' }], model: 'deepseek-flash' });
 });
 
 test('migrates legacy conversations and keeps removed saved models explicit', () => {
@@ -72,7 +73,8 @@ test('binds the first send, scan, and deep dive to the new conversation default'
   const defaultId = 'deepseek-flash';
   for (const operation of ['send', 'scan', 'deep-dive']) {
     const modelId = effectiveConversationModelId(undefined, defaultId);
-    expect(createChatRequest(operation, modelId)).toEqual({ prompt: operation, model: defaultId });
+    expect(createChatRequest([{ role: 'user', content: operation }], modelId))
+      .toEqual({ messages: [{ role: 'user', content: operation }], model: defaultId });
   }
   expect(effectiveConversationModelId('sonnet', defaultId)).toBe('sonnet');
 });

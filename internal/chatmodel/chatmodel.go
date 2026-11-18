@@ -44,12 +44,54 @@ type Selection struct {
 	SupportsTools bool
 }
 
+type Message = chubby.Message
+
+// Request is one answer. Messages, when set, are the conversation's turns
+// oldest first and ending with the user's; Chubby receives them as real turns.
+// CLI backends take one prompt, so they receive Prompt, or the messages
+// flattened when Prompt is empty.
 type Request struct {
 	Mode         Mode
 	Prompt       string
+	Messages     []Message
 	SystemPrompt string
 	BirdyCommand string
 	RunBirdyTool chubby.ToolRunner
+}
+
+func (r Request) turns() []Message {
+	if len(r.Messages) > 0 {
+		return r.Messages
+	}
+	return []Message{{Role: "user", Content: r.Prompt}}
+}
+
+func (r Request) flatPrompt() string {
+	if r.Prompt != "" || len(r.Messages) == 0 {
+		return r.Prompt
+	}
+	return FlattenMessages(r.Messages)
+}
+
+// FlattenMessages renders turns as the single prompt CLI backends take.
+func FlattenMessages(messages []Message) string {
+	if len(messages) == 0 {
+		return ""
+	}
+	last := messages[len(messages)-1].Content
+	if len(messages) == 1 {
+		return last
+	}
+	lines := make([]string, 0, len(messages)-1)
+	for _, m := range messages[:len(messages)-1] {
+		speaker := "User"
+		if m.Role == "assistant" {
+			speaker = "Assistant"
+		}
+		lines = append(lines, speaker+": "+m.Content)
+	}
+	return "Conversation so far:\n" + strings.Join(lines, "\n\n") + "\n\nUser: " + last +
+		"\n\nContinue the conversation. Respond to the latest message using the context above."
 }
 
 type StreamFunc func(context.Context, Selection, Request, func(claude.Event))
@@ -216,6 +258,7 @@ func Stream(ctx context.Context, selection Selection, request Request, emit func
 		return
 	}
 
+	prompt := request.flatPrompt()
 	switch selection.Backend {
 	case BackendChubby:
 		run := request.RunBirdyTool
@@ -225,33 +268,33 @@ func Stream(ctx context.Context, selection Selection, request Request, emit func
 			emitFailure(emit, "Birdy tool runner unavailable")
 			return
 		}
-		chubby.Stream(ctx, request.Prompt, request.SystemPrompt, run, emit)
+		chubby.Stream(ctx, chubby.Conversation{System: request.SystemPrompt, Messages: request.turns()}, run, emit)
 	case BackendClaudeCode:
 		if request.Mode == ModeNoTools {
 			if birdbox.Enabled() {
-				birdbox.StreamNoTools(ctx, request.Prompt, selection.RuntimeModel, request.SystemPrompt, emit)
+				birdbox.StreamNoTools(ctx, prompt, selection.RuntimeModel, request.SystemPrompt, emit)
 				return
 			}
-			claude.StreamNoTools(ctx, request.Prompt, selection.RuntimeModel, request.SystemPrompt, emit)
+			claude.StreamNoTools(ctx, prompt, selection.RuntimeModel, request.SystemPrompt, emit)
 			return
 		}
 		if birdbox.Enabled() {
-			birdbox.Stream(ctx, request.Prompt, selection.RuntimeModel, emit)
+			birdbox.Stream(ctx, prompt, selection.RuntimeModel, emit)
 			return
 		}
-		claude.Stream(ctx, request.Prompt, selection.RuntimeModel, request.BirdyCommand, emit)
+		claude.Stream(ctx, prompt, selection.RuntimeModel, request.BirdyCommand, emit)
 	case BackendCodex:
 		if request.Mode != ModeGeneral {
 			emitFailure(emit, "selected model does not support this chat mode")
 			return
 		}
-		codex.Stream(ctx, request.Prompt, selection.RuntimeModel, request.BirdyCommand, emit)
+		codex.Stream(ctx, prompt, selection.RuntimeModel, request.BirdyCommand, emit)
 	case BackendOpenCode:
 		if request.Mode == ModeNoTools {
-			opencode.StreamNoTools(ctx, request.Prompt, request.SystemPrompt, emit)
+			opencode.StreamNoTools(ctx, prompt, request.SystemPrompt, emit)
 			return
 		}
-		opencode.StreamWithBirdy(ctx, request.Prompt, request.SystemPrompt, request.BirdyCommand, emit)
+		opencode.StreamWithBirdy(ctx, prompt, request.SystemPrompt, request.BirdyCommand, emit)
 	default:
 		emitFailure(emit, "unsupported chat model provider")
 	}

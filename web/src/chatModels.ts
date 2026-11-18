@@ -91,8 +91,8 @@ export function parseChatModelCatalog(value: unknown): { defaultId: string; mode
   return { defaultId: defaultChatModelId, models };
 }
 
-export function createChatRequest(prompt: string, modelId: string) {
-  return { prompt, model: modelId };
+export function createChatRequest(messages: { role: 'user' | 'assistant'; content: string }[], modelId: string) {
+  return { messages, model: modelId };
 }
 
 export function modelDisplayName(model: ChatModel) {
