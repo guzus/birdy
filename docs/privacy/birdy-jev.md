@@ -28,7 +28,7 @@ On first use the extension registers itself with the server and gets a random ke
 To run the service, the server keeps daily counts of the requests made to its API.
 
 - **What is counted:** every request to the server's API (the addresses under `/v1/`), from the extension and from anyone using the server's public post lookup. That covers judging posts, marks, the popup's counts, registration, the Radar and Ask Birdy checks, and post lookups. Requests from Web Store installations are included. For each UTC day the server counts requests by kind (the route, such as `/v1/classify`, never a post ID or other value from the request), by status class (succeeded, refused, rate-limited or failed), and by whether the answer came from the cache.
-- **Distinct users:** to count distinct users per day, the server keeps, for each day, a salted hash (HMAC-SHA256) of the IP address each request came from. The salt changes on the first of every month, so hashes cannot be matched from one month to the next. Each day's hashes are deleted after 35 days.
+- **Distinct users:** to count distinct users per day, the server keeps, for each day, a salted hash (HMAC-SHA256) of the IP address each request came from. The key for these hashes changes on the first of every month (it is derived from a secret): within a calendar month the same address gets the same hash every day, and the next month it gets a different one. Each day's hashes are deleted after 35 days.
 - **Not stored:** IP addresses themselves, request bodies, query contents and post IDs. The counts and hashes are not linked to your installation's number or key.
 - **Not shared:** the counts are used only to run the service. They are not shared or sold, and no third-party analytics service receives them.
 
