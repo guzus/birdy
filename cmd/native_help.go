@@ -111,7 +111,8 @@ var nativeCommandHelps = map[string]nativeCommandHelp{
 	}},
 	"thread": {usage: "thread <tweet-id|url>", examples: []string{
 		`birdy thread 1234567890123456789 --plain`,
-	}},
+		`birdy thread 1234567890123456789 --json`,
+	}, notes: "When you need both the post and its thread, fetch the thread once and select the post by id. Use read if the post is missing or you need the full text of a headline-only X Article."},
 	"replies": {usage: "replies <tweet-id|url>", examples: []string{
 		`birdy replies 1234567890123456789 --json`,
 	}},

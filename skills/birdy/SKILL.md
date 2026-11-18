@@ -83,6 +83,10 @@ birdy search "golang"
 birdy scrape --handle nasa --search "moon" -n 50
 birdy read 1234567890
 
+# Get the thread and its focal post in one fetch
+birdy thread 1234567890 --json > thread.json
+jq --arg id 1234567890 '.[] | select(.id == $id)' thread.json
+
 # Show which account was used
 birdy -v home
 
@@ -92,6 +96,9 @@ birdy --account personal whoami
 # Choose rotation strategy
 birdy --strategy least-used home
 ```
+
+If the focal post is missing from the thread or an X Article only shows a
+headline, use `birdy read` for that post. It can retrieve the full article body.
 
 ### 4. Use In CI (Non-Interactive)
 

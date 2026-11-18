@@ -159,11 +159,24 @@ type itemContent struct {
 
 func (item *itemContent) UnmarshalJSON(data []byte) error {
 	type alias itemContent
-	var decoded alias
+	var decoded struct {
+		alias
+		ItemType itemDiscriminator `json:"itemType"`
+		TypeName itemDiscriminator `json:"__typename"`
+	}
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		return err
 	}
-	*item = itemContent(decoded)
+	*item = itemContent(decoded.alias)
+	item.ItemType, item.TypeName = decoded.ItemType.value, decoded.TypeName.value
+	// Only a cursor needs to distinguish absent tweet_results from explicit
+	// null. Ordinary tweets already carry everything we need in the typed
+	// decode. A malformed discriminator takes the original exact-key path
+	// because encoding/json also matches struct fields case-insensitively.
+	if !decoded.ItemType.sawEmpty && !decoded.TypeName.sawEmpty &&
+		item.ItemType != "TimelineTimelineCursor" && item.TypeName != "TimelineTimelineCursor" {
+		return nil
+	}
 	var object map[string]json.RawMessage
 	if err := json.Unmarshal(data, &object); err != nil {
 		return err
@@ -179,6 +192,22 @@ func (item *itemContent) UnmarshalJSON(data []byte) error {
 		}
 	}
 	_, item.hasTweetResults = object["tweet_results"]
+	return nil
+}
+
+type itemDiscriminator struct {
+	value    string
+	sawEmpty bool
+}
+
+func (d *itemDiscriminator) UnmarshalJSON(data []byte) error {
+	if err := json.Unmarshal(data, &d.value); err != nil {
+		return err
+	}
+	// null leaves an existing string intact when a key occurs twice.
+	if d.value == "" || bytes.Equal(data, []byte("null")) {
+		d.sawEmpty = true
+	}
 	return nil
 }
 

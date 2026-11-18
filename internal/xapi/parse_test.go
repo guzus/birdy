@@ -263,6 +263,28 @@ func TestParseConversationModuleCursorFailsClosed(t *testing.T) {
 	}
 }
 
+func TestStrictItemDiscriminatorPresence(t *testing.T) {
+	const tweet = `"tweet_results":{"result":{"rest_id":"100","core":{"user_results":{"result":{"rest_id":"42","legacy":{"screen_name":"reader","name":"Reader"}}}},"legacy":{"full_text":"hello"}}}`
+	for _, tc := range []struct {
+		fields string
+		wantOK bool
+	}{
+		{` `, true},
+		{`"itemType":null,`, false},
+		{`"__typename":"",`, false},
+		{`"itemType":42,`, false},
+		{`"itemType":"TimelineTweet","itemType":null,`, false},
+		{`"itemType":null,"itemType":"TimelineTweet",`, true},
+		{`"ItemType":"","__typename":"TimelineTweet",`, true},
+	} {
+		entry := `{"content":{"itemContent":{` + tc.fields + tweet + `}}}`
+		tweets, _, err := parseStrictTimelineEntry([]byte(entry))
+		if (err == nil) != tc.wantOK || (tc.wantOK && (len(tweets) != 1 || tweets[0].ID != "100")) {
+			t.Errorf("fields %q: tweets = %v, err = %v, want success = %v", tc.fields, tweets, err, tc.wantOK)
+		}
+	}
+}
+
 func TestParseConversationModuleCursorRequiresExactEnclosingModuleType(t *testing.T) {
 	items := `[
 		{"item":{"itemContent":{"itemType":"TimelineTweet","__typename":"TimelineTweet","tweet_results":{"result":{
