@@ -265,7 +265,7 @@ func runClaudeProcess(ctx context.Context, prompt, model string, ch chan<- tea.M
 	args := buildClaudeArgs(prompt, model, birdyCmd())
 
 	cmd := exec.CommandContext(ctx, "claude", args...)
-	cmd.Env = processenv.Without(os.Environ(), "OPENCODE_API_KEY")
+	cmd.Env = processenv.Without(os.Environ(), "OPENCODE_API_KEY", "CHUBBY_API_KEY")
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

@@ -585,9 +585,10 @@ func TestHostedTUIEnvironmentExcludesOpenCodeCredential(t *testing.T) {
 	got := strings.Join(hostedTUIEnvironment([]string{
 		"PATH=/bin",
 		"OPENCODE_API_KEY=model-provider-secret",
+		"CHUBBY_API_KEY=hosted-provider-secret",
 		"BIRDY_ACCOUNTS=required-tui-account-pool",
 	}), "\n")
-	if strings.Contains(got, "OPENCODE_API_KEY=") || !strings.Contains(got, "BIRDY_ACCOUNTS=required-tui-account-pool") {
+	if strings.Contains(got, "OPENCODE_API_KEY=") || strings.Contains(got, "CHUBBY_API_KEY=") || !strings.Contains(got, "BIRDY_ACCOUNTS=required-tui-account-pool") {
 		t.Fatalf("hosted TUI environment isolation failed: %q", got)
 	}
 }
