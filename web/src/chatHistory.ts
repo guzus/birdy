@@ -19,7 +19,7 @@ export type HistoryItem = {
   sent?: string;
 };
 
-// The server accepts 48 messages, 64 KiB each and 192 KiB in all.
+// The server accepts 48 messages and 192 KiB of content in all.
 export const maxChatMessages = 40;
 export const chatWindowStep = 10;
 export const maxChatBytes = 160 * 1024;

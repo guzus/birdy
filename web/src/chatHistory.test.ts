@@ -70,13 +70,13 @@ test('a long conversation moves its window in steps, not one turn per request', 
   const sent = chat(40, { context: () => scanContext([{ rawMarkdown: 'headline' }]) });
   let shifts = 0;
   for (let i = 1; i < sent.length; i++) {
-    expect(sent[i].length).toBeLessThanOrEqual(maxChatMessages);
+    expect(sent[i].length <= maxChatMessages).toBe(true);
     expect(sent[i][0].role).toBe('user');
     if (!startsWith(sent[i], sent[i - 1])) shifts++;
   }
   // 80 stored items through a 40-message window moved in 10-message steps.
-  expect(shifts).toBeLessThanOrEqual(Math.ceil((80 - maxChatMessages) / chatWindowStep));
-  expect(shifts).toBeGreaterThan(0);
+  expect(shifts <= Math.ceil((80 - maxChatMessages) / chatWindowStep)).toBe(true);
+  expect(shifts > 0).toBe(true);
   // The scan introduced on turn 1 stays in view after it scrolls out.
   expect(sent.at(-1)![0].content.startsWith('Public X Explore scan:\nheadline')).toBe(true);
 });
@@ -86,7 +86,7 @@ test('history stays under the byte budget by dropping whole steps', () => {
   const sent = chat(12, { answer: () => big });
   const last = sent.at(-1)!;
   const size = last.reduce((total, turn) => total + new TextEncoder().encode(turn.content).byteLength, 0);
-  expect(size).toBeLessThanOrEqual(maxChatBytes);
+  expect(size <= maxChatBytes).toBe(true);
   expect(last[0].role).toBe('user');
   expect(last.at(-1)!.content).toBe('question 12');
 });
@@ -94,6 +94,16 @@ test('history stays under the byte budget by dropping whole steps', () => {
 test('an oversized scan keeps only the cards that fit', () => {
   const card = { rawMarkdown: 'y'.repeat(20 * 1024) };
   const context = scanContext([card, card, card]);
-  expect(new TextEncoder().encode(context).byteLength).toBeLessThanOrEqual(maxContextBytes);
+  expect(new TextEncoder().encode(context).byteLength <= maxContextBytes).toBe(true);
   expect(context.split('y'.repeat(20 * 1024)).length - 1).toBe(2);
+});
+
+test('one oversized stored turn scrolls out instead of blocking the conversation', () => {
+  const huge = 'z'.repeat(maxChatBytes + 1);
+  const items = [user('q1'), assistant(huge), user('q2'), assistant('a2')];
+  const sent = buildChatMessages(items, user('q3'));
+  // The window moves a whole step past it; the conversation keeps working.
+  expect(sent.at(-1)!.content).toBe('q3');
+  expect(sent.some(t => t.content === huge)).toBe(false);
+  expect(sent[0].role).toBe('user');
 });

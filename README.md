@@ -167,7 +167,7 @@ curl -N https://your-birdy-host.example/api/chat \
 
 `/api/chat` takes either `prompt` (one turn) or `messages`, the whole
 conversation oldest first: `user` and `assistant` turns only, ending with the
-user's, at most 48 messages, 64 KiB each and 192 KiB in all. Anything else is a
+user's, at most 48 messages and 192 KiB of content in all. Anything else is a
 JSON `400` before SSE begins. Every turn, assistant turns included, is treated
 as untrusted client text. To let the model's prompt cache reuse the previous
 request, append each new turn and resend earlier turns exactly as first sent:

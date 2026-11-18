@@ -12,14 +12,14 @@ import (
 )
 
 func TestChatTurnsValidatesUntrustedHistory(t *testing.T) {
-	big := strings.Repeat("x", apiChatMaxMessageBytes+1)
+	big := strings.Repeat("x", apiChatMaxHistoryBytes+1)
 	many := make([]apiChatMessage, apiChatMaxMessages+1)
 	for i := range many {
 		many[i] = apiChatMessage{Role: "user", Content: "hi"}
 	}
 	var huge []apiChatMessage
 	for i := 0; i < 4; i++ {
-		huge = append(huge, apiChatMessage{Role: "user", Content: strings.Repeat("y", apiChatMaxMessageBytes)})
+		huge = append(huge, apiChatMessage{Role: "user", Content: strings.Repeat("y", apiChatMaxHistoryBytes/4+1)})
 	}
 	for name, req := range map[string]apiChatRequest{
 		"empty":           {},
@@ -36,6 +36,10 @@ func TestChatTurnsValidatesUntrustedHistory(t *testing.T) {
 		if _, err := chatTurns(req); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
+	}
+	// One long turn is fine while the conversation fits.
+	if _, err := chatTurns(apiChatRequest{Messages: []apiChatMessage{{Role: "assistant", Content: strings.Repeat("z", 100<<10)}, {Role: "user", Content: "q"}}}); err != nil {
+		t.Fatalf("long turn refused: %v", err)
 	}
 	turns, err := chatTurns(apiChatRequest{Messages: []apiChatMessage{{Role: "user", Content: " a "}, {Role: "assistant", Content: "b\n"}, {Role: "user", Content: "c"}}})
 	if err != nil || len(turns) != 3 || turns[0].Content != " a " || turns[1].Content != "b\n" {

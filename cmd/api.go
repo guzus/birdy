@@ -58,7 +58,6 @@ type apiChatMessage struct {
 
 const (
 	apiChatMaxMessages     = 48
-	apiChatMaxMessageBytes = 64 << 10
 	apiChatMaxHistoryBytes = 192 << 10
 )
 
@@ -86,9 +85,6 @@ func chatTurns(req apiChatRequest) ([]chatmodel.Message, error) {
 		}
 		if strings.TrimSpace(m.Content) == "" || !utf8.ValidString(m.Content) {
 			return nil, errors.New("invalid message content")
-		}
-		if len(m.Content) > apiChatMaxMessageBytes {
-			return nil, errors.New("message too large")
 		}
 		total += len(m.Content)
 		turns = append(turns, chatmodel.Message{Role: m.Role, Content: m.Content})
