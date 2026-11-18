@@ -65,9 +65,13 @@ var hostCmd = &cobra.Command{
 			fmt.Fprintf(cmd.OutOrStdout(), "web client: %s\n", webDir)
 		}
 
+		proxy, err := hostedProxyFromEnv()
+		if err != nil {
+			return err
+		}
 		server := &http.Server{
 			Addr:              hostAddrFlag,
-			Handler:           buildHostedMux(inviteCode, allowedOrigins, webDir),
+			Handler:           proxy.limitWebRequests(buildHostedMux(inviteCode, allowedOrigins, webDir), newRateLimiter(120, time.Minute)),
 			ReadHeaderTimeout: 5 * time.Second,
 			IdleTimeout:       60 * time.Second,
 		}

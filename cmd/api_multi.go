@@ -128,8 +128,7 @@ func handleAPIMultiCommand(inviteCode string) http.HandlerFunc {
 		// Rate limit: charge one slot per op so a 16-op batch counts the same
 		// as 16 sequential /api/command calls. Without this a single IP could
 		// blow past the 60/min budget by 16x.
-		if !commandLimiter.allowN(clientIP(r), len(req.Operations)) {
-			writeJSON(w, http.StatusTooManyRequests, apiError{OK: false, Error: "rate limit exceeded, try again shortly"})
+		if !commandLimiter.admit(w, r, len(req.Operations)) {
 			return
 		}
 

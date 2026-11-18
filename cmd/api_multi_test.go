@@ -357,16 +357,16 @@ func TestAPIMultiCommandBatchedRateLimit(t *testing.T) {
 	// allowN should reject a batch that, combined with the per-IP window,
 	// would push the IP past commandLimiter.limit (60/min).
 	rl := newRateLimiter(5, time.Minute)
-	if !rl.allowN("1.1.1.1", 4) {
+	if rl.retryAfter("1.1.1.1", 4) != 0 {
 		t.Fatal("expected 4-op batch to fit under limit=5")
 	}
-	if rl.allowN("1.1.1.1", 2) {
+	if rl.retryAfter("1.1.1.1", 2) == 0 {
 		t.Fatal("expected 2-op batch to be rejected (4+2 > 5)")
 	}
-	if !rl.allowN("1.1.1.1", 1) {
+	if rl.retryAfter("1.1.1.1", 1) != 0 {
 		t.Fatal("expected 1-op batch to fit (4+1 = 5)")
 	}
-	if rl.allowN("1.1.1.1", 1) {
+	if rl.retryAfter("1.1.1.1", 1) == 0 {
 		t.Fatal("expected next batch to be rejected (5+1 > 5)")
 	}
 }

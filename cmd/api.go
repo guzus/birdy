@@ -6,11 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/guzus/birdy/internal/birdtool"
@@ -19,97 +17,6 @@ import (
 	"github.com/guzus/birdy/internal/rotation"
 	"github.com/guzus/birdy/internal/state"
 	"github.com/guzus/birdy/internal/store"
-)
-
-// rateLimiter implements a per-IP sliding window rate limiter.
-type rateLimiter struct {
-	mu       sync.Mutex
-	requests map[string][]time.Time
-	limit    int
-	window   time.Duration
-}
-
-func newRateLimiter(limit int, window time.Duration) *rateLimiter {
-	return &rateLimiter{
-		requests: make(map[string][]time.Time),
-		limit:    limit,
-		window:   window,
-	}
-}
-
-func (rl *rateLimiter) allow(ip string) bool {
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
-
-	now := time.Now()
-	cutoff := now.Add(-rl.window)
-
-	// Prune expired entries.
-	times := rl.requests[ip]
-	start := 0
-	for start < len(times) && times[start].Before(cutoff) {
-		start++
-	}
-	times = times[start:]
-
-	if len(times) >= rl.limit {
-		rl.requests[ip] = times
-		return false
-	}
-
-	rl.requests[ip] = append(times, now)
-	return true
-}
-
-// allowN reserves n slots atomically. Either all n fit within the window
-// budget (and are recorded) or none are. Used for batch endpoints so a
-// 16-op multi-command counts the same as 16 sequential single-op calls.
-func (rl *rateLimiter) allowN(ip string, n int) bool {
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
-
-	if n <= 0 {
-		return true
-	}
-
-	now := time.Now()
-	cutoff := now.Add(-rl.window)
-
-	times := rl.requests[ip]
-	start := 0
-	for start < len(times) && times[start].Before(cutoff) {
-		start++
-	}
-	times = times[start:]
-
-	if len(times)+n > rl.limit {
-		rl.requests[ip] = times
-		return false
-	}
-
-	for i := 0; i < n; i++ {
-		times = append(times, now)
-	}
-	rl.requests[ip] = times
-	return true
-}
-
-func clientIP(r *http.Request) string {
-	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-		if ip, _, err := net.SplitHostPort(strings.TrimSpace(strings.SplitN(fwd, ",", 2)[0])); err == nil {
-			return ip
-		}
-		return strings.TrimSpace(strings.SplitN(fwd, ",", 2)[0])
-	}
-	if ip, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-		return ip
-	}
-	return r.RemoteAddr
-}
-
-var (
-	chatLimiter    = newRateLimiter(20, time.Minute) // 20 chat requests/min per IP
-	commandLimiter = newRateLimiter(60, time.Minute) // 60 command requests/min per IP
 )
 
 type apiError struct {
@@ -237,8 +144,7 @@ func handleAPICommand(inviteCode string) http.HandlerFunc {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-		if !commandLimiter.allow(clientIP(r)) {
-			writeJSON(w, http.StatusTooManyRequests, apiError{OK: false, Error: "rate limit exceeded, try again shortly"})
+		if !commandLimiter.admit(w, r, 1) {
 			return
 		}
 
@@ -427,8 +333,7 @@ func handleAPIChat(inviteCode string) http.HandlerFunc {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-		if !chatLimiter.allow(clientIP(r)) {
-			writeJSON(w, http.StatusTooManyRequests, apiError{OK: false, Error: "rate limit exceeded, try again shortly"})
+		if !chatLimiter.admit(w, r, 1) {
 			return
 		}
 
@@ -455,6 +360,11 @@ func handleAPIChat(inviteCode string) http.HandlerFunc {
 			return
 		}
 
+		release := activeModelStreams.acquire(w, clientIP(r))
+		if release == nil {
+			return
+		}
+		defer release()
 		ctx, cancel := context.WithTimeout(r.Context(), hostedChatTimeout)
 		defer cancel()
 

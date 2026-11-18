@@ -176,8 +176,7 @@ func apiScanHandler(invite string, read scanReader, stream chatmodel.StreamFunc)
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-		if !chatLimiter.allow(clientIP(r)) {
-			writeJSON(w, http.StatusTooManyRequests, apiError{Error: "rate limit exceeded, try again shortly"})
+		if !chatLimiter.admit(w, r, 1) {
 			return
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
@@ -203,6 +202,11 @@ func apiScanHandler(invite string, read scanReader, stream chatmodel.StreamFunc)
 			writeJSON(w, http.StatusInternalServerError, apiError{Error: "streaming unsupported"})
 			return
 		}
+		release := activeModelStreams.acquire(w, clientIP(r))
+		if release == nil {
+			return
+		}
+		defer release()
 		ctx, cancel := context.WithTimeout(r.Context(), hostedChatTimeout)
 		defer cancel()
 		w.Header().Set("Content-Type", "text/event-stream")

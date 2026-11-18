@@ -301,7 +301,7 @@ func TestAPIChatModelsIsAuthenticatedDeterministicAndDoesNotChargeChatLimit(t *t
 			t.Fatalf("model[%d] = %#v, want id=%q available tool-capable", i, response.Models[i], want)
 		}
 	}
-	if !chatLimiter.allow(clientIP(req)) {
+	if chatLimiter.retryAfter(clientIP(req), 1) != 0 {
 		t.Fatal("model discovery consumed the POST chat limiter")
 	}
 }
