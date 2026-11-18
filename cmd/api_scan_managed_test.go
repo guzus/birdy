@@ -900,3 +900,59 @@ func TestManagedScanStreamedTextMustBeginTheOutput(t *testing.T) {
 		t.Fatalf("output mismatch before a card: %v %v", err, unseen.log)
 	}
 }
+
+// pacedRunner answers every events read the same way, counting reads.
+type pacedRunner struct {
+	*fakeManaged
+	reads atomic.Int32
+	page  func() (chubby.EventsPage, error)
+}
+
+func (p *pacedRunner) EventsPage(context.Context, string, float64, string, int) (chubby.EventsPage, error) {
+	p.reads.Add(1)
+	return p.page()
+}
+
+func runPaced(t *testing.T, page func() (chubby.EventsPage, error)) (*pacedRunner, error) {
+	t.Helper()
+	running := chubby.ManagedRunDetail{Run: chubby.ManagedRun{ID: "run-1", Status: "running"}}
+	p := &pacedRunner{fakeManaged: &fakeManaged{detail: running}, page: page}
+	old := newScanManagedRunner
+	newScanManagedRunner = func() (scanManagedRunner, error) { return p, nil }
+	t.Cleanup(func() { newScanManagedRunner = old })
+	t.Setenv(scanAgentInvitedEnv, "agent-invited")
+	ctx, cancel := context.WithTimeout(t.Context(), 2500*time.Millisecond)
+	defer cancel()
+	return p, runManagedScan(ctx, false, (&emitted{}).emit)
+}
+
+func TestManagedScanBacksOffACappedLongPoll(t *testing.T) {
+	p, err := runPaced(t, func() (chubby.EventsPage, error) {
+		return chubby.EventsPage{}, &chubby.APIError{Status: 429, Code: "long_poll_limit", RetryAfter: time.Second}
+	})
+	// Retry-After 1 s over 2.5 s: about three reads, and the cap is not a failure.
+	if reads := p.reads.Load(); reads < 2 || reads > 4 || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("capped polls: reads=%d err=%v", reads, err)
+	}
+	if longPollBackoff(&chubby.APIError{Status: 429, Code: "long_poll_limit", RetryAfter: time.Minute}) != 10*time.Second ||
+		longPollBackoff(&chubby.APIError{Status: 429, Code: "long_poll_limit"}) != time.Second {
+		t.Fatal("Retry-After is not kept within 1-10 s")
+	}
+	// Any other 429 is still a transient error with its bounded retries.
+	if longPollCapped(&chubby.APIError{Status: 429, Code: "rate_limited"}) {
+		t.Fatal("an ordinary 429 read as a capped long-poll")
+	}
+}
+
+func TestManagedScanPacesReadsWhenWaitIsIgnored(t *testing.T) {
+	p, err := runPaced(t, func() (chubby.EventsPage, error) {
+		return chubby.EventsPage{LiveText: true}, nil // empty, instantly
+	})
+	// Paced at scanManagedPoll (700 ms): about four reads in 2.5 s, not thousands.
+	if reads := p.reads.Load(); reads < 2 || reads > 5 || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("instant empty pages: reads=%d err=%v", reads, err)
+	}
+	if detail := p.runCalls.Load(); detail > 5 {
+		t.Fatalf("run detail read %d times", detail)
+	}
+}

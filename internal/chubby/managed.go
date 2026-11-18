@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -35,6 +36,8 @@ type APIError struct {
 	Status  int
 	Code    string
 	Message string
+	// RetryAfter is the server's Retry-After in seconds, or 0 when absent.
+	RetryAfter time.Duration
 }
 
 func (e *APIError) Error() string {
@@ -93,7 +96,11 @@ func (m *Managed) call(ctx context.Context, method, path string, body any, idemp
 		if len(msg) > 300 {
 			msg = msg[:300]
 		}
-		return &APIError{Status: res.StatusCode, Code: e.Error.Code, Message: msg}
+		apiErr := &APIError{Status: res.StatusCode, Code: e.Error.Code, Message: msg}
+		if seconds, err := strconv.Atoi(strings.TrimSpace(res.Header.Get("Retry-After"))); err == nil && seconds > 0 {
+			apiErr.RetryAfter = time.Duration(seconds) * time.Second
+		}
+		return apiErr
 	}
 	if out == nil {
 		return nil

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestManagedClientPathsKeysAndErrors(t *testing.T) {
@@ -115,5 +116,21 @@ func TestEventsPageLiveText(t *testing.T) {
 	}
 	if queries[0] != "after=4&text=1&wait=15" || queries[1] != "after=5&text=chst_1%3A2%3As&wait=20" {
 		t.Fatalf("queries %q", queries)
+	}
+}
+
+func TestAPIErrorCarriesRetryAfter(t *testing.T) {
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "1")
+		w.WriteHeader(http.StatusTooManyRequests)
+		w.Write([]byte(`{"error":{"code":"long_poll_limit","message":"Too many waiting reads."}}`))
+	}))
+	defer s.Close()
+	configure(t, s)
+	m, _ := NewManaged()
+	_, err := m.EventsPage(t.Context(), "run-1", 0, "1", 15)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != 429 || apiErr.Code != "long_poll_limit" || apiErr.RetryAfter != time.Second {
+		t.Fatalf("%#v", err)
 	}
 }

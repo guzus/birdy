@@ -217,11 +217,27 @@ func readWithRetry(ctx context.Context, read func() error) error {
 			return err
 		}
 		var apiErr *chubby.APIError
-		if errors.As(err, &apiErr) && apiErr.Status < 500 && apiErr.Status != 429 {
+		if errors.As(err, &apiErr) && (apiErr.Status < 500 && apiErr.Status != 429 || longPollCapped(err)) {
 			return err
 		}
 	}
 	return err
+}
+
+// longPollCapped reports Chubby refusing a waiting read because the service
+// already holds its share of long-polls: not a failure, a request to come back.
+func longPollCapped(err error) bool {
+	var apiErr *chubby.APIError
+	return errors.As(err, &apiErr) && apiErr.Status == 429 && apiErr.Code == "long_poll_limit"
+}
+
+// longPollBackoff is the capped read's Retry-After, kept within 1-10 s.
+func longPollBackoff(err error) time.Duration {
+	var apiErr *chubby.APIError
+	if errors.As(err, &apiErr) && apiErr.RetryAfter > 0 {
+		return min(max(apiErr.RetryAfter, time.Second), 10*time.Second)
+	}
+	return time.Second
 }
 
 // scanAgentSystemPrompt is the agent instruction registered with Chubby.
@@ -430,6 +446,7 @@ func runManagedScan(ctx context.Context, visitor bool, emit scanEmitter) error {
 	var detail chubby.ManagedRunDetail
 	for idle := 0; ; idle++ {
 		var page chubby.EventsPage
+		readStarted := time.Now()
 		err := readWithRetry(ctx, func() (err error) {
 			if liveText {
 				page, err = m.EventsPage(ctx, run.ID, cursor, textCursor, scanManagedWait)
@@ -438,6 +455,15 @@ func runManagedScan(ctx context.Context, visitor bool, emit scanEmitter) error {
 			}
 			return err
 		})
+		if longPollCapped(err) {
+			// The service holds its share of waiting reads: come back later.
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(longPollBackoff(err)):
+			}
+			continue
+		}
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -445,6 +471,10 @@ func runManagedScan(ctx context.Context, visitor bool, emit scanEmitter) error {
 			log.Printf("[scan-managed] run=%s events: %v", run.ID, err)
 			return errors.New("The briefing service is unavailable.")
 		}
+		// An empty answer long before the wait could end means something
+		// between here and Chubby ignores wait: pace the reads instead of
+		// spinning on them.
+		emptyFast := liveText && page.LiveText && len(page.Data) == 0 && page.Text == nil && time.Since(readStarted) < time.Second
 		if liveText && !page.LiveText {
 			// A backend without live text: poll as before.
 			liveText = false
@@ -509,7 +539,7 @@ func runManagedScan(ctx context.Context, visitor bool, emit scanEmitter) error {
 				break
 			}
 		}
-		if liveText {
+		if liveText && !emptyFast {
 			// The long-poll did the waiting; a full page means more to read now.
 			continue
 		}
