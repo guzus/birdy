@@ -116,15 +116,25 @@ func startWebStatsFromEnv(ctx context.Context) *webStats {
 	return s
 }
 
-// webClientHash is HMAC-SHA256(salt, the address in canonical text form),
-// cut to 16 bytes; false when there is no salt or no valid address.
-func webClientHash(salt []byte, ip string) ([webStatsHashLen]byte, bool) {
+// webMonthKey is the hashing key for one UTC month: HMAC-SHA256(salt,
+// "birdy-client-hash:" + YYYY-MM). It rotates on the first of every month
+// by itself, so a hash cannot be matched across months.
+func webMonthKey(salt []byte, day string) []byte {
+	mac := hmac.New(sha256.New, salt)
+	mac.Write([]byte("birdy-client-hash:" + day[:7]))
+	return mac.Sum(nil)
+}
+
+// webClientHash is HMAC-SHA256(webMonthKey(salt, day), the address in
+// canonical text form), cut to 16 bytes; false when there is no salt or no
+// valid address. day is YYYY-MM-DD (UTC).
+func webClientHash(salt []byte, ip, day string) ([webStatsHashLen]byte, bool) {
 	var out [webStatsHashLen]byte
 	addr, err := netip.ParseAddr(ip)
-	if len(salt) == 0 || err != nil {
+	if len(salt) == 0 || err != nil || len(day) < 7 {
 		return out, false
 	}
-	mac := hmac.New(sha256.New, salt)
+	mac := hmac.New(sha256.New, webMonthKey(salt, day))
 	mac.Write([]byte(addr.WithZone("").Unmap().String()))
 	copy(out[:], mac.Sum(nil))
 	return out, true
@@ -142,7 +152,7 @@ func (s *webStats) day() string { return s.now().UTC().Format(time.DateOnly) }
 
 func (s *webStats) record(ip, surface, engine string, invited bool) {
 	day := s.day()
-	hash, hashed := webClientHash(s.salt, ip)
+	hash, hashed := webClientHash(s.salt, ip, day)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.uses[webUseKey{day, surface, engine}]++
