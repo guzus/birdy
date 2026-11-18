@@ -172,7 +172,7 @@ func TestWebClientHash(t *testing.T) {
 	if d1 != a || m2 == a {
 		t.Error("the hash must hold within a UTC month and change with the month")
 	}
-	// The same test vector as the server that shares these tables:
+	// The pinned test vector for this derivation:
 	// HMAC-SHA256(HMAC-SHA256("vector-salt", "birdy-client-hash:2026-11"), "192.0.2.1")[:16].
 	v, _ := webClientHash([]byte("vector-salt"), "192.0.2.1", "2026-11-19")
 	if got := hex.EncodeToString(v[:]); got != "8838202d167c1d83a6b0bde7bd6472f3" {
