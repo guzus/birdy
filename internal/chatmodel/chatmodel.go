@@ -57,6 +57,10 @@ type Request struct {
 	SystemPrompt string
 	BirdyCommand string
 	RunBirdyTool chubby.ToolRunner
+	// CacheRetention asks Chubby how long to keep this prompt cached:
+	// chubby.RetentionShort for a conversation, chubby.RetentionNone for a
+	// one-off call. Other backends ignore it.
+	CacheRetention string
 }
 
 func (r Request) turns() []Message {
@@ -268,7 +272,7 @@ func Stream(ctx context.Context, selection Selection, request Request, emit func
 			emitFailure(emit, "Birdy tool runner unavailable")
 			return
 		}
-		chubby.Stream(ctx, chubby.Conversation{System: request.SystemPrompt, Messages: request.turns()}, run, emit)
+		chubby.Stream(ctx, chubby.Conversation{System: request.SystemPrompt, Messages: request.turns(), Retention: request.CacheRetention}, run, emit)
 	case BackendClaudeCode:
 		if request.Mode == ModeNoTools {
 			if birdbox.Enabled() {

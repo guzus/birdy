@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -241,10 +242,12 @@ func TestNextTurnExtendsPreviousRequestExactly(t *testing.T) {
 		Messages []json.RawMessage `json:"messages"`
 	}
 	var bodies []wire
-	var raw []string
+	var raw, keys, retention []string
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		data, _ := io.ReadAll(r.Body)
 		raw = append(raw, string(data))
+		keys = append(keys, r.Header.Get("X-Chubby-Cache-Key"))
+		retention = append(retention, r.Header.Get("X-Chubby-Cache-Retention"))
 		var got wire
 		if err := json.Unmarshal(data, &got); err != nil {
 			t.Error(err)
@@ -264,7 +267,7 @@ func TestNextTurnExtendsPreviousRequestExactly(t *testing.T) {
 	defer s.Close()
 	configure(t, s)
 	run := func(context.Context, string, []string) (string, error) { return "tool output", nil }
-	first := Conversation{System: "rules", Messages: []Message{{Role: "user", Content: "first question"}}}
+	first := Conversation{System: "rules", Messages: []Message{{Role: "user", Content: "first question"}}, Retention: RetentionShort}
 	Stream(t.Context(), first, run, func(claude.Event) {})
 	if len(bodies) != 2 {
 		t.Fatalf("turn 1 made %d requests", len(bodies))
@@ -290,15 +293,23 @@ func TestNextTurnExtendsPreviousRequestExactly(t *testing.T) {
 	if !strings.HasPrefix(raw[2], strings.TrimSuffix(strings.SplitN(raw[0], `"tools"`, 2)[0], "],")) {
 		t.Fatal("turn 2's body does not begin with turn 1's model and messages")
 	}
-	for _, body := range raw {
-		if strings.Contains(body, "birdy-") && strings.Contains(body, "cache") {
-			t.Fatal("cache key sent before the endpoint accepts it")
+	// One key for the whole conversation, in headers only: today's body schema
+	// refuses unknown fields.
+	if !regexp.MustCompile(`^birdy:[0-9a-f]{32}$`).MatchString(keys[0]) {
+		t.Fatalf("cache key %q", keys[0])
+	}
+	for i, body := range raw {
+		if keys[i] != keys[0] || retention[i] != "5m" {
+			t.Fatalf("request %d cache headers %q %q", i, keys[i], retention[i])
+		}
+		if strings.Contains(body, "birdy:") || strings.Contains(body, "cache") {
+			t.Fatal("cache fields sent in the body")
 		}
 	}
 }
 
 func TestRequestLayoutAndCacheKey(t *testing.T) {
-	conv := Conversation{System: "rules", Messages: []Message{{Role: "user", Content: "a"}, {Role: "assistant", Content: "b"}, {Role: "user", Content: "c"}}}
+	conv := Conversation{System: "rules", Messages: []Message{{Role: "user", Content: "a"}, {Role: "assistant", Content: "b"}, {Role: "user", Content: "c"}}, Retention: RetentionShort}
 	req, err := newRequest("m", conv, true)
 	if err != nil {
 		t.Fatal(err)
@@ -318,9 +329,16 @@ func TestRequestLayoutAndCacheKey(t *testing.T) {
 	longer := conv
 	longer.Messages = append(slices.Clone(conv.Messages), Message{Role: "assistant", Content: "d"}, Message{Role: "user", Content: "e"})
 	next, _ := newRequest("m", longer, true)
-	other, _ := newRequest("m", Conversation{System: "rules", Messages: []Message{{Role: "user", Content: "z"}}}, true)
+	other, _ := newRequest("m", Conversation{System: "rules", Messages: []Message{{Role: "user", Content: "z"}}, Retention: RetentionShort}, true)
 	if req.PromptCacheKey == "" || req.PromptCacheKey != next.PromptCacheKey || req.PromptCacheKey == other.PromptCacheKey {
 		t.Fatal("cache key is not stable per conversation")
+	}
+	oneOff, _ := newRequest("m", Conversation{Messages: conv.Messages, Retention: RetentionNone}, false)
+	if oneOff.PromptCacheKey != "" || oneOff.CacheRetention != "none" {
+		t.Fatalf("one-off call %q %q", oneOff.PromptCacheKey, oneOff.CacheRetention)
+	}
+	if _, err := newRequest("m", Conversation{Messages: conv.Messages, Retention: "forever"}, false); err == nil {
+		t.Fatal("accepted an unknown retention")
 	}
 	for _, bad := range []Conversation{
 		{},

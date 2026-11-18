@@ -117,6 +117,9 @@ func TestPublicWebScanUsesOnlyPublicExplore(t *testing.T) {
 		if req.Mode != chatmodel.ModeNoTools || req.RunBirdyTool != nil || model.Backend != chatmodel.BackendChubby {
 			t.Error("unexpected public scan model capabilities")
 		}
+		if req.CacheRetention != "none" {
+			t.Error("one-off scan synthesis asked to stay cached")
+		}
 		emit(claude.Event{Type: claude.EventToken, Text: `{"category":"TRENDING","title":"X headline","summary":"An Explore headline.","ids":["news:demo"]}`})
 		emit(claude.Event{Type: claude.EventDone})
 	})

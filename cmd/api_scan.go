@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/guzus/birdy/internal/chatmodel"
+	"github.com/guzus/birdy/internal/chubby"
 	"github.com/guzus/birdy/internal/claude"
 	"github.com/guzus/birdy/internal/xapi"
 )
@@ -311,7 +312,8 @@ func runScan(ctx context.Context, model chatmodel.Selection, plan []scanSource, 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	parser := scanSummary{evidence: evidence, emit: emit}
-	stream(ctx, model, chatmodel.Request{Mode: chatmodel.ModeNoTools, SystemPrompt: scanSystemPrompt, Prompt: string(body)}, func(event claude.Event) {
+	// Each scan reads fresh posts, so nothing of this prompt is ever read back from cache.
+	stream(ctx, model, chatmodel.Request{Mode: chatmodel.ModeNoTools, SystemPrompt: scanSystemPrompt, Prompt: string(body), CacheRetention: chubby.RetentionNone}, func(event claude.Event) {
 		if parser.err != nil {
 			return
 		}

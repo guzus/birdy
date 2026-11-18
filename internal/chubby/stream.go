@@ -59,10 +59,19 @@ type request struct {
 	Tools         []any           `json:"tools,omitempty"`
 	Stream        bool            `json:"stream"`
 	StreamOptions map[string]bool `json:"stream_options"`
-	// PromptCacheKey is stable for one conversation. It is not sent yet: give it
-	// a json name once the inference endpoint accepts a per-conversation key.
+	// Sent as the X-Chubby-Cache-Key and X-Chubby-Cache-Retention headers,
+	// which Chubby reads and older releases ignore; its strict body schema
+	// refuses unknown fields until prompt_cache_key/prompt_cache_retention ship.
 	PromptCacheKey string `json:"-"`
+	CacheRetention string `json:"-"`
 }
+
+// Cache retention choices: a conversation's turns usually come minutes apart,
+// and a one-off call is never read back.
+const (
+	RetentionShort = "5m"
+	RetentionNone  = "none"
+)
 
 // Message is one conversation turn supplied by the caller, oldest first.
 type Message struct {
@@ -77,6 +86,8 @@ type Message struct {
 type Conversation struct {
 	System   string
 	Messages []Message
+	// Retention is RetentionShort, RetentionNone, or empty for Chubby's default.
+	Retention string
 }
 
 func toolDefinition() any {
@@ -171,7 +182,14 @@ func newRequest(model string, conv Conversation, tools bool) (request, error) {
 	if tools {
 		req.Tools = []any{toolDefinition()}
 	}
-	req.PromptCacheKey = cacheKey(model, conv)
+	switch conv.Retention {
+	case "", RetentionNone:
+	case RetentionShort:
+		req.PromptCacheKey = cacheKey(model, conv)
+	default:
+		return request{}, errors.New("unsupported cache retention")
+	}
+	req.CacheRetention = conv.Retention
 	return req, nil
 }
 
@@ -182,7 +200,7 @@ func cacheKey(model string, conv Conversation) string {
 	for _, part := range []string{model, conv.System, conv.Messages[0].Content} {
 		fmt.Fprintf(h, "%d:%s", len(part), part)
 	}
-	return "birdy-" + hex.EncodeToString(h.Sum(nil))[:32]
+	return "birdy:" + hex.EncodeToString(h.Sum(nil))[:32]
 }
 
 func (c *client) chat(ctx context.Context, conv Conversation, run ToolRunner, emit func(claude.Event)) error {
@@ -275,6 +293,12 @@ func (c *client) turn(ctx context.Context, req request, id string, emit func(cla
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("Accept", "text/event-stream")
 	r.Header.Set("Idempotency-Key", id)
+	if req.PromptCacheKey != "" {
+		r.Header.Set("X-Chubby-Cache-Key", req.PromptCacheKey)
+	}
+	if req.CacheRetention != "" {
+		r.Header.Set("X-Chubby-Cache-Retention", req.CacheRetention)
+	}
 	res, err := c.http.Do(r)
 	if err != nil {
 		return nil, errors.New("Chubby inference connection failed")

@@ -91,7 +91,9 @@ func TestAPIChatSendsHistoryAsTurnsToChubby(t *testing.T) {
 					Content string `json:"content"`
 				} `json:"messages"`
 			}
+			var key, retention string
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				key, retention = r.Header.Get("X-Chubby-Cache-Key"), r.Header.Get("X-Chubby-Cache-Retention")
 				if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
 					t.Error(err)
 				}
@@ -119,6 +121,9 @@ func TestAPIChatSendsHistoryAsTurnsToChubby(t *testing.T) {
 				if m.Role+":"+m.Content != want[i] {
 					t.Fatalf("turn %d = %s:%q", i, m.Role, m.Content)
 				}
+			}
+			if !strings.HasPrefix(key, "birdy:") || retention != "5m" {
+				t.Fatalf("cache headers %q %q", key, retention)
 			}
 			if visitor != (len(got.Tools) == 0) {
 				t.Fatalf("visitor=%v tools=%d", visitor, len(got.Tools))
